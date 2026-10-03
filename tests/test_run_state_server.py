@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import threading
@@ -7,6 +8,8 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+import fitz
 
 from mvp.run_state_server import create_server
 from mvp.checker import REPORT_SELF_RULE_ORDER
@@ -157,6 +160,37 @@ class RunStateServerTests(unittest.TestCase):
         with urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, 201)
             self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
+
+    def test_document_content_keeps_utf8_filename_header_valid(self) -> None:
+        _, case = self.request_json(
+            "/api/v1/cases", method="POST", payload={"name": "PDF 内容响应测试"}, csrf=True
+        )
+        pdf = fitz.open()
+        pdf.new_page().insert_text((72, 72), "content")
+        content = pdf.tobytes()
+        pdf.close()
+        _, document = self.request_json(
+            f"/api/v1/cases/{case['id']}/documents",
+            method="POST",
+            payload={
+                "role": "report",
+                "original_filename": "测试报告.pdf",
+                "content_base64": base64.b64encode(content).decode("ascii"),
+            },
+            csrf=True,
+        )
+        request = Request(self.base_url + f"/api/v1/documents/{document['id']}/content")
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("filename*=UTF-8''", response.headers.get("Content-Disposition", ""))
+            self.assertEqual(response.read(), content)
+        request = Request(
+            self.base_url + f"/api/v1/documents/{document['id']}/content",
+            headers={"Range": "bytes=0-7"},
+        )
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), content[:8])
 
     def test_default_server_rejects_unresolved_inputs(self) -> None:
         server = create_server(port=0)

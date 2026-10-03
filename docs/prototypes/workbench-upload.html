@@ -82,7 +82,8 @@
     .filter { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #fff; font-size: 12px; }
     .filter[aria-pressed="true"] { border-color: var(--teal); color: var(--teal); background: var(--teal-soft); }
     .findings { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-    .finding { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
+    .finding { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+    .finding:hover, .finding[aria-current="true"] { border-color: var(--teal); background: var(--teal-soft); }
     .finding-id { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .finding-title { margin-top: 2px; font-weight: 700; }
     .finding-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
@@ -92,6 +93,36 @@
     .finding-status.error { color: var(--error); background: var(--error-soft); }
     .finding-status.warning { color: #735596; background: #f4edfc; }
     .empty { padding: 18px 8px; color: var(--muted); text-align: center; }
+    .comparison-card { display: none; margin-top: 18px; padding: 20px; }
+    .comparison-card.visible { display: block; }
+    .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .comparison-head h2 { margin: 0; font-size: 18px; }
+    .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin-bottom: 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+    .brief-copy { min-width: 0; }
+    .brief-title { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+    .brief-detail { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .pdf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-height: 630px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }
+    .pdf-grid.single-pane { grid-template-columns: 1fr; }
+    .pdf-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #dbe2e7; }
+    .pdf-pane.is-hidden { display: none; }
+    .pdf-pane + .pdf-pane { border-left: 1px solid var(--line); }
+    .pdf-toolbar { display: grid; grid-template-columns: minmax(95px, auto) minmax(115px, 1fr) auto auto; gap: 6px; align-items: center; min-height: 42px; padding: 5px 7px; border-bottom: 1px solid var(--line); background: #fff; }
+    .document-name { min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .evidence-picker { width: 100%; min-width: 0; min-height: 30px; padding: 3px 24px 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: #3e4e5a; background: #fff; font-size: 12px; }
+    .evidence-picker:disabled { color: #8b979f; background: var(--soft); }
+    .page-controls, .zoom-controls { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .page-input { width: 44px; min-height: 30px; padding: 3px; text-align: center; }
+    .page-total, .zoom-label { min-width: 32px; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+    .pdf-viewport { position: relative; min-width: 0; min-height: 0; overflow: auto; padding: 16px; background: linear-gradient(90deg, rgb(255 255 255 / 15%) 1px, transparent 1px), linear-gradient(rgb(255 255 255 / 15%) 1px, transparent 1px), #dbe2e7; background-size: 20px 20px; scrollbar-gutter: stable; }
+    .pdf-page-shell { position: relative; width: max-content; margin: 0 auto; background: #fff; box-shadow: 0 5px 20px rgb(30 45 55 / 25%); }
+    .pdf-canvas { display: block; background: #fff; }
+    .highlight-layer { position: absolute; inset: 0; pointer-events: none; }
+    .evidence-highlight { position: absolute; min-width: 8px; min-height: 8px; border: 2px solid var(--error); background: rgb(239 68 68 / 22%); box-shadow: 0 0 0 2px rgb(255 255 255 / 80%), 0 0 0 4px rgb(180 35 24 / 35%); }
+    .pdf-pane[data-finding-status="manual"] .evidence-highlight { border-color: #c67514; background: rgb(245 158 11 / 23%); box-shadow: 0 0 0 2px rgb(255 255 255 / 80%), 0 0 0 4px rgb(154 91 19 / 32%); }
+    .pdf-pane[data-finding-status="pass"] .evidence-highlight { border-color: var(--pass); background: rgb(34 197 94 / 18%); box-shadow: 0 0 0 2px rgb(255 255 255 / 80%), 0 0 0 4px rgb(21 115 71 / 28%); }
+    .evidence-highlight.secondary { border-style: dashed; opacity: .72; box-shadow: none; }
+    .pane-message { position: absolute; inset: 0; z-index: 3; display: none; place-items: center; padding: 24px; color: #435663; background: rgb(243 246 248 / 93%); text-align: center; }
+    .pane-message.visible { display: grid; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     @media (max-width: 720px) {
       .shell { width: min(100% - 20px, 1180px); padding-top: 18px; }
@@ -100,6 +131,10 @@
       .field.full { grid-column: auto; }
       .actions { justify-content: stretch; }
       .actions button { flex: 1; }
+      .comparison-head, .comparison-brief { display: grid; }
+      .pdf-grid { grid-template-columns: 1fr; overflow: visible; }
+      .pdf-pane { min-height: 620px; }
+      .pdf-pane + .pdf-pane { border-top: 1px solid var(--line); border-left: 0; }
     }
   </style>
 </head>
@@ -183,9 +218,66 @@
       </div>
       <ol class="findings" id="findings" aria-live="polite"><li class="empty">运行成功后显示 Finding。</li></ol>
     </section>
+
+    <section class="card comparison-card" id="comparison-card" aria-labelledby="comparison-title">
+      <div class="comparison-head">
+        <div>
+          <h2 id="comparison-title">原始文件比对</h2>
+          <p class="subtitle">选择 Finding 后自动定位证据页，并在 PDF 中高亮对应范围。</p>
+        </div>
+        <span class="hint" id="comparison-mode-label">—</span>
+      </div>
+      <div class="comparison-brief" id="comparison-brief" aria-live="polite">
+        <span class="finding-status manual">未选择</span>
+        <div class="brief-copy"><div class="brief-title">请在上方 Finding 列表选择一项</div><div class="brief-detail">运行完成后显示 Report 与 Record 原始文件</div></div>
+        <span class="finding-id">—</span>
+      </div>
+      <div class="pdf-grid">
+        <article class="pdf-pane" data-pane-role="report" data-finding-status="manual" aria-label="Report 原始 PDF">
+          <div class="pdf-toolbar">
+            <div class="document-name" title="Report">Report</div>
+            <select class="evidence-picker" aria-label="选择 Report 证据位置" disabled><option>无证据位置</option></select>
+            <div class="page-controls" aria-label="Report 翻页">
+              <button class="secondary tool-button previous-page" type="button" title="上一页" aria-label="Report 上一页">‹</button>
+              <input class="page-input" type="number" min="1" value="1" aria-label="Report 页码">
+              <span class="page-total">/ —</span>
+              <button class="secondary tool-button next-page" type="button" title="下一页" aria-label="Report 下一页">›</button>
+            </div>
+            <div class="zoom-controls" aria-label="Report 缩放">
+              <button class="secondary tool-button zoom-out" type="button" title="缩小" aria-label="缩小 Report">−</button>
+              <span class="zoom-label">100%</span>
+              <button class="secondary tool-button zoom-in" type="button" title="放大" aria-label="放大 Report">＋</button>
+            </div>
+          </div>
+          <div class="pdf-viewport"><div class="pdf-page-shell"><canvas class="pdf-canvas"></canvas><div class="highlight-layer" aria-hidden="true"></div></div><div class="pane-message visible">等待运行结果…</div></div>
+        </article>
+        <article class="pdf-pane" data-pane-role="record" data-finding-status="manual" aria-label="Record 原始 PDF">
+          <div class="pdf-toolbar">
+            <div class="document-name" title="Record">Record</div>
+            <select class="evidence-picker" aria-label="选择 Record 证据位置" disabled><option>无证据位置</option></select>
+            <div class="page-controls" aria-label="Record 翻页">
+              <button class="secondary tool-button previous-page" type="button" title="上一页" aria-label="Record 上一页">‹</button>
+              <input class="page-input" type="number" min="1" value="1" aria-label="Record 页码">
+              <span class="page-total">/ —</span>
+              <button class="secondary tool-button next-page" type="button" title="下一页" aria-label="Record 下一页">›</button>
+            </div>
+            <div class="zoom-controls" aria-label="Record 缩放">
+              <button class="secondary tool-button zoom-out" type="button" title="缩小" aria-label="缩小 Record">−</button>
+              <span class="zoom-label">100%</span>
+              <button class="secondary tool-button zoom-in" type="button" title="放大" aria-label="放大 Record">＋</button>
+            </div>
+          </div>
+          <div class="pdf-viewport"><div class="pdf-page-shell"><canvas class="pdf-canvas"></canvas><div class="highlight-layer" aria-hidden="true"></div></div><div class="pane-message visible">等待运行结果…</div></div>
+        </article>
+      </div>
+    </section>
   </main>
 
   <script type="module">
+    import * as pdfjsLib from "./vendor/pdfjs/pdf.min.mjs";
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "./vendor/pdfjs/pdf.worker.min.mjs";
+
     const MODE_META = Object.freeze({
       self: { apiMode: "report_self", label: "Report 自检", recordRole: null, note: "Report 自检只需要上传 Report。" },
       ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", disabled: true, note: "PTR 检查尚未启用（PTR_NOT_VALIDATED）。" },
@@ -212,11 +304,20 @@
     const runCount = document.getElementById("run-count");
     const findings = document.getElementById("findings");
     const filters = document.getElementById("finding-filters");
+    const comparisonCard = document.getElementById("comparison-card");
+    const comparisonModeLabel = document.getElementById("comparison-mode-label");
+    const comparisonBrief = document.getElementById("comparison-brief");
 
     let csrfToken = null;
     let activeFindings = [];
     let activeFilter = "all";
     let pollToken = 0;
+    let activeMode = "self";
+    let activeRun = null;
+    let activeDocuments = {};
+    let selectedFindingId = null;
+    let comparisonToken = 0;
+    const pdfDocumentCache = new Map();
 
     function configuredApiBase() {
       const explicit = apiBaseInput.value.trim() || window.localStorage.getItem("report-checker-upload-api") || "";
@@ -287,6 +388,58 @@
       return payload;
     }
 
+    function documentContentUrl(documentId) {
+      if (!documentId) return null;
+      return apiUrl(`/api/v1/documents/${encodeURIComponent(documentId)}/content`);
+    }
+
+    function validBbox(bbox) {
+      return Array.isArray(bbox) && bbox.length === 4
+        && bbox.every(value => Number.isFinite(Number(value)))
+        && Number(bbox[0]) < Number(bbox[2]) && Number(bbox[1]) < Number(bbox[3]);
+    }
+
+    function evidenceLocations(finding, role) {
+      return (Array.isArray(finding?.evidence) ? finding.evidence : [])
+        .filter(item => item?.role === role && Number.isInteger(Number(item.pdf_page)) && Number(item.pdf_page) > 0 && validBbox(item.bbox))
+        .map(item => ({ ...item, pdf_page: Number(item.pdf_page), bbox: item.bbox.map(Number) }));
+    }
+
+    function sourceDocument(role) {
+      const source = activeDocuments[role] || (activeRun?.run_inputs || []).find(item => item.role === role);
+      if (!source) return null;
+      return {
+        id: source.document_id || source.id,
+        name: source.original_filename || source.filename || source.name || role
+      };
+    }
+
+    function runInputDocuments(run) {
+      const result = {};
+      (run?.run_inputs || []).forEach(item => { if (item?.role) result[item.role] = item; });
+      const snapshot = run?.input_snapshot || {};
+      Object.entries(snapshot).forEach(([role, item]) => {
+        if (item) result[role] = { ...(result[role] || {}), ...item, role };
+      });
+      return result;
+    }
+
+    function setComparisonMessage(message) {
+      comparisonBrief.querySelector(".brief-title").textContent = message;
+      comparisonBrief.querySelector(".brief-detail").textContent = "运行完成后选择 Finding 可查看原始文件证据。";
+      comparisonBrief.querySelector(".finding-id").textContent = "—";
+    }
+
+    function clearPane(pane, message = "等待运行结果…") {
+      pane.setMessage(message);
+      pane.evidenceLocations = [];
+      pane.renderEvidencePicker();
+      pane.highlightLayer.replaceChildren();
+      pane.updateControls();
+    }
+
+
+
     async function uploadDocument(caseId, role, file) {
       const body = new FormData();
       body.append("role", role);
@@ -324,6 +477,10 @@
       visible.forEach(item => {
         const row = document.createElement("li");
         row.className = "finding";
+        row.dataset.findingId = item.id || item.rule_id || "";
+        row.tabIndex = 0;
+        row.setAttribute("role", "button");
+        row.setAttribute("aria-current", String((item.id || item.rule_id) === selectedFindingId));
         const status = String(item.status || "manual");
         const badge = document.createElement("span");
         badge.className = `finding-status ${status}`;
@@ -348,6 +505,196 @@
       renderFilters();
     }
 
+    async function showFindingComparison(finding) {
+      if (!finding || !activeRun) return;
+      const token = ++comparisonToken;
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      const reportDocument = sourceDocument("report");
+      const recordDocument = meta.recordRole ? sourceDocument(meta.recordRole) : null;
+      comparisonCard.classList.add("visible");
+      comparisonModeLabel.textContent = meta.label;
+      const status = String(finding.status || "manual");
+      const badge = comparisonBrief.querySelector(".finding-status");
+      badge.className = `finding-status ${status}`;
+      badge.textContent = STATUS_LABELS[status] || status;
+      comparisonBrief.querySelector(".brief-title").textContent = finding.title || finding.rule_id || "核对结果";
+      comparisonBrief.querySelector(".brief-detail").textContent = finding.summary || finding.details?.comparison?.reason_code || "—";
+      comparisonBrief.querySelector(".finding-id").textContent = finding.id || "—";
+      if (!reportDocument) {
+        clearPane(reportPane, "缺少 Report 文档信息。");
+        clearPane(recordPane, "等待 Record 文档。");
+        return;
+      }
+      const reportLocations = evidenceLocations(finding, "report");
+      const recordLocations = meta.recordRole ? evidenceLocations(finding, meta.recordRole) : [];
+      comparisonCard.querySelector(".pdf-grid").classList.toggle("single-pane", !meta.recordRole);
+      recordPane.root.classList.toggle("is-hidden", !meta.recordRole);
+      recordPane.root.setAttribute("aria-hidden", String(!meta.recordRole));
+      try {
+        if (meta.recordRole && !recordDocument) throw new Error("缺少 Record 文档信息。");
+        await reportPane.loadDocument(reportDocument, "Report");
+        if (meta.recordRole) await recordPane.loadDocument(recordDocument, "Record");
+        if (token !== comparisonToken) return;
+        await reportPane.setFinding(status, reportLocations);
+        if (meta.recordRole) await recordPane.setFinding(status, recordLocations);
+      } catch (error) {
+        if (token !== comparisonToken) return;
+        clearPane(reportPane, `原始 PDF 读取失败：${error?.message || error}`);
+        if (meta.recordRole) clearPane(recordPane, `原始 PDF 读取失败：${error?.message || error}`);
+      }
+    }
+
+    function sourceUrl(documentInfo) {
+      if (!documentInfo?.id) return null;
+      return apiUrl(`/api/v1/documents/${encodeURIComponent(documentInfo.id)}/content`);
+    }
+
+    async function getPdfDocument(url) {
+      if (!pdfDocumentCache.has(url)) {
+        const task = pdfjsLib.getDocument({ url });
+        pdfDocumentCache.set(url, task.promise.catch(error => { pdfDocumentCache.delete(url); throw error; }));
+      }
+      return pdfDocumentCache.get(url);
+    }
+
+    class PdfPane {
+      constructor(root) {
+        this.root = root;
+        this.role = root.dataset.paneRole;
+        this.documentName = root.querySelector(".document-name");
+        this.evidencePicker = root.querySelector(".evidence-picker");
+        this.previousButton = root.querySelector(".previous-page");
+        this.nextButton = root.querySelector(".next-page");
+        this.pageInput = root.querySelector(".page-input");
+        this.pageTotal = root.querySelector(".page-total");
+        this.zoomOut = root.querySelector(".zoom-out");
+        this.zoomIn = root.querySelector(".zoom-in");
+        this.zoomLabel = root.querySelector(".zoom-label");
+        this.viewportElement = root.querySelector(".pdf-viewport");
+        this.pageShell = root.querySelector(".pdf-page-shell");
+        this.canvas = root.querySelector(".pdf-canvas");
+        this.highlightLayer = root.querySelector(".highlight-layer");
+        this.message = root.querySelector(".pane-message");
+        this.pdfDocument = null;
+        this.url = null;
+        this.pageNumber = 1;
+        this.zoom = 1;
+        this.evidenceLocations = [];
+        this.selectedEvidenceIndex = 0;
+        this.renderToken = 0;
+        this.documentToken = 0;
+        this.renderTask = null;
+        this.bindEvents();
+      }
+      bindEvents() {
+        this.previousButton.addEventListener("click", () => this.goToPage(this.pageNumber - 1));
+        this.nextButton.addEventListener("click", () => this.goToPage(this.pageNumber + 1));
+        this.pageInput.addEventListener("change", () => this.goToPage(Number(this.pageInput.value)));
+        this.zoomOut.addEventListener("click", () => this.setZoom(this.zoom - .15));
+        this.zoomIn.addEventListener("click", () => this.setZoom(this.zoom + .15));
+        this.evidencePicker.addEventListener("change", () => this.goToEvidence(Number(this.evidencePicker.value)));
+        if (typeof ResizeObserver !== "undefined") {
+          new ResizeObserver(() => { if (this.pdfDocument) this.renderPage({ preserveScroll: true }); }).observe(this.viewportElement);
+        }
+      }
+      setMessage(text) { this.message.textContent = text; this.message.classList.toggle("visible", Boolean(text)); }
+      async loadDocument(documentInfo, fallbackLabel) {
+        const url = sourceUrl(documentInfo);
+        if (!url) { this.setMessage(`${fallbackLabel} 文档不可用。`); return; }
+        const label = documentInfo.original_filename || fallbackLabel;
+        this.documentName.textContent = `${this.role === "report" ? "Report" : "Record"} · ${label}`;
+        this.documentName.title = label;
+        if (this.url === url && this.pdfDocument) return;
+        const token = ++this.documentToken;
+        this.renderToken += 1;
+        this.renderTask?.cancel();
+        this.url = url; this.pdfDocument = null; this.pageNumber = 1; this.zoom = 1;
+        this.pageInput.value = "1"; this.pageTotal.textContent = "/ —"; this.updateControls();
+        this.setMessage(`正在读取 ${this.role === "report" ? "Report" : "Record"}…`);
+        try {
+          const document = await getPdfDocument(url);
+          if (token !== this.documentToken) return;
+          this.pdfDocument = document;
+          this.pageInput.max = String(document.numPages);
+          this.pageTotal.textContent = `/ ${document.numPages}`;
+          this.updateControls();
+          await this.renderPage();
+        } catch (error) {
+          if (token === this.documentToken) this.setMessage(`PDF 读取失败：${error?.message || error}`);
+        }
+      }
+      async setFinding(status, locations) {
+        this.root.dataset.findingStatus = status;
+        this.evidenceLocations = locations || [];
+        this.selectedEvidenceIndex = 0;
+        this.renderEvidencePicker();
+        await this.goToPage(this.evidenceLocations[0]?.pdf_page || this.pageNumber || 1, true);
+      }
+      renderEvidencePicker() {
+        this.evidencePicker.replaceChildren();
+        if (!this.evidenceLocations.length) {
+          const option = document.createElement("option"); option.value = "0"; option.textContent = "该侧无精确证据位置";
+          this.evidencePicker.append(option); this.evidencePicker.disabled = true; return;
+        }
+        this.evidenceLocations.forEach((location, index) => {
+          const option = document.createElement("option"); option.value = String(index); option.selected = index === 0;
+          option.textContent = `证据 ${index + 1}/${this.evidenceLocations.length} · 第 ${location.pdf_page} 页 · ${location.semantic_role || "证据"}`;
+          this.evidencePicker.append(option);
+        });
+        this.evidencePicker.disabled = false;
+      }
+      goToEvidence(index) { this.selectedEvidenceIndex = Math.max(0, Math.min(this.evidenceLocations.length - 1, Number(index) || 0)); this.renderEvidencePicker(); const location = this.evidenceLocations[this.selectedEvidenceIndex]; if (location) this.goToPage(location.pdf_page, true); }
+      goToPage(page, focusHighlight = false) {
+        if (!this.pdfDocument) return Promise.resolve();
+        this.pageNumber = Math.max(1, Math.min(this.pdfDocument.numPages, Math.round(Number(page) || 1)));
+        this.pageInput.value = String(this.pageNumber); this.updateControls();
+        return this.renderPage({ focusHighlight });
+      }
+      setZoom(nextZoom) { this.zoom = Math.max(.55, Math.min(2.5, Math.round(nextZoom * 100) / 100)); this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`; this.renderPage({ preserveScroll: true }); }
+      updateControls() {
+        const count = this.pdfDocument?.numPages || 0;
+        this.previousButton.disabled = !count || this.pageNumber <= 1; this.nextButton.disabled = !count || this.pageNumber >= count;
+        this.pageInput.disabled = !count; this.zoomOut.disabled = !count || this.zoom <= .55; this.zoomIn.disabled = !count || this.zoom >= 2.5;
+      }
+      addHighlights(pdfPage, viewport) {
+        this.highlightLayer.replaceChildren();
+        const pageView = pdfPage.view;
+        this.evidenceLocations.filter(location => location.pdf_page === this.pageNumber).forEach((location, index) => {
+          const [left, top, right, bottom] = location.bbox;
+          const transformed = viewport.convertToViewportRectangle([left, pageView[3] - bottom, right, pageView[3] - top]);
+          const highlight = document.createElement("div"); highlight.className = `evidence-highlight${index === this.selectedEvidenceIndex ? "" : " secondary"}`;
+          highlight.style.left = `${Math.min(transformed[0], transformed[2])}px`; highlight.style.top = `${Math.min(transformed[1], transformed[3])}px`;
+          highlight.style.width = `${Math.max(8, Math.abs(transformed[2] - transformed[0]))}px`; highlight.style.height = `${Math.max(8, Math.abs(transformed[3] - transformed[1]))}px`;
+          highlight.title = `第 ${location.pdf_page} 页证据位置`; this.highlightLayer.append(highlight);
+        });
+      }
+      async renderPage({ focusHighlight = false, preserveScroll = false } = {}) {
+        if (!this.pdfDocument) return;
+        const token = ++this.renderToken; this.renderTask?.cancel();
+        this.setMessage("正在绘制页面…");
+        try {
+          const pdfPage = await this.pdfDocument.getPage(this.pageNumber); if (token !== this.renderToken) return;
+          const baseViewport = pdfPage.getViewport({ scale: 1 });
+          const fitScale = Math.min(1.65, Math.max(260, this.viewportElement.clientWidth - 34) / baseViewport.width);
+          const viewport = pdfPage.getViewport({ scale: fitScale * this.zoom });
+          const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
+          const context = this.canvas.getContext("2d", { alpha: false });
+          this.canvas.width = Math.ceil(viewport.width * deviceScale); this.canvas.height = Math.ceil(viewport.height * deviceScale);
+          this.canvas.style.width = `${viewport.width}px`; this.canvas.style.height = `${viewport.height}px`;
+          this.pageShell.style.width = `${viewport.width}px`; this.pageShell.style.height = `${viewport.height}px`;
+          this.highlightLayer.style.width = `${viewport.width}px`; this.highlightLayer.style.height = `${viewport.height}px`;
+          this.renderTask = pdfPage.render({ canvasContext: context, viewport, transform: deviceScale === 1 ? null : [deviceScale, 0, 0, deviceScale, 0, 0] });
+          await this.renderTask.promise; if (token !== this.renderToken) return;
+          this.renderTask = null; this.addHighlights(pdfPage, viewport); this.setMessage("");
+          if (focusHighlight) (this.highlightLayer.querySelector(".evidence-highlight:not(.secondary)") || this.highlightLayer.querySelector(".evidence-highlight"))?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+          else if (preserveScroll) this.viewportElement.scrollTo({ top: this.viewportElement.scrollTop, left: this.viewportElement.scrollLeft });
+        } catch (error) { if (error?.name !== "RenderingCancelledException" && token === this.renderToken) this.setMessage(`页面绘制失败：${error?.message || error}`); }
+      }
+    }
+
+    const reportPane = new PdfPane(document.querySelector('[data-pane-role="report"]'));
+    const recordPane = new PdfPane(document.querySelector('[data-pane-role="record"]'));
+
     function showRun(run, mode) {
       runMode.textContent = MODE_META[mode]?.label || run.mode || "—";
       runId.textContent = run.id || "—";
@@ -356,6 +703,9 @@
 
     async function loadFindings(run, mode) {
       const payload = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}/findings`);
+      activeRun = run;
+      activeMode = mode;
+      activeDocuments = runInputDocuments(run);
       activeFindings = (Array.isArray(payload?.items) ? payload.items : []).map(item => ({
         ...item,
         // The API calls this field machine_status; keeping a local status key
@@ -365,6 +715,10 @@
       showRun(run, mode);
       runCount.textContent = String(activeFindings.length);
       renderFindings();
+      selectedFindingId = activeFindings[0]?.id || null;
+      renderFindings();
+      if (activeFindings[0]) await showFindingComparison(activeFindings[0]);
+      else { comparisonCard.classList.remove("visible"); setComparisonMessage("当前 Run 没有 Finding"); }
     }
 
     async function pollRun(run, mode, token) {
@@ -400,6 +754,7 @@
       if (mode.disabled) return;
       let report;
       let record = null;
+      let recordDoc = null;
       try {
         report = validatePdf(reportFile.files?.[0], "Report");
         if (mode.recordRole) record = validatePdf(recordFile.files?.[0], "Record");
@@ -424,7 +779,7 @@
         const inputs = { report_document_id: reportDoc.id };
         if (record) {
           setMessage("正在上传 Record…");
-          const recordDoc = await uploadDocument(caseData.id, mode.recordRole, record);
+          recordDoc = await uploadDocument(caseData.id, mode.recordRole, record);
           inputs.record_document_id = recordDoc.id;
         }
         setMessage("正在预检规则计划…");
@@ -440,6 +795,9 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mode: mode.apiMode, inputs, preflight_plan_hash: preflight.plan_hash })
         });
+        activeMode = modeSelect.value;
+        activeDocuments = { report: { id: reportDoc.id, name: report.name } };
+        if (record) activeDocuments[mode.recordRole] = { id: recordDoc.id, name: record.name };
         showRun(run, modeSelect.value);
         setRunStatus("排队中", "running");
         statusMessage.textContent = "文件已上传，等待 Worker 执行。";
@@ -469,6 +827,22 @@
       activeFilter = button.dataset.status;
       renderFindings();
     });
+    findings.addEventListener("click", event => {
+      const row = event.target.closest("[data-finding-id]");
+      if (!row) return;
+      selectedFindingId = row.dataset.findingId;
+      renderFindings();
+      showFindingComparison(activeFindings.find(item => item.id === selectedFindingId));
+    });
+    findings.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest("[data-finding-id]");
+      if (!row) return;
+      event.preventDefault();
+      selectedFindingId = row.dataset.findingId;
+      renderFindings();
+      showFindingComparison(activeFindings.find(item => item.id === selectedFindingId));
+    });
     apiBaseInput.addEventListener("change", () => {
       const value = apiBaseInput.value.trim();
       if (value) window.localStorage.setItem("report-checker-upload-api", value.replace(/\/$/, ""));
@@ -478,6 +852,7 @@
     if (savedApiBase) apiBaseInput.value = savedApiBase;
     updateModeFields();
     renderFilters();
+    setComparisonMessage("运行完成后选择 Finding");
   </script>
 </body>
 </html>

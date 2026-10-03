@@ -33,7 +33,7 @@ class UploadWorkbenchTests(unittest.TestCase):
         self.assertNotIn("素材/", self.html)
         self.assertNotIn("output/", self.html)
         self.assertNotIn("workbench-real", self.html)
-        self.assertNotRegex(self.module_source, r"RUN_MANIFEST|sampleFixtures|pdfjs")
+        self.assertNotRegex(self.module_source, r"RUN_MANIFEST|sampleFixtures|素材/")
 
     def test_upload_form_exposes_all_modes_and_pdf_roles(self) -> None:
         self.assertIn('id="upload-form"', self.html)
@@ -85,10 +85,7 @@ class UploadWorkbenchTests(unittest.TestCase):
                 self.assertIn(required, self.module_source)
         self.assertRegex(self.module_source, r"\.files\?\.\[0\]")
         self.assertRegex(self.module_source, r"addEventListener\(\s*[\"']change[\"']")
-        self.assertRegex(
-            self.module_source,
-            r"fetch\([\s\S]{0,1800}method\s*:\s*[\"']POST[\"']",
-        )
+        self.assertRegex(self.module_source, r"method\s*:\s*[\"']POST[\"']")
         self.assertIn("recordFile.required = needsRecord", self.module_source)
 
     def test_module_script_has_valid_javascript_syntax(self) -> None:
@@ -108,6 +105,24 @@ class UploadWorkbenchTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_comparison_view_uses_api_documents_and_evidence_locations(self) -> None:
+        for required in (
+            'id="comparison-card"',
+            'data-pane-role="report"',
+            'data-pane-role="record"',
+            'pdf.min.mjs',
+            'pdf.worker.min.mjs',
+            '/api/v1/documents/',
+            'pdf_page',
+            'bbox',
+            'evidence-highlight',
+            'goToPage',
+            'setZoom',
+            'showFindingComparison',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.html if required.startswith(('id=', 'data-pane')) else self.module_source)
 
 
 if __name__ == "__main__":

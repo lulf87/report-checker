@@ -13,7 +13,7 @@ from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 from uuid import uuid4
 
 from mvp.capabilities import MODE_CATALOG, RULE_BUNDLE_ID, preflight_plan_hash, rule_bundle_sha256, validate_mode
@@ -251,7 +251,15 @@ class RunStateRequestHandler(CapabilityRequestHandler):
             self.send_header(name, value)
         if filename:
             safe_name = filename.replace('"', "'").replace("\r", "").replace("\n", "")
-            self.send_header("Content-Disposition", f'inline; filename="{safe_name}"')
+            # Header values must stay ASCII on the stdlib HTTP server. Keep a
+            # readable fallback and expose the UTF-8 filename separately so a
+            # non-ASCII upload filename cannot corrupt the PDF response.
+            ascii_name = safe_name.encode("ascii", "ignore").decode("ascii") or "document.pdf"
+            encoded_name = quote(safe_name, safe="")
+            self.send_header(
+                "Content-Disposition",
+                f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}',
+            )
         self.end_headers()
         self.wfile.write(content)
 
