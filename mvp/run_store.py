@@ -743,7 +743,7 @@ class RunStore:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 execution_by_rule = {item["rule_id"]: item for item in executions}
-                self._insert_findings_locked(
+                persisted_finding_ids = self._insert_findings_locked(
                     run_id,
                     result["findings"],
                     timestamp,
@@ -754,7 +754,9 @@ class RunStore:
                 finding_ids_by_rule: dict[str, list[str]] = {rule_id: [] for rule_id in run["planned_rule_ids"]}
                 for finding in result["findings"]:
                     rule_id = str(finding.get("rule_id") or "")
-                    finding_ids_by_rule.setdefault(rule_id, []).append(str(finding["id"]))
+                    finding_ids_by_rule.setdefault(rule_id, []).append(
+                        persisted_finding_ids[str(finding["id"])]
+                    )
                 for rule_id, finding_ids in finding_ids_by_rule.items():
                     self._connection.execute(
                         "UPDATE rule_executions SET finding_ids_json = ? WHERE run_id = ? AND rule_id = ?",
@@ -785,7 +787,9 @@ class RunStore:
                     "findings_published",
                     {
                         "finding_count": len(result["findings"]),
-                        "finding_ids": [str(finding["id"]) for finding in result["findings"]],
+                        "finding_ids": [
+                            persisted_finding_ids[str(finding["id"])] for finding in result["findings"]
+                        ],
                     },
                 )
                 self._append_event_locked(
@@ -835,7 +839,7 @@ class RunStore:
         *,
         execution_by_rule: Mapping[str, Mapping[str, Any]] | None = None,
         input_snapshot: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> dict[str, str]:
         status_rank = {"error": 0, "manual": 1, "warning": 2, "pass": 3}
         rule_rank = {rule_id: index for index, rule_id in enumerate(planned_rule_ids or ())}
         findings = sorted(
@@ -847,11 +851,35 @@ class RunStore:
             ),
         )
         seen_finding_ids: set[str] = set()
+        persisted_finding_ids: dict[str, str] = {}
         for display_sequence, finding in enumerate(findings, start=1):
-            finding_id = finding.get("id")
-            if not isinstance(finding_id, str) or not finding_id.strip() or finding_id in seen_finding_ids:
+            source_finding_id = finding.get("id")
+            if (
+                not isinstance(source_finding_id, str)
+                or not source_finding_id.strip()
+                or source_finding_id in seen_finding_ids
+            ):
                 raise RunStoreError("WORKER_RESULT_FINDING_ID_INVALID", "Worker Finding ID 缺失或重复")
-            seen_finding_ids.add(finding_id)
+            seen_finding_ids.add(source_finding_id)
+            finding_id = source_finding_id
+            # Worker IDs are stable within a result, but may repeat across
+            # separate Runs. Preserve the first occurrence for human-readable
+            # compatibility and scope later collisions to this Run so the
+            # database's global Finding primary key remains unique.
+            existing = self._connection.execute(
+                "SELECT 1 FROM findings WHERE id = ? LIMIT 1", (finding_id,)
+            ).fetchone()
+            if existing is not None:
+                suffix = f"@{run_id}"
+                candidate = f"{source_finding_id}{suffix}"
+                attempt = 2
+                while self._connection.execute(
+                    "SELECT 1 FROM findings WHERE id = ? LIMIT 1", (candidate,)
+                ).fetchone() is not None:
+                    candidate = f"{source_finding_id}{suffix}-{attempt}"
+                    attempt += 1
+                finding_id = candidate
+            persisted_finding_ids[source_finding_id] = finding_id
             locations = finding.get("evidence_locations", [])
             if not isinstance(locations, list):
                 raise RunStoreError("WORKER_RESULT_EVIDENCE_INVALID", "Worker evidence_locations 必须是数组")
@@ -868,6 +896,7 @@ class RunStore:
                     "Worker Finding 没有对应的当前 Run 规则执行记录",
                     details={"rule_id": rule_id},
                 )
+
             self._connection.execute(
                 """INSERT INTO findings(
                     id, run_id, display_sequence, rule_id, rule_execution_id, input_snapshot_json,
@@ -939,6 +968,8 @@ class RunStore:
                         timestamp,
                     ),
                 )
+
+        return persisted_finding_ids
 
     @staticmethod
     def _status_counts_from_findings(findings: list[Mapping[str, Any]]) -> dict[str, int]:

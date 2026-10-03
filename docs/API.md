@@ -7,7 +7,7 @@
 
 当前工程已经实现能力目录、Case/Document/Run 状态、Blob 存储、自动队列 Worker、Finding/Evidence 发布和 ReviewAction 追加：`.venv/bin/python -m mvp.capability_server` 提供 `/healthz`、`/api/v1/capabilities` 和 `/api/v1/rules`；`.venv/bin/python -m mvp.run_state_server` 提供本机 CSRF 会话、Case、Document、Run preflight、Run 快照、规则执行账本、事件、Finding、复核和取消入口；`mvp.run_coordinator` 负责一次 queued Run 的子进程执行与发布闸门。该服务的模式和规则目录来自 `mvp.capabilities`，PTR 保持 `PTR_NOT_VALIDATED` 禁用。
 
-> **当前实现边界（2026-10-03）**：以上代码路由是可运行契约。本文中标注“规划”的幂等键、SSE、Artifact 图片、导出、签名和完整分页游标尚未暴露为当前路由；本机工作台已通过 `docs/prototypes/workbench-real.html` 接入上传、模式选择、preflight、Run 启动和结果轮询。当前事件通过 `GET /api/v1/runs/{run_id}/events` 轮询读取，创建接口默认不提供业务幂等保证。客户端和部署说明应以代码路由为准，规划章节只用于后续设计。
+> **当前实现边界（2026-10-03）**：以上代码路由是可运行契约。本文中标注“规划”的幂等键、SSE、Artifact 图片、导出、签名和完整分页游标尚未暴露为当前路由；公开脱敏页 `docs/prototypes/workbench-upload.html` 与本机真实工作台均已接入上传、模式选择、preflight、Run 启动和结果轮询。当前事件通过 `GET /api/v1/runs/{run_id}/events` 轮询读取，创建接口默认不提供业务幂等保证。客户端和部署说明应以代码路由为准，规划章节只用于后续设计。
 
 本 API 只暴露结构化、可追溯的事实和状态。服务端拥有模式校验、规则计算、总体聚合、证据路径和人工复核重算的解释权；客户端不能提交机器结论或派生结论。
 

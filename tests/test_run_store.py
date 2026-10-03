@@ -166,6 +166,55 @@ class RunStoreTests(unittest.TestCase):
         self.assertEqual(len(store.list_findings(run["id"])), len(REPORT_SELF_RULE_ORDER))
         store.close()
 
+    def test_repeated_report_self_runs_scope_colliding_finding_ids(self) -> None:
+        store = RunStore()
+        case = store.create_case("重复运行 ID")
+
+        def publish_one(run_id: str) -> dict:
+            store.transition_run(run_id, "running")
+            for execution in store.get_rule_executions(run_id):
+                store.transition_rule_execution(run_id, execution["rule_id"], "running")
+                store.transition_rule_execution(run_id, execution["rule_id"], "succeeded", finding_count=1)
+            return store.publish_result(
+                run_id,
+                {
+                    "mode": "report_self",
+                    "machine_overall_status": "error",
+                    "status_counts": {"pass": 11, "warning": 0, "manual": 0, "error": 1},
+                    "findings": [
+                        {
+                            "id": rule_id,
+                            "rule_id": rule_id,
+                            "status": "error" if rule_id == "REPORT-R07" else "pass",
+                            "evidence_locations": [],
+                        }
+                        for rule_id in REPORT_SELF_RULE_ORDER
+                    ],
+                },
+            )
+
+        first = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r1"}
+        )
+        second = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r2"}
+        )
+        self.assertEqual(publish_one(first["id"])["lifecycle_status"], "succeeded")
+        self.assertEqual(publish_one(second["id"])["lifecycle_status"], "succeeded")
+
+        first_ids = {item["id"] for item in store.list_findings(first["id"])}
+        second_findings = store.list_findings(second["id"])
+        second_ids = [item["id"] for item in second_findings]
+        self.assertEqual(first_ids, set(REPORT_SELF_RULE_ORDER))
+        self.assertTrue(all(item.endswith(f"@{second['id']}") for item in second_ids))
+        self.assertEqual(len(set(second_ids)), len(REPORT_SELF_RULE_ORDER))
+        second_executions = store.get_rule_executions(second["id"])
+        self.assertTrue(all(execution["finding_ids"] == [f"{execution['rule_id']}@{second['id']}"] for execution in second_executions))
+        published_event = store.list_events(second["id"])[-2]
+        self.assertEqual(published_event["type"], "findings_published")
+        self.assertEqual(set(published_event["payload"]["finding_ids"]), set(second_ids))
+        store.close()
+
     def test_publish_gate_marks_run_failed_when_rule_execution_is_pending(self) -> None:
         store = RunStore()
         case = store.create_case("case")

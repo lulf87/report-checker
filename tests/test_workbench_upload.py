@@ -79,6 +79,7 @@ class UploadWorkbenchTests(unittest.TestCase):
             "X-CSRF-Token",
             "csrf_token",
             "machine_status",
+            "machine_overall_status",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.module_source)
