@@ -232,6 +232,29 @@ output/full-records-complete-20260930/summary.json
 
 六份运行的 Coverage 均守恒，但每份都仍含 `manual` 或 `mismatch`，因此“运行完整”不等于“样本自动通过”。
 
+## 脱敏上传工作台
+
+公开仓库可直接使用的上传页面位于：
+
+```text
+docs/prototypes/workbench-upload.html
+```
+
+启动状态 API 和静态 HTTP 服务后打开：
+
+```bash
+.venv/bin/python -m mvp.run_state_server --port 8767
+python3 -m http.server 8765
+```
+
+访问 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html`，选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。
+
+上传页面契约测试：
+
+```bash
+.venv/bin/python -m unittest tests.test_workbench_upload -v
+```
+
 ## 真实数据核对工作台
 
 本机工作区的真实数据页面位于：

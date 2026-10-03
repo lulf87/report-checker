@@ -333,6 +333,105 @@ class RealWorkbenchTests(unittest.TestCase):
         self.assertIn("singleDocument", self.module_source)
         self.assertIn('resultMode: "report_self"', self.module_source)
 
+    def test_upload_surface_exposes_report_and_record_pdf_inputs(self) -> None:
+        """The real workbench must accept user PDFs instead of only static runs.
+
+        This is deliberately a source contract: it does not open or parse a PDF.
+        The role markers allow the implementation to choose either stable ids or
+        data attributes while keeping Report/Record routing unambiguous.
+        """
+        file_inputs = re.findall(
+            r"<input\b(?=[^>]*\btype\s*=\s*[\"']file[\"'])[^>]*>",
+            self.html,
+            flags=re.IGNORECASE,
+        )
+        self.assertGreaterEqual(
+            len(file_inputs),
+            2,
+            "upload UI must expose separate Report and Record file inputs",
+        )
+        report_inputs = [
+            tag for tag in file_inputs if re.search(r"report|报告", tag, flags=re.IGNORECASE)
+        ]
+        record_inputs = [
+            tag for tag in file_inputs if re.search(r"record|记录", tag, flags=re.IGNORECASE)
+        ]
+        self.assertTrue(report_inputs, "one file input must identify the Report role")
+        self.assertTrue(record_inputs, "one file input must identify the Record role")
+        for tag in file_inputs:
+            with self.subTest(input=tag):
+                accept = re.search(r"\baccept\s*=\s*[\"']([^\"']+)", tag, flags=re.IGNORECASE)
+                self.assertIsNotNone(accept, "PDF upload input must declare an accept filter")
+                self.assertRegex(accept.group(1).lower(), r"application/pdf|\.pdf")
+
+    def test_upload_and_mode_selection_are_wired_to_run_api(self) -> None:
+        """Client-side upload flow must preserve selected mode and CSRF/API contract."""
+        source = self.module_source
+        self.assertRegex(source, r"\bFormData\b", "multipart upload should use FormData")
+        self.assertRegex(source, r"\.files\b", "file change handlers must read selected files")
+        self.assertRegex(
+            source,
+            r"addEventListener\(\s*[\"']change[\"'][\s\S]{0,1200}\.files\b",
+            "file inputs must have a change listener",
+        )
+        for required in (
+            "/api/v1/session",
+            "/documents",
+            ":preflight",
+            "/runs",
+            "X-CSRF-Token",
+            "csrf_token",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, source)
+        self.assertRegex(
+            source,
+            r"fetch\([\s\S]{0,1800}method\s*:\s*[\"']POST[\"']",
+            "upload/run writes must use explicit POST requests",
+        )
+
+    def test_upload_mode_contract_maps_roles_and_keeps_ptr_disabled(self) -> None:
+        source = self.module_source
+        # The enabled mode values are the same values accepted by capabilities
+        # and the Run state API.  Checking the source keeps this test independent
+        # of the availability of a live API server or sample PDFs.
+        for mode in ("report_self", "report_record_9706_1", "report_record_9706_202"):
+            with self.subTest(mode=mode):
+                self.assertIn(mode, source)
+        for role in ("report", "record_9706_1", "record_9706_202"):
+            with self.subTest(role=role):
+                self.assertIn(role, source)
+        self.assertIn("PTR_NOT_VALIDATED", source)
+        mode_select = re.search(
+            r"<select\b[^>]*data-role=[\"']mode-select[\"'][^>]*>(?P<body>.*?)</select>",
+            self.html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        self.assertIsNotNone(mode_select, "upload dialog must expose a mode selector")
+        options = {
+            value
+            for value in re.findall(
+                r"<option\b[^>]*\bvalue=[\"']([^\"']+)[\"']",
+                mode_select.group("body"),
+                flags=re.IGNORECASE,
+            )
+        }
+        self.assertTrue({"self", "record61", "record202", "ptr"} <= options)
+        self.assertRegex(
+            mode_select.group("body"),
+            r"<option\b[^>]*\bvalue=[\"']ptr[\"'][^>]*\bdisabled\b",
+            "PTR upload option must remain disabled",
+        )
+        self.assertIn("recordFile.required = needsRecord", source)
+        ptr_tab = re.search(
+            r"<button\b[^>]*data-mode=[\"']ptr[\"'][^>]*>",
+            self.html,
+            flags=re.IGNORECASE,
+        )
+        self.assertIsNotNone(ptr_tab, "PTR mode control must remain visible for its disabled reason")
+        self.assertRegex(ptr_tab.group(0), r"\bdisabled\b")
+        self.assertRegex(source, r"report_ptr|PTR_NOT_VALIDATED")
+
     def test_local_pdfjs_and_precise_highlight_pipeline(self) -> None:
         import_match = re.search(
             r"import\s+\*\s+as\s+pdfjsLib\s+from\s+[\"']([^\"']+)[\"']",

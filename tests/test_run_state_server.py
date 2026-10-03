@@ -123,6 +123,41 @@ class RunStateServerTests(unittest.TestCase):
             urlopen(request, timeout=5)
         self.assertEqual(error.exception.code, 403)
 
+    def test_workbench_cors_preflight_and_write_from_static_port(self) -> None:
+        origin = "http://127.0.0.1:8765"
+        request = Request(
+            self.base_url + "/api/v1/cases",
+            method="OPTIONS",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-csrf-token",
+            },
+        )
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 204)
+            self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
+            self.assertIn("POST", response.headers.get("Access-Control-Allow-Methods", ""))
+
+        request = Request(self.base_url + "/api/v1/session", headers={"Origin": origin})
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
+
+        request = Request(
+            self.base_url + "/api/v1/cases",
+            method="POST",
+            data='{"name":"跨源工作台"}'.encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": origin,
+                "X-CSRF-Token": self.csrf,
+            },
+        )
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 201)
+            self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
+
     def test_default_server_rejects_unresolved_inputs(self) -> None:
         server = create_server(port=0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

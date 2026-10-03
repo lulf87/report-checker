@@ -25,6 +25,11 @@ def _json_bytes(payload: Any) -> bytes:
 class CapabilityRequestHandler(BaseHTTPRequestHandler):
     server_version = "ReportCheckerCapability/1.0"
 
+    def _response_headers(self) -> dict[str, str]:
+        """Headers added by an adapter without changing the JSON contract."""
+
+        return {}
+
     def _send_json(self, status: HTTPStatus, payload: Any, *, allow: str | None = None) -> None:
         if status >= HTTPStatus.BAD_REQUEST and isinstance(payload, dict) and isinstance(payload.get("error"), dict):
             payload = copy.deepcopy(payload)
@@ -36,6 +41,8 @@ class CapabilityRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Request-ID", uuid4().hex)
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in self._response_headers().items():
+            self.send_header(name, value)
         if allow is not None:
             self.send_header("Allow", allow)
         self.end_headers()

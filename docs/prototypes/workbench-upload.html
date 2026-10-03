@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>报告核对工具 · 上传工作台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16303a;
+      --muted: #5b7077;
+      --line: #d4e0e3;
+      --soft: #f4f8f9;
+      --teal: #087985;
+      --teal-soft: #e8f5f6;
+      --error: #a52d2d;
+      --error-soft: #fff0f0;
+      --manual: #926617;
+      --manual-soft: #fff7e8;
+      --pass: #287447;
+      --pass-soft: #edf9f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background: #edf3f4;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .58; }
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 42px; }
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 20px;
+    }
+    h1 { margin: 0; font-size: clamp(22px, 3vw, 32px); letter-spacing: .01em; }
+    .subtitle { margin: 6px 0 0; color: var(--muted); }
+    .local-badge { flex: none; padding: 5px 10px; border-radius: 999px; color: var(--teal); background: var(--teal-soft); font-size: 12px; font-weight: 700; }
+    .card { border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 5px 20px rgb(28 62 71 / 6%); }
+    .setup-card { padding: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .field { display: grid; gap: 6px; }
+    .field[hidden] { display: none; }
+    .field.full { grid-column: 1 / -1; }
+    label { color: #35505a; font-size: 12px; font-weight: 750; }
+    input[type="text"], input[type="url"], input[type="file"], select {
+      width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid #bdcdd1; border-radius: 6px; color: var(--ink); background: #fff;
+    }
+    input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px solid rgb(8 121 133 / 24%); outline-offset: 2px; }
+    input[type="file"] { padding: 5px 8px; }
+    .hint { color: var(--muted); font-size: 12px; }
+    .mode-note { min-height: 20px; color: var(--muted); font-size: 12px; }
+    .actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    .primary, .secondary { min-height: 38px; padding: 7px 15px; border-radius: 6px; font-weight: 750; }
+    .primary { border: 1px solid var(--teal); color: #fff; background: var(--teal); }
+    .secondary { border: 1px solid var(--line); color: var(--ink); background: #fff; }
+    .message { min-height: 24px; margin-top: 14px; padding: 0 2px; color: var(--muted); }
+    .message.error { padding: 9px 11px; border-radius: 6px; color: var(--error); background: var(--error-soft); }
+    .message.success { padding: 9px 11px; border-radius: 6px; color: var(--pass); background: var(--pass-soft); }
+    .status-card { margin-top: 18px; padding: 20px; }
+    .status-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .status-head h2 { margin: 0; font-size: 18px; }
+    .status-label { display: inline-flex; padding: 4px 9px; border-radius: 999px; color: var(--manual); background: var(--manual-soft); font-size: 12px; font-weight: 750; }
+    .status-label.pass { color: var(--pass); background: var(--pass-soft); }
+    .status-label.error { color: var(--error); background: var(--error-soft); }
+    .status-label.manual { color: var(--manual); background: var(--manual-soft); }
+    .status-label.running { color: var(--teal); background: var(--teal-soft); }
+    .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+    .meta-item { padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+    .meta-key { display: block; color: var(--muted); font-size: 11px; }
+    .meta-value { display: block; margin-top: 2px; overflow-wrap: anywhere; font-weight: 700; }
+    .findings-card { margin-top: 18px; padding: 20px; }
+    .findings-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .findings-toolbar h2 { margin: 0; font-size: 18px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 6px; }
+    .filter { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #fff; font-size: 12px; }
+    .filter[aria-pressed="true"] { border-color: var(--teal); color: var(--teal); background: var(--teal-soft); }
+    .findings { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .finding { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
+    .finding-id { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .finding-title { margin-top: 2px; font-weight: 700; }
+    .finding-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .finding-status { padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 750; white-space: nowrap; }
+    .finding-status.pass { color: var(--pass); background: var(--pass-soft); }
+    .finding-status.manual { color: var(--manual); background: var(--manual-soft); }
+    .finding-status.error { color: var(--error); background: var(--error-soft); }
+    .finding-status.warning { color: #735596; background: #f4edfc; }
+    .empty { padding: 18px 8px; color: var(--muted); text-align: center; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 20px, 1180px); padding-top: 18px; }
+      .header, .status-head, .findings-toolbar { display: grid; }
+      .grid, .meta { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .actions { justify-content: stretch; }
+      .actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div>
+        <h1>报告核对工具</h1>
+        <p class="subtitle">上传 Report 与 Record，选择检测模式并查看运行状态和 Finding。</p>
+      </div>
+      <span class="local-badge">仅连接本机服务</span>
+    </header>
+
+    <section class="card setup-card" aria-labelledby="setup-title">
+      <h2 id="setup-title" class="sr-only">上传并启动检测</h2>
+      <form id="upload-form" data-role="upload-form">
+        <div class="grid">
+          <div class="field">
+            <label for="api-base">状态 API 地址</label>
+            <input id="api-base" type="url" value="" inputmode="url" autocomplete="off" placeholder="自动使用 http://127.0.0.1:8767">
+            <span class="hint">页面由其他端口提供时，API 仍保持本机 8767 端口。</span>
+          </div>
+          <div class="field">
+            <label for="case-name">任务名称（可选）</label>
+            <input id="case-name" type="text" maxlength="120" placeholder="例如：2026-10-03 报告核对">
+          </div>
+          <div class="field full">
+            <label for="mode-select">检测模式</label>
+            <select id="mode-select" data-role="mode-select">
+              <option value="self">Report 自检</option>
+              <option value="record61">Report + GB 9706.1 Record</option>
+              <option value="record202">Report + GB 9706.202 Record</option>
+              <option value="ptr" disabled>Report + PTR（暂未启用）</option>
+            </select>
+            <span class="mode-note" id="mode-note">Report 自检只需要上传 Report。</span>
+          </div>
+          <div class="field">
+            <label for="report-file">Report PDF</label>
+            <input id="report-file" data-role="report-file" type="file" accept="application/pdf,.pdf" required>
+            <span class="hint">必选。文件在本机状态服务完成 PDF 预检后才会创建 Document。</span>
+          </div>
+          <div class="field" id="record-field" hidden>
+            <label for="record-file">Record PDF</label>
+            <input id="record-file" data-role="record-file" type="file" accept="application/pdf,.pdf">
+            <span class="hint">9706.1 与 9706.202 模式必选，角色按所选模式提交。</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="secondary" id="reset-form" type="button">清空选择</button>
+          <button class="primary" id="submit-upload" data-role="run-submit" type="submit">上传并开始核对</button>
+        </div>
+      </form>
+      <div class="message" id="form-message" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="card status-card" aria-labelledby="status-title">
+      <div class="status-head">
+        <div>
+          <h2 id="status-title">当前运行</h2>
+          <p id="status-message" class="subtitle">尚未启动任务。</p>
+        </div>
+        <span class="status-label" id="run-status">未开始</span>
+      </div>
+      <div class="meta" aria-label="运行信息">
+        <div class="meta-item"><span class="meta-key">模式</span><span class="meta-value" id="run-mode">—</span></div>
+        <div class="meta-item"><span class="meta-key">Run ID</span><span class="meta-value" id="run-id">—</span></div>
+        <div class="meta-item"><span class="meta-key">Finding 数量</span><span class="meta-value" id="run-count">—</span></div>
+      </div>
+    </section>
+
+    <section class="card findings-card" aria-labelledby="findings-title">
+      <div class="findings-toolbar">
+        <h2 id="findings-title">Findings</h2>
+        <div class="filters" id="finding-filters" aria-label="Finding 状态筛选">
+          <button class="filter" type="button" data-status="all" aria-pressed="true">全部 <span>0</span></button>
+          <button class="filter" type="button" data-status="error" aria-pressed="false">问题 <span>0</span></button>
+          <button class="filter" type="button" data-status="manual" aria-pressed="false">待复核 <span>0</span></button>
+          <button class="filter" type="button" data-status="warning" aria-pressed="false">警示 <span>0</span></button>
+          <button class="filter" type="button" data-status="pass" aria-pressed="false">一致 <span>0</span></button>
+        </div>
+      </div>
+      <ol class="findings" id="findings" aria-live="polite"><li class="empty">运行成功后显示 Finding。</li></ol>
+    </section>
+  </main>
+
+  <script type="module">
+    const MODE_META = Object.freeze({
+      self: { apiMode: "report_self", label: "Report 自检", recordRole: null, note: "Report 自检只需要上传 Report。" },
+      ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", disabled: true, note: "PTR 检查尚未启用（PTR_NOT_VALIDATED）。" },
+      record61: { apiMode: "report_record_9706_1", label: "Report + GB 9706.1 Record", recordRole: "record_9706_1", note: "需要同时上传 Report 与 9706.1 Record。" },
+      record202: { apiMode: "report_record_9706_202", label: "Report + GB 9706.202 Record", recordRole: "record_9706_202", note: "需要同时上传 Report 与 9706.202 Record。" }
+    });
+    const STATUS_LABELS = Object.freeze({ pass: "一致", warning: "警示", manual: "待复核", error: "问题" });
+
+    const form = document.getElementById("upload-form");
+    const apiBaseInput = document.getElementById("api-base");
+    const caseNameInput = document.getElementById("case-name");
+    const modeSelect = document.getElementById("mode-select");
+    const reportFile = document.getElementById("report-file");
+    const recordField = document.getElementById("record-field");
+    const recordFile = document.getElementById("record-file");
+    const modeNote = document.getElementById("mode-note");
+    const submitButton = document.getElementById("submit-upload");
+    const formMessage = document.getElementById("form-message");
+    const resetButton = document.getElementById("reset-form");
+    const runStatus = document.getElementById("run-status");
+    const statusMessage = document.getElementById("status-message");
+    const runMode = document.getElementById("run-mode");
+    const runId = document.getElementById("run-id");
+    const runCount = document.getElementById("run-count");
+    const findings = document.getElementById("findings");
+    const filters = document.getElementById("finding-filters");
+
+    let csrfToken = null;
+    let activeFindings = [];
+    let activeFilter = "all";
+    let pollToken = 0;
+
+    function configuredApiBase() {
+      const explicit = apiBaseInput.value.trim() || window.localStorage.getItem("report-checker-upload-api") || "";
+      if (explicit) return explicit.replace(/\/$/, "");
+      const host = window.location.hostname || "127.0.0.1";
+      return `http://${host}:8767`;
+    }
+
+    function apiUrl(path) {
+      return `${configuredApiBase()}${path}`;
+    }
+
+    function setMessage(message, kind = "") {
+      formMessage.textContent = message;
+      formMessage.className = `message${kind ? ` ${kind}` : ""}`;
+    }
+
+    function setRunStatus(label, kind = "") {
+      runStatus.textContent = label;
+      runStatus.className = `status-label${kind ? ` ${kind}` : ""}`;
+    }
+
+    function updateModeFields() {
+      const mode = MODE_META[modeSelect.value] || MODE_META.self;
+      const needsRecord = Boolean(mode.recordRole);
+      recordField.hidden = !needsRecord;
+      recordFile.required = needsRecord;
+      modeNote.textContent = mode.note;
+      if (!needsRecord) recordFile.value = "";
+      if (mode.disabled) {
+        modeSelect.value = "self";
+        setMessage("PTR 检查尚未启用（PTR_NOT_VALIDATED）。请选择已启用模式。", "error");
+      }
+    }
+
+    function validatePdf(file, label) {
+      if (!file) throw new Error(`请选择 ${label} PDF。`);
+      const filename = String(file.name || "").toLowerCase();
+      const type = String(file.type || "").toLowerCase();
+      if (type && type !== "application/pdf" && !filename.endsWith(".pdf")) {
+        throw new Error(`${label} 必须是 PDF 文件。`);
+      }
+      if (!filename.endsWith(".pdf") && type !== "application/pdf") {
+        throw new Error(`${label} 文件名必须以 .pdf 结尾。`);
+      }
+      return file;
+    }
+
+    async function apiJson(path, options = {}) {
+      const method = String(options.method || "GET").toUpperCase();
+      const headers = new Headers(options.headers || {});
+      if (method !== "GET" && method !== "HEAD") {
+        if (!csrfToken) {
+          const sessionResponse = await fetch(apiUrl("/api/v1/session"), { cache: "no-store" });
+          const session = await sessionResponse.json();
+          if (!sessionResponse.ok || !session.csrf_token) throw new Error("状态 API 会话初始化失败。 ");
+          csrfToken = session.csrf_token;
+        }
+        headers.set("X-CSRF-Token", csrfToken);
+      }
+      const response = await fetch(apiUrl(path), { ...options, headers, cache: "no-store" });
+      let payload = null;
+      try { payload = await response.json(); } catch (_) { payload = null; }
+      if (!response.ok) {
+        const error = payload?.error;
+        throw new Error(error?.message || `状态 API 请求失败（HTTP ${response.status}）。`);
+      }
+      return payload;
+    }
+
+    async function uploadDocument(caseId, role, file) {
+      const body = new FormData();
+      body.append("role", role);
+      body.append("file", file, file.name);
+      return apiJson(`/api/v1/cases/${encodeURIComponent(caseId)}/documents`, { method: "POST", body });
+    }
+
+    function countStatuses(items) {
+      const result = { pass: 0, warning: 0, manual: 0, error: 0 };
+      items.forEach(item => { if (item.status in result) result[item.status] += 1; });
+      return result;
+    }
+
+    function renderFilters() {
+      const counts = countStatuses(activeFindings);
+      filters.querySelectorAll("[data-status]").forEach(button => {
+        const status = button.dataset.status;
+        button.setAttribute("aria-pressed", String(status === activeFilter));
+        const count = button.querySelector("span");
+        if (count) count.textContent = String(status === "all" ? activeFindings.length : counts[status]);
+      });
+    }
+
+    function renderFindings() {
+      const visible = activeFilter === "all" ? activeFindings : activeFindings.filter(item => item.status === activeFilter);
+      findings.replaceChildren();
+      if (!visible.length) {
+        const empty = document.createElement("li");
+        empty.className = "empty";
+        empty.textContent = activeFindings.length ? "当前筛选下没有 Finding。" : "运行成功后显示 Finding。";
+        findings.append(empty);
+        renderFilters();
+        return;
+      }
+      visible.forEach(item => {
+        const row = document.createElement("li");
+        row.className = "finding";
+        const status = String(item.status || "manual");
+        const badge = document.createElement("span");
+        badge.className = `finding-status ${status}`;
+        badge.textContent = STATUS_LABELS[status] || status;
+        const copy = document.createElement("div");
+        const id = document.createElement("div");
+        id.className = "finding-id";
+        id.textContent = item.id || item.rule_id || "未命名 Finding";
+        const title = document.createElement("div");
+        title.className = "finding-title";
+        title.textContent = item.title || item.rule_id || "核对结果";
+        const detail = document.createElement("div");
+        detail.className = "finding-detail";
+        detail.textContent = item.summary || item.details?.comparison?.reason_code || "—";
+        copy.append(id, title, detail);
+        const evidence = document.createElement("span");
+        evidence.className = "finding-id";
+        evidence.textContent = `${Array.isArray(item.evidence) ? item.evidence.length : 0} 个证据`;
+        row.append(badge, copy, evidence);
+        findings.append(row);
+      });
+      renderFilters();
+    }
+
+    function showRun(run, mode) {
+      runMode.textContent = MODE_META[mode]?.label || run.mode || "—";
+      runId.textContent = run.id || "—";
+      runCount.textContent = activeFindings.length ? String(activeFindings.length) : "—";
+    }
+
+    async function loadFindings(run, mode) {
+      const payload = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}/findings`);
+      activeFindings = (Array.isArray(payload?.items) ? payload.items : []).map(item => ({
+        ...item,
+        // The API calls this field machine_status; keeping a local status key
+        // makes the filter and renderer independent of the transport DTO name.
+        status: item.status || item.machine_status || "manual"
+      }));
+      showRun(run, mode);
+      runCount.textContent = String(activeFindings.length);
+      renderFindings();
+    }
+
+    async function pollRun(run, mode, token) {
+      for (let attempt = 0; attempt < 720; attempt += 1) {
+        if (token !== pollToken) return;
+        const current = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}`);
+        showRun(current, mode);
+        const lifecycle = String(current.lifecycle_status || "");
+        if (lifecycle === "succeeded") {
+          setRunStatus("已完成", "pass");
+          statusMessage.textContent = "运行完成，以下为服务端发布的 Finding。";
+          await loadFindings(current, mode);
+          return;
+        }
+        if (["failed", "cancelled", "interrupted"].includes(lifecycle)) {
+          setRunStatus("运行失败", "error");
+          statusMessage.textContent = current.failure?.message || current.reason_message || `Run 进入 ${lifecycle} 状态。`;
+          return;
+        }
+        setRunStatus(lifecycle === "running" ? "执行中" : "排队中", "running");
+        statusMessage.textContent = current.phase_message || "正在等待状态 API 更新。";
+        await new Promise(resolve => setTimeout(resolve, 1200));
+      }
+      throw new Error("等待运行结果超过 12 分钟，请通过状态 API 查看 Run。 ");
+    }
+
+    async function submitUpload(event) {
+      event.preventDefault();
+      const mode = MODE_META[modeSelect.value] || MODE_META.self;
+      if (mode.disabled) return;
+      let report;
+      let record = null;
+      try {
+        report = validatePdf(reportFile.files?.[0], "Report");
+        if (mode.recordRole) record = validatePdf(recordFile.files?.[0], "Record");
+      } catch (error) {
+        setMessage(error.message, "error");
+        return;
+      }
+      submitButton.disabled = true;
+      pollToken += 1;
+      activeFindings = [];
+      renderFindings();
+      setMessage("正在创建任务…");
+      try {
+        const caseName = caseNameInput.value.trim() || `${report.name} 核对任务`;
+        const caseData = await apiJson("/api/v1/cases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: caseName.slice(0, 120), description: "由公开工作台创建" })
+        });
+        setMessage("正在上传 Report…");
+        const reportDoc = await uploadDocument(caseData.id, "report", report);
+        const inputs = { report_document_id: reportDoc.id };
+        if (record) {
+          setMessage("正在上传 Record…");
+          const recordDoc = await uploadDocument(caseData.id, mode.recordRole, record);
+          inputs.record_document_id = recordDoc.id;
+        }
+        setMessage("正在预检规则计划…");
+        const preflight = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs:preflight`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: mode.apiMode, inputs })
+        });
+        if (!preflight.can_create_run) throw new Error(preflight.blocking_issues?.join("、") || "当前模式不可创建 Run。");
+        setMessage("正在排队执行…");
+        const run = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: mode.apiMode, inputs, preflight_plan_hash: preflight.plan_hash })
+        });
+        showRun(run, modeSelect.value);
+        setRunStatus("排队中", "running");
+        statusMessage.textContent = "文件已上传，等待 Worker 执行。";
+        setMessage("Run 已创建。", "success");
+        await pollRun(run, modeSelect.value, pollToken);
+      } catch (error) {
+        setMessage(`启动失败：${error?.message || error}`, "error");
+        setRunStatus("启动失败", "error");
+        statusMessage.textContent = "请检查本机状态 API 和上传文件。";
+      } finally {
+        submitButton.disabled = false;
+      }
+    }
+
+    modeSelect.addEventListener("change", updateModeFields);
+    form.addEventListener("submit", submitUpload);
+    resetButton.addEventListener("click", () => {
+      pollToken += 1;
+      form.reset();
+      apiBaseInput.value = "";
+      updateModeFields();
+      setMessage("");
+    });
+    filters.addEventListener("click", event => {
+      const button = event.target.closest("[data-status]");
+      if (!button) return;
+      activeFilter = button.dataset.status;
+      renderFindings();
+    });
+    apiBaseInput.addEventListener("change", () => {
+      const value = apiBaseInput.value.trim();
+      if (value) window.localStorage.setItem("report-checker-upload-api", value.replace(/\/$/, ""));
+      else window.localStorage.removeItem("report-checker-upload-api");
+    });
+    const savedApiBase = window.localStorage.getItem("report-checker-upload-api");
+    if (savedApiBase) apiBaseInput.value = savedApiBase;
+    updateModeFields();
+    renderFilters();
+  </script>
+</body>
+</html>

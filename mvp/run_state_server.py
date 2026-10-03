@@ -128,6 +128,45 @@ class RunStateHTTPServer(ThreadingHTTPServer):
 class RunStateRequestHandler(CapabilityRequestHandler):
     server: RunStateHTTPServer
 
+    def _allowed_origin(self, origin: str | None) -> str | None:
+        """Return a trusted loopback UI origin for CORS, if present.
+
+        The workbench is served by the static server on port 8765 while this
+        state API normally listens on 8767. Both are local-only services, so
+        the browser needs an explicit CORS allowance for the workbench origin
+        while arbitrary cross-site origins remain rejected.
+        """
+
+        if not origin:
+            return None
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            return None
+        if parsed.scheme != "http" or parsed.path or parsed.query or parsed.fragment or parsed.username:
+            return None
+        if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if port not in {self.server.server_port, 8765}:
+            return None
+        return origin
+
+    def _response_headers(self) -> dict[str, str]:
+        origin = self._allowed_origin(self.headers.get("Origin"))
+        if origin is None:
+            return {}
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Headers": "Content-Type, X-CSRF-Token, X-Actor-Id",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Expose-Headers": "Content-Disposition, Content-Range, Accept-Ranges, X-Request-ID",
+            "Vary": "Origin",
+        }
+
     def _write_error(self, error: RunStoreError) -> None:
         self._send_json(error.status, {"error": error.as_dict()})
 
@@ -206,6 +245,8 @@ class RunStateRequestHandler(CapabilityRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Accept-Ranges", "bytes")
+        for name, value in self._response_headers().items():
+            self.send_header(name, value)
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
         if filename:
@@ -223,14 +264,8 @@ class RunStateRequestHandler(CapabilityRequestHandler):
         if host and host not in {"localhost", "127.0.0.1", "::1"}:
             raise RunStoreError("INVALID_LOCAL_HOST", "状态服务只接受本机 Host", status=403)
         origin = self.headers.get("Origin")
-        if origin:
-            allowed_origins = {
-                f"http://127.0.0.1:{self.server.server_port}",
-                f"http://localhost:{self.server.server_port}",
-                f"http://[::1]:{self.server.server_port}",
-            }
-            if origin not in allowed_origins:
-                raise RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "请求来源不是受信任的本机 Origin", status=403)
+        if origin and self._allowed_origin(origin) is None:
+            raise RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "请求来源不是受信任的本机 Origin", status=403)
         fetch_site = self.headers.get("Sec-Fetch-Site")
         if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
             raise RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "拒绝跨站写请求", status=403)
@@ -367,6 +402,23 @@ class RunStateRequestHandler(CapabilityRequestHandler):
         }
         result["plan_hash"] = preflight_plan_hash(mode, normalized, input_snapshot)
         return result
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - browser CORS preflight hook
+        """Accept preflight requests from the local workbench only."""
+
+        origin = self.headers.get("Origin")
+        if origin and self._allowed_origin(origin) is None:
+            self._write_error(
+                RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "请求来源不是受信任的本机 Origin", status=403)
+            )
+            return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in self._response_headers().items():
+            self.send_header(name, value)
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
         try:
