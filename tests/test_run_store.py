@@ -186,7 +186,11 @@ class RunStoreTests(unittest.TestCase):
                             "id": rule_id,
                             "rule_id": rule_id,
                             "status": "error" if rule_id == "REPORT-R07" else "pass",
-                            "evidence_locations": [],
+                            "evidence_locations": (
+                                [{"role": "report", "pdf_page": 1, "bbox": [0, 0, 10, 10]}]
+                                if rule_id == "REPORT-R01"
+                                else []
+                            ),
                         }
                         for rule_id in REPORT_SELF_RULE_ORDER
                     ],
@@ -210,6 +214,13 @@ class RunStoreTests(unittest.TestCase):
         self.assertEqual(len(set(second_ids)), len(REPORT_SELF_RULE_ORDER))
         second_executions = store.get_rule_executions(second["id"])
         self.assertTrue(all(execution["finding_ids"] == [f"{execution['rule_id']}@{second['id']}"] for execution in second_executions))
+        second_r01_id = f"REPORT-R01@{second['id']}"
+        with store._lock:
+            evidence_row = store._connection.execute(
+                "SELECT finding_id FROM evidence WHERE run_id = ?", (second["id"],)
+            ).fetchone()
+        self.assertIsNotNone(evidence_row)
+        self.assertEqual(evidence_row["finding_id"], second_r01_id)
         published_event = store.list_events(second["id"])[-2]
         self.assertEqual(published_event["type"], "findings_published")
         self.assertEqual(set(published_event["payload"]["finding_ids"]), set(second_ids))
