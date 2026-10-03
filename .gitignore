@@ -1,0 +1,24 @@
+# Local environments and caches
+.venv/
+__pycache__/
+.pytest_cache/
+.playwright-cli/
+.playwright-mcp/
+.gstack/
+tmp/
+.DS_Store
+
+# Private source documents and generated artifacts
+素材/
+output/
+mvp/reviews/
+*.pdf
+*.sqlite3
+*.db
+*.png
+*.jpg
+*.jpeg
+
+# Prototypes tied to private sample documents
+/docs/prototypes/workbench-preview.html
+/docs/prototypes/workbench-real.html

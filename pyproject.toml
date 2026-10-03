@@ -1,0 +1,13 @@
+[project]
+name = "report-checker-mvp"
+version = "0.1.0"
+description = "Local deterministic PDF report-checker MVP"
+requires-python = ">=3.12"
+dependencies = [
+  "PyMuPDF>=1.26,<2",
+  "Pillow>=12,<13",
+  "ocrmac>=1,<2; sys_platform == 'darwin'",
+]
+
+[tool.uv]
+package = false
