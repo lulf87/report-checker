@@ -42,7 +42,13 @@ REPORT_SCOPE_RULES: dict[str, tuple[str, ...]] = {
 
 
 def _disposition(status: str) -> str:
-    return {"pass": "matched", "warning": "warning", "error": "mismatch", "manual": "manual"}.get(status, "manual")
+    return {
+        "pass": "matched",
+        "warning": "warning",
+        "error": "mismatch",
+        "manual": "manual",
+        "not_applicable": "not_applicable",
+    }.get(status, "manual")
 
 
 def _json_safe(value: Any) -> Any:
@@ -219,7 +225,10 @@ def _scope_coverage(ledger: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "eligible": len(scoped),
                 "accounted": len(scoped),
                 "conserved": len(scoped) == len([item for item in ledger if scope_id in item.get("scope_ids", [])]),
-                "status_counts": {status: sum(item.get("status") == status for item in scoped) for status in ("pass", "warning", "manual", "error")},
+                "status_counts": {
+                    status: sum(item.get("status") == status for item in scoped)
+                    for status in ("pass", "warning", "manual", "error", "not_applicable", "excluded")
+                },
                 "entry_ids": [item["entry_id"] for item in scoped],
             }
         )

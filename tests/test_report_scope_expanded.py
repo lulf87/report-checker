@@ -62,7 +62,17 @@ class ExpandedReportScopeTests(unittest.TestCase):
         self.assertEqual(len(scope["entries"]), 13)
         self.assertTrue(all(item["eligible"] == item["accounted"] for item in scope["entries"]))
         self.assertGreaterEqual(len(self.result["ledger"]), 12)
-        self.assertTrue(all(item["disposition"] in {"matched", "mismatch", "manual", "warning"} for item in self.result["ledger"]))
+        self.assertTrue(
+            all(
+                item["disposition"]
+                in {"matched", "mismatch", "manual", "warning", "not_applicable"}
+                for item in self.result["ledger"]
+            )
+        )
+        self.assertGreater(
+            sum(item["disposition"] == "not_applicable" for item in self.result["ledger"]),
+            0,
+        )
         self.assertTrue(all(item["report_location"] and item["report_location"]["pdf_page"] > 0 for item in self.result["ledger"]))
         photo_entries = [item for item in self.result["ledger"] if item["rule_id"] in {"REPORT-R02", "REPORT-R05", "REPORT-R06"}]
         self.assertTrue(photo_entries)

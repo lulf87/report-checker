@@ -42,7 +42,7 @@ class Full2795AttemptIntegrationTests(unittest.TestCase):
         self.assertEqual(self.report_result["coverage"]["completed"], 12)
         self.assertEqual(
             self.report_result["status_counts"],
-            {"pass": 5, "warning": 0, "manual": 2, "error": 5},
+            {"pass": 7, "warning": 0, "manual": 4, "error": 1},
         )
         self.assertEqual(self.report_result["machine_overall_status"], "error")
 
@@ -52,11 +52,11 @@ class Full2795AttemptIntegrationTests(unittest.TestCase):
             {rule_id: findings[rule_id]["status"] for rule_id in REPORT_RULE_ORDER},
             {
                 "REPORT-R01": "pass",
-                "REPORT-R02": "error",
+                "REPORT-R02": "manual",
                 "REPORT-R03": "manual",
-                "REPORT-R04": "error",
-                "REPORT-R05": "error",
-                "REPORT-R06": "error",
+                "REPORT-R04": "manual",
+                "REPORT-R05": "pass",
+                "REPORT-R06": "pass",
                 "REPORT-R07": "error",
                 "REPORT-R07-B": "manual",
                 "REPORT-R08": "pass",

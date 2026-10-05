@@ -44,8 +44,8 @@
 | S10 | 第三页扩展字段：产品编号、批号、生产日期、委托方地址等 | confirmed | `REPORT-R02` / validated |
 | S11 | 生产日期存在、格式正确、各位置一致 | confirmed | `REPORT-R03` / validated |
 | S12 | 样品描述表与中文标签的对象、型号、序列号/批号、生产日期、失效日期 | confirmed | `REPORT-R04` / validated |
-| S13 | 每个样品对象均有对应实物照片 | confirmed | `REPORT-R05` / validated |
-| S14 | 每个样品对象均有对应中文标签照片 | confirmed | `REPORT-R06` / validated |
+| S13 | 每个适用的实物样品对象均有对应实物照片 | confirmed | `REPORT-R05` / validated |
+| S14 | 每个适用的实物样品对象均有对应中文标签照片 | confirmed | `REPORT-R06` / validated |
 | S15 | 项目、标准条款、标准要求、检验结果、单项结论无漏填 | confirmed | `REPORT-R08` / validated |
 | S16 | 多行检验结果聚合后与单项结论一致 | confirmed | `REPORT-R07` / validated |
 | S17 | 检验结果数值符合同行接受标准 | confirmed | `REPORT-R07-B` / validated |
@@ -103,6 +103,8 @@
 | `report_record_9706_202` | enabled | S36–S47，以及 S01–S08 |
 
 当前规则目录中的规则 ID 必须在实现或范围文档中保持可追溯。新增范围项应先补充规则 ID、输入证据、结果处置和测试，再进入 enabled 规则计划。现有规则 ID 与本矩阵的对应关系见上表。当前目录中 `REPORT-R09-R10` 是早期兼容别名，不在现行 Report 自检 12 条规则计划中。9706.1 的模板外数值目标由 `RECORD61-NUMERIC-DISCOVERY` 显式记录；日期、仪器、人员、签字和备注由 `RECORD61-METADATA` 记录。9706.202 的项目字段由 `RECORD202-SCOPE` 记录，固定身份和元数据由 `RECORD202-IDENTITY`、`RECORD202-METADATA` 记录；当前模板不提供 Record 固定字段时用 `not_applicable` 保留依据。9706.202 的项目名称严格比较在 `RECORD202-SCOPE` 与正文 `RECORD202-BODY-STATUS` 中执行；规则结果仍可能因 OCR、符号或映射证据不足而为 `manual`。
+
+Report 照片规则的适用对象按样品描述表逐行判定。备注明确写明“本次检测未使用”或“本次检验未使用”的条目，以及名称明确表示软件、模块、升级包、证书或功能的非实物条目，仍进入 Coverage Ledger，但照片存在性和照片内容规则记录为 `not_applicable`，并保留具体原因。其余实物条目继续按实物照片、中文标签照片和照片内容逐项核对；照片证据或 OCR 不足时记录为 `manual`。
 
 ## 验收口径
 

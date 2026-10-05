@@ -33,6 +33,25 @@ DATE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("YYYY年MM月DD日", r"\d{4}年\d{2}月\d{2}日"),
 )
 STATUS_RANK = {"pass": 0, "manual": 1, "error": 2}
+PHOTO_ITEM_STATUSES = ("pass", "manual", "error", "not_applicable")
+
+
+def photo_scope(row: Mapping[str, Any]) -> tuple[bool, str | None]:
+    """Return whether a sample-description row requires physical-photo checks.
+
+    A Report can list software features, certificates, upgrade packages, and
+    optional items that the report explicitly says were not used. Those rows
+    remain in the coverage details, but requiring a physical object or label
+    photo for them creates a false mismatch.
+    """
+
+    name = compact_layout((row.get("fields") or {}).get("部件名称"))
+    notes = compact_layout((row.get("fields") or {}).get("备注"))
+    if "本次检测未使用" in notes or "本次检验未使用" in notes:
+        return False, "sample_marked_not_used"
+    if any(token in name for token in ("软件", "模块", "升级包", "证书", "功能")):
+        return False, "non_physical_sample_entry"
+    return True, None
 
 
 def compact_layout(value: Any) -> str:
@@ -57,9 +76,9 @@ def rect_list(rect: fitz.Rect | Sequence[float] | None) -> list[float] | None:
 
 
 def _status_from(values: Iterable[str]) -> str:
-    statuses = list(values)
+    statuses = [value for value in values if value != "not_applicable"]
     if not statuses:
-        return "manual"
+        return "pass"
     return max(statuses, key=lambda value: STATUS_RANK.get(value, STATUS_RANK["manual"]))
 
 
@@ -592,6 +611,20 @@ def _r02_objects(
 ) -> list[dict[str, Any]]:
     objects: list[dict[str, Any]] = []
     for row in rows:
+        applicable, not_applicable_reason = photo_scope(row)
+        if not applicable:
+            objects.append(
+                {
+                    "sequence": row["sequence"],
+                    "name": row["fields"]["部件名称"],
+                    "status": "not_applicable",
+                    "reason_code": not_applicable_reason,
+                    "field_comparisons": [],
+                    "report_location": row["locations"]["部件名称"],
+                    "photo_locations": [],
+                }
+            )
+            continue
         entries = list(label_associations.get(row["sequence"], []))
         if not entries:
             objects.append(
@@ -676,8 +709,21 @@ def _r03_dates(
     if any(compact_layout(row["fields"].get("失效日期")) for row in rows):
         date_fields.append("失效日期")
     for row in rows:
+        applicable, not_applicable_reason = photo_scope(row)
         entries = list(label_associations.get(row["sequence"], []))
         for field in date_fields:
+            if not applicable:
+                comparison = {
+                    "status": "not_applicable",
+                    "report_value": row["fields"].get(field, ""),
+                    "label_value": None,
+                    "report_format": date_format(row["fields"].get(field, "")),
+                    "label_format": None,
+                    "reason_code": not_applicable_reason,
+                }
+                comparisons.append(_with_locations(comparison, row, field, None))
+                comparisons[-1].update(sequence=row["sequence"], name=row["fields"]["部件名称"], field=field)
+                continue
             if not entries:
                 comparison = compare_date_text(row["fields"].get(field, ""), None)
                 comparison["reason_code"] = "chinese_label_photo_missing"
@@ -726,6 +772,7 @@ def _r04_cells(
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for row in rows:
+        applicable, not_applicable_reason = photo_scope(row)
         entries = list(all_associations.get(row["sequence"], []))
         for field in CHECKED_SAMPLE_COLUMNS:
             expected = row["fields"][field]
@@ -739,6 +786,10 @@ def _r04_cells(
                 "report_location": row["locations"][field],
                 "photo_locations": [photo_location(entry) for entry in entries],
             }
+            if not applicable:
+                base.update(status="not_applicable", observed_values=[], reason_code=not_applicable_reason)
+                checks.append(base)
+                continue
             if not expected and field in {"生产日期", "失效日期"}:
                 base.update(status="manual", observed_values=[], reason_code="report_date_not_stated")
                 checks.append(base)
@@ -790,13 +841,14 @@ def _presence_checks(
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for row in rows:
+        applicable, not_applicable_reason = photo_scope(row)
         entries = list(associations.get(row["sequence"], []))
         checks.append(
             {
                 "sequence": row["sequence"],
                 "name": row["fields"]["部件名称"],
-                "status": "pass" if entries else "error",
-                "reason_code": "associated_photo_found" if entries else missing_reason,
+                "status": "pass" if applicable and entries else "error" if applicable else "not_applicable",
+                "reason_code": "associated_photo_found" if applicable and entries else missing_reason if applicable else not_applicable_reason,
                 "report_location": row["locations"]["部件名称"],
                 "photo_locations": [photo_location(entry) for entry in entries],
                 "photo_numbers": [entry["number"] for entry in entries],
@@ -835,7 +887,7 @@ def _issue_evidence(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         )
 
     for item in items:
-        if item.get("status") == "pass":
+        if item.get("status") in {"pass", "not_applicable"}:
             continue
         add(item.get("report_location"), item)
         add(item.get("photo_location"), item)
@@ -850,7 +902,7 @@ def _issue_evidence(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _count_status(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
-    return {status: sum(item.get("status") == status for item in items) for status in STATUS_RANK}
+    return {status: sum(item.get("status") == status for item in items) for status in PHOTO_ITEM_STATUSES}
 
 
 def _finding(
@@ -933,10 +985,10 @@ def analyze_report_photo_rules(
             "R02",
             "首页/样品描述字段与中文标签",
             r02_objects,
-            "{pass}个对象字段一致，{manual}个待人工复核，{error}个缺少可核对中文标签",
+            "{pass}个对象字段一致，{manual}个待人工复核，{error}个缺少可核对中文标签，{not_applicable}个不适用",
             details_key="objects",
             additional_details={
-                "rule": "仅忽略排版空白；OCR单源差异不直接判错；法律角色不自动合并",
+                "rule": "仅忽略排版空白；OCR单源差异不直接判错；法律角色不自动合并；未使用或非实物条目保留为不适用",
                 "identity_fields": identity,
             },
         ),
@@ -955,30 +1007,30 @@ def analyze_report_photo_rules(
             "R04",
             "样品描述内容在照片页的覆盖",
             r04_cells,
-            "{pass}个非序号单元格找到可靠证据，{manual}个待人工复核，{error}个未找到关联照片证据",
+            "{pass}个非序号单元格找到可靠证据，{manual}个待人工复核，{error}个未找到关联照片证据，{not_applicable}个不适用",
             details_key="cell_checks",
             additional_details={
-                "rule": "样品描述中除序号外的每个非空单元格均纳入；不因备注“本次检测未使用”而排除",
+                "rule": "样品描述中除序号外的每个非空单元格均纳入；明确未使用或非实物条目记录为不适用，实物条目按照片证据核对",
             },
         ),
         _finding(
             "R05",
             "每个对象的实物照片",
             r05_objects,
-            "{pass}个对象有可关联实物照片，{error}个对象缺少实物照片，{manual}个待人工复核",
+            "{pass}个对象有可关联实物照片，{error}个对象缺少实物照片，{manual}个待人工复核，{not_applicable}个不适用",
             details_key="objects",
             additional_details={
-                "rule": "标签、铭牌或包装特写不单独计为实物照片；组合照片可覆盖多个明确对象",
+                "rule": "仅对实物对象核对；标签、铭牌或包装特写不单独计为实物照片；组合照片可覆盖多个明确对象",
             },
         ),
         _finding(
             "R06",
             "每个对象的中文标签照片",
             r06_labels,
-            "{pass}个对象有可关联中文标签照片，{error}个对象缺少中文标签照片，{manual}个待人工复核",
+            "{pass}个对象有可关联中文标签照片，{error}个对象缺少中文标签照片，{manual}个待人工复核，{not_applicable}个不适用",
             details_key="objects",
             additional_details={
-                "rule": "器械本体或最小销售包装上的可读中文标签均可；归属不清不自动通过",
+                "rule": "仅对实物对象核对；器械本体或最小销售包装上的可读中文标签均可；归属不清不自动通过",
             },
         ),
     ]

@@ -14,6 +14,7 @@ from mvp.full_report_photo import (
     load_ocr_records,
     parse_photo_entries,
     parse_sample_description,
+    photo_scope,
     report_photo_check,
 )
 
@@ -65,6 +66,20 @@ class PhotoRuleUnitTests(unittest.TestCase):
         self.assertEqual(records, [])
         self.assertTrue(any("顶层不是数组" in item for item in diagnostics))
 
+    def test_photo_scope_excludes_explicitly_unused_and_non_physical_rows(self) -> None:
+        self.assertEqual(
+            photo_scope({"fields": {"部件名称": "心脏脉冲电场消融仪", "备注": "本次检测未使用"}}),
+            (False, "sample_marked_not_used"),
+        )
+        self.assertEqual(
+            photo_scope({"fields": {"部件名称": "控制软件模块", "备注": ""}}),
+            (False, "non_physical_sample_entry"),
+        )
+        self.assertEqual(
+            photo_scope({"fields": {"部件名称": "心脏脉冲电场消融仪", "备注": ""}}),
+            (True, None),
+        )
+
 
 class FullReportPhoto2795IntegrationTests(unittest.TestCase):
     @classmethod
@@ -95,11 +110,11 @@ class FullReportPhoto2795IntegrationTests(unittest.TestCase):
         self.assertEqual(
             {rule: findings[rule]["status"] for rule in findings},
             {
-                "REPORT-R02": "error",
+                "REPORT-R02": "manual",
                 "REPORT-R03": "manual",
-                "REPORT-R04": "error",
-                "REPORT-R05": "error",
-                "REPORT-R06": "error",
+                "REPORT-R04": "manual",
+                "REPORT-R05": "pass",
+                "REPORT-R06": "pass",
             },
         )
         self.assertEqual(len(report_photo_check(REPORT, LABEL_OCR, OBJECT_OCR)), 5)
@@ -110,19 +125,26 @@ class FullReportPhoto2795IntegrationTests(unittest.TestCase):
             objects = findings[rule]["details"]["objects"]
             passed = [item["sequence"] for item in objects if item["status"] == "pass"]
             missing = [item["sequence"] for item in objects if item["status"] == "error"]
+            not_applicable = [item["sequence"] for item in objects if item["status"] == "not_applicable"]
             self.assertEqual(passed, [1, 2, 3, 4, 5, 8, 9, 10, 11, 14, 16, 18])
-            self.assertEqual(missing, [6, 7, 12, 13, 15, 17, 19, 20, 21])
+            self.assertEqual(missing, [])
+            self.assertEqual(not_applicable, [6, 7, 12, 13, 15, 17, 19, 20, 21])
 
     def test_r02_and_r03_preserve_ocr_uncertainty(self) -> None:
         findings = {item["id"]: item for item in self.analysis["findings"]}
         r02_objects = findings["REPORT-R02"]["details"]["objects"]
         self.assertEqual(
             {status: sum(item["status"] == status for item in r02_objects) for status in ("pass", "manual", "error")},
-            {"pass": 7, "manual": 5, "error": 9},
+            {"pass": 7, "manual": 5, "error": 0},
+        )
+        self.assertEqual(
+            sum(item["status"] == "not_applicable" for item in r02_objects),
+            9,
         )
         r03 = findings["REPORT-R03"]["details"]["comparisons"]
         self.assertEqual(sum(item["status"] == "pass" for item in r03), 7)
-        self.assertEqual(sum(item["status"] == "manual" for item in r03), 14)
+        self.assertEqual(sum(item["status"] == "manual" for item in r03), 5)
+        self.assertEqual(sum(item["status"] == "not_applicable" for item in r03), 9)
         placeholders = [
             item for item in r03 if item["reason_code"] == "date_not_stated_on_both_sides"
         ]
@@ -130,6 +152,8 @@ class FullReportPhoto2795IntegrationTests(unittest.TestCase):
 
     def test_every_issue_has_a_real_report_or_photo_coordinate(self) -> None:
         for finding in self.analysis["findings"]:
+            if finding["status"] == "pass":
+                continue
             self.assertTrue(finding["evidence"], finding["id"])
             for evidence in finding["evidence"]:
                 self.assertIsInstance(evidence["pdf_page"], int)
@@ -141,15 +165,15 @@ class FullReportPhoto2795IntegrationTests(unittest.TestCase):
                 if evidence["source"] == "photo_image":
                     self.assertEqual(evidence["coordinate_precision"], "image_region")
 
-    def test_r04_does_not_exclude_unused_rows(self) -> None:
+    def test_r04_keeps_unused_rows_as_not_applicable(self) -> None:
         r04 = next(item for item in self.analysis["findings"] if item["id"] == "REPORT-R04")
-        missing_name_sequences = [
+        not_applicable_name_sequences = [
             item["sequence"]
             for item in r04["details"]["cell_checks"]
-            if item["field"] == "部件名称" and item["status"] == "error"
+            if item["field"] == "部件名称" and item["status"] == "not_applicable"
         ]
-        self.assertEqual(missing_name_sequences, [6, 7, 12, 13, 15, 17, 19, 20, 21])
-        self.assertIn("不因备注“本次检测未使用”而排除", r04["details"]["rule"])
+        self.assertEqual(not_applicable_name_sequences, [6, 7, 12, 13, 15, 17, 19, 20, 21])
+        self.assertIn("明确未使用", r04["details"]["rule"])
 
 
 if __name__ == "__main__":
