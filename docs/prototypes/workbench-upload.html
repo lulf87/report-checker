@@ -75,33 +75,41 @@
     .meta-item { padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
     .meta-key { display: block; color: var(--muted); font-size: 11px; }
     .meta-value { display: block; margin-top: 2px; overflow-wrap: anywhere; font-weight: 700; }
-    .findings-card { margin-top: 18px; padding: 20px; }
-    .findings-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .findings-toolbar h2 { margin: 0; font-size: 18px; }
-    .filters { display: flex; flex-wrap: wrap; gap: 6px; }
-    .filter { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #fff; font-size: 12px; }
+    .findings-card { min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-right: 1px solid var(--line); border-radius: 0; box-shadow: none; background: #fff; }
+    .findings-toolbar { display: grid; gap: 9px; margin: 0; padding: 12px 10px 9px; border-bottom: 1px solid var(--line); background: #fff; }
+    .findings-toolbar h2 { margin: 0; font-size: 16px; }
+    .filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+    .filter { min-width: 0; padding: 5px 2px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 700; }
     .filter[aria-pressed="true"] { border-color: var(--teal); color: var(--teal); background: var(--teal-soft); }
-    .findings { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-    .finding { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+    .findings { display: grid; align-content: start; gap: 4px; min-height: 0; margin: 0; padding: 6px; overflow: auto; list-style: none; scrollbar-gutter: stable; }
+    .finding { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 7px; padding: 7px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
     .finding:hover, .finding[aria-current="true"] { border-color: var(--teal); background: var(--teal-soft); }
-    .finding-id { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-    .finding-title { margin-top: 2px; font-weight: 700; }
-    .finding-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .finding > .finding-id:last-child { grid-column: 2; font-size: 11px; }
+    .finding-id { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .finding-title { margin-top: 2px; font-size: 13px; font-weight: 700; line-height: 1.35; }
+    .finding-detail { display: -webkit-box; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .finding-status { padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 750; white-space: nowrap; }
     .finding-status.pass { color: var(--pass); background: var(--pass-soft); }
     .finding-status.manual { color: var(--manual); background: var(--manual-soft); }
     .finding-status.error { color: var(--error); background: var(--error-soft); }
     .finding-status.warning { color: #735596; background: #f4edfc; }
     .empty { padding: 18px 8px; color: var(--muted); text-align: center; }
-    .comparison-card { display: none; margin-top: 18px; padding: 20px; }
-    .comparison-card.visible { display: block; }
-    .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    /* Results are a review workspace: findings stay on the left while evidence stays visible on the right. */
+    .results-workspace { display: grid; grid-template-columns: 1fr; gap: 18px; margin-top: 18px; align-items: start; }
+    .results-workspace:has(.comparison-card.visible) { grid-template-columns: minmax(280px, 34%) minmax(0, 1fr); min-height: 760px; align-items: stretch; }
+    .results-workspace:not(:has(.comparison-card.visible)) > .findings-card { padding: 20px; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 5px 20px rgb(28 62 71 / 6%); }
+    .results-workspace > .findings-card, .results-workspace > .comparison-card { margin-top: 0; min-width: 0; }
+    .results-workspace:has(.comparison-card.visible) > .findings-card { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+    .results-workspace:has(.comparison-card.visible) .findings { max-height: calc(100vh - 196px); overflow: auto; padding-right: 2px; }
+    .comparison-card { display: none; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; }
+    .comparison-card.visible { display: grid; min-height: 760px; }
+    .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0; padding: 14px 16px 7px; }
     .comparison-head h2 { margin: 0; font-size: 18px; }
-    .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin-bottom: 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+    .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin: 0 16px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
     .brief-copy { min-width: 0; }
     .brief-title { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
     .brief-detail { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-    .pdf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-height: 630px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }
+    .pdf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; min-height: 0; height: 100%; margin: 0 16px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }
     .pdf-grid.single-pane { grid-template-columns: 1fr; }
     .pdf-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #dbe2e7; }
     .pdf-pane.is-hidden { display: none; }
@@ -126,11 +134,16 @@
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     @media (max-width: 720px) {
       .shell { width: min(100% - 20px, 1180px); padding-top: 18px; }
-      .header, .status-head, .findings-toolbar { display: grid; }
+      .header, .status-head { display: grid; }
       .grid, .meta { grid-template-columns: 1fr; }
       .field.full { grid-column: auto; }
       .actions { justify-content: stretch; }
       .actions button { flex: 1; }
+      .results-workspace, .results-workspace:has(.comparison-card.visible) { grid-template-columns: 1fr; min-height: 0; }
+      .results-workspace:has(.comparison-card.visible) > .findings-card { position: static; max-height: none; overflow: visible; }
+      .results-workspace:has(.comparison-card.visible) .findings { max-height: none; overflow: visible; }
+      .results-workspace:has(.comparison-card.visible) > .findings-card { max-height: 360px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .comparison-card { min-height: 760px; }
       .comparison-head, .comparison-brief { display: grid; }
       .pdf-grid { grid-template-columns: 1fr; overflow: visible; }
       .pdf-pane { min-height: 620px; }
@@ -205,21 +218,22 @@
       </div>
     </section>
 
-    <section class="card findings-card" aria-labelledby="findings-title">
-      <div class="findings-toolbar">
-        <h2 id="findings-title">Findings</h2>
-        <div class="filters" id="finding-filters" aria-label="Finding 状态筛选">
-          <button class="filter" type="button" data-status="all" aria-pressed="true">全部 <span>0</span></button>
-          <button class="filter" type="button" data-status="error" aria-pressed="false">问题 <span>0</span></button>
-          <button class="filter" type="button" data-status="manual" aria-pressed="false">待复核 <span>0</span></button>
-          <button class="filter" type="button" data-status="warning" aria-pressed="false">警示 <span>0</span></button>
-          <button class="filter" type="button" data-status="pass" aria-pressed="false">一致 <span>0</span></button>
+    <div class="results-workspace" id="results-workspace">
+      <aside class="card findings-card" aria-labelledby="findings-title">
+        <div class="findings-toolbar">
+          <h2 id="findings-title">问题列表</h2>
+          <div class="filters" id="finding-filters" aria-label="Finding 状态筛选">
+            <button class="filter" type="button" data-status="all" aria-pressed="true">全部 <span>0</span></button>
+            <button class="filter" type="button" data-status="error" aria-pressed="false">问题 <span>0</span></button>
+            <button class="filter" type="button" data-status="manual" aria-pressed="false">待复核 <span>0</span></button>
+            <button class="filter" type="button" data-status="warning" aria-pressed="false">警示 <span>0</span></button>
+            <button class="filter" type="button" data-status="pass" aria-pressed="false">一致 <span>0</span></button>
+          </div>
         </div>
-      </div>
-      <ol class="findings" id="findings" aria-live="polite"><li class="empty">运行成功后显示 Finding。</li></ol>
-    </section>
+        <ol class="findings" id="findings" aria-live="polite"><li class="empty">运行成功后显示 Finding。</li></ol>
+      </aside>
 
-    <section class="card comparison-card" id="comparison-card" aria-labelledby="comparison-title">
+      <section class="card comparison-card" id="comparison-card" aria-labelledby="comparison-title">
       <div class="comparison-head">
         <div>
           <h2 id="comparison-title">原始文件比对</h2>
@@ -270,7 +284,8 @@
           <div class="pdf-viewport"><div class="pdf-page-shell"><canvas class="pdf-canvas"></canvas><div class="highlight-layer" aria-hidden="true"></div></div><div class="pane-message visible">等待运行结果…</div></div>
         </article>
       </div>
-    </section>
+      </section>
+    </div>
   </main>
 
   <script type="module">
@@ -686,7 +701,18 @@
           this.renderTask = pdfPage.render({ canvasContext: context, viewport, transform: deviceScale === 1 ? null : [deviceScale, 0, 0, deviceScale, 0, 0] });
           await this.renderTask.promise; if (token !== this.renderToken) return;
           this.renderTask = null; this.addHighlights(pdfPage, viewport); this.setMessage("");
-          if (focusHighlight) (this.highlightLayer.querySelector(".evidence-highlight:not(.secondary)") || this.highlightLayer.querySelector(".evidence-highlight"))?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+          if (focusHighlight) {
+            const highlight = this.highlightLayer.querySelector(".evidence-highlight:not(.secondary)") || this.highlightLayer.querySelector(".evidence-highlight");
+            if (highlight) {
+              // Keep the workbench heading and selected Finding visible while
+              // centering the evidence inside the PDF pane's own scroller.
+              const viewportRect = this.viewportElement.getBoundingClientRect();
+              const highlightRect = highlight.getBoundingClientRect();
+              const top = this.viewportElement.scrollTop + highlightRect.top - viewportRect.top - (viewportRect.height - highlightRect.height) / 2;
+              const left = this.viewportElement.scrollLeft + highlightRect.left - viewportRect.left - (viewportRect.width - highlightRect.width) / 2;
+              this.viewportElement.scrollTo({ top: Math.max(0, top), left: Math.max(0, left), behavior: "smooth" });
+            }
+          }
           else if (preserveScroll) this.viewportElement.scrollTo({ top: this.viewportElement.scrollTop, left: this.viewportElement.scrollLeft });
         } catch (error) { if (error?.name !== "RenderingCancelledException" && token === this.renderToken) this.setMessage(`页面绘制失败：${error?.message || error}`); }
       }
