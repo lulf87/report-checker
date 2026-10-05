@@ -88,7 +88,7 @@ class ReportSelfRunnerTests(unittest.TestCase):
         expected = {
             "1347": {"pass": 8, "warning": 0, "manual": 4, "error": 0},
             "1539": {"pass": 8, "warning": 0, "manual": 4, "error": 0},
-            "2795": {"pass": 5, "warning": 0, "manual": 2, "error": 5},
+            "2795": {"pass": 7, "warning": 0, "manual": 4, "error": 1},
             "2948": {"pass": 7, "warning": 0, "manual": 4, "error": 1},
         }
         with tempfile.TemporaryDirectory() as temporary:
