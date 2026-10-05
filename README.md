@@ -247,7 +247,7 @@ docs/prototypes/workbench-upload.html
 python3 -m http.server 8765
 ```
 
-访问 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html`，选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。
+访问 `http://127.0.0.1:8765/` 进入报告核对前端；根路径会打开上传工作台。选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。上传工作台的直接地址仍为 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html`。
 
 上传页面契约测试：
 

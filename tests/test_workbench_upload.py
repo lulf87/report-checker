@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML_PATH = ROOT / "docs" / "prototypes" / "workbench-upload.html"
+ROOT_ENTRY_PATH = ROOT / "index.html"
 
 
 def _module_source(html: str) -> str:
@@ -34,6 +35,11 @@ class UploadWorkbenchTests(unittest.TestCase):
         self.assertNotIn("output/", self.html)
         self.assertNotIn("workbench-real", self.html)
         self.assertNotRegex(self.module_source, r"RUN_MANIFEST|sampleFixtures|素材/")
+
+    def test_root_entry_opens_public_upload_workbench(self) -> None:
+        root_entry = ROOT_ENTRY_PATH.read_text(encoding="utf-8")
+        self.assertIn("/docs/prototypes/workbench-upload.html", root_entry)
+        self.assertIn("window.location.replace", root_entry)
 
     def test_upload_form_exposes_all_modes_and_pdf_roles(self) -> None:
         self.assertIn('id="upload-form"', self.html)
