@@ -76,7 +76,7 @@ def run_mode(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run one of the four Report checking modes.")
+    parser = argparse.ArgumentParser(description="Run one of the registered Report checking mode boundaries.")
     parser.add_argument("--mode", required=True, choices=tuple(MODE_CAPABILITIES))
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--record", type=Path)

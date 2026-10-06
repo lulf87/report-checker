@@ -474,9 +474,12 @@ class RealWorkbenchTests(unittest.TestCase):
 
     def test_file_protocol_failure_has_http_recovery_instruction(self) -> None:
         self.assertIn('window.location.protocol === "file:"', self.html)
-        self.assertIn("python3 -m http.server 8765", self.html)
         self.assertIn(
-            "http://127.0.0.1:8765/docs/prototypes/workbench-real.html",
+            "python3 -m mvp.static_server --mode real --bind 127.0.0.1 --port 8765",
+            self.html,
+        )
+        self.assertIn(
+            "http://127.0.0.1:8765/workbench-real.html",
             self.html,
         )
 

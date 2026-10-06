@@ -123,6 +123,35 @@ class ParsedNumeric:
     decimal_places: int
 
 
+@dataclass(frozen=True, slots=True)
+class NumericConstraint:
+    """A parsed Report-side numeric constraint.
+
+    ``kind`` is one of ``exact``, ``threshold`` or ``interval``.  Intervals
+    parsed from a plain ``~``/``至``/hyphen expression intentionally carry
+    ``bounds_explicit=False``: the text does not prove whether endpoints are
+    included, so comparison code must keep that case manual.  Bracketed
+    intervals carry explicit endpoint semantics and may be compared
+    automatically.
+    """
+
+    kind: Literal["exact", "threshold", "interval"]
+    value: Decimal | None
+    unit: str | None
+    decimal_places: int
+    comparator: str | None = None
+    lower: Decimal | None = None
+    upper: Decimal | None = None
+    lower_inclusive: bool | None = None
+    upper_inclusive: bool | None = None
+    bounds_explicit: bool = True
+    polarity: str | None = None
+
+    @property
+    def is_interval(self) -> bool:
+        return self.kind == "interval"
+
+
 class CoverageInvariantError(ValueError):
     pass
 
@@ -396,8 +425,10 @@ def expected_report_conclusion_from_record_statuses(
 
 _UNIT_DEFINITIONS: dict[str, tuple[str, Decimal]] = {
     "A": ("current", Decimal("1")),
+    "kA": ("current", Decimal("1000")),
     "mA": ("current", Decimal("0.001")),
     "uA": ("current", Decimal("0.000001")),
+    "nA": ("current", Decimal("0.000000001")),
     "V": ("voltage", Decimal("1")),
     "mV": ("voltage", Decimal("0.001")),
     "kV": ("voltage", Decimal("1000")),
@@ -414,13 +445,24 @@ _UNIT_DEFINITIONS: dict[str, tuple[str, Decimal]] = {
     "F": ("capacitance", Decimal("1")),
     "uF": ("capacitance", Decimal("0.000001")),
     "nF": ("capacitance", Decimal("0.000000001")),
+    "pF": ("capacitance", Decimal("0.000000000001")),
     "s": ("time", Decimal("1")),
     "ms": ("time", Decimal("0.001")),
+    "us": ("time", Decimal("0.000001")),
     "%": ("percent", Decimal("1")),
     "°C": ("temperature", Decimal("1")),
     "dB": ("sound", Decimal("1")),
     "dB(A)": ("sound_a", Decimal("1")),
     "dB(C)": ("sound_c", Decimal("1")),
+    "m": ("length", Decimal("1")),
+    "cm": ("length", Decimal("0.01")),
+    "mm": ("length", Decimal("0.001")),
+    "kg": ("mass", Decimal("1000")),
+    "g": ("mass", Decimal("1")),
+    "mg": ("mass", Decimal("0.001")),
+    "N": ("force", Decimal("1")),
+    "Pa": ("pressure", Decimal("1")),
+    "kPa": ("pressure", Decimal("1000")),
 }
 
 
@@ -432,7 +474,18 @@ _UNIT_ALIASES = {
     "Ω": "Ω",
     "ohm": "Ω",
     "Ohm": "Ω",
+    "ohms": "Ω",
+    "KHz": "kHz",
+    "KHZ": "kHz",
+    "khz": "kHz",
+    "µF": "uF",
+    "μF": "uF",
+    "UF": "uF",
+    "uf": "uF",
+    "µs": "us",
+    "μs": "us",
     "℃": "°C",
+    "％": "%",
 }
 
 
@@ -478,12 +531,12 @@ def convert_decimal(
 _NUMERIC_RE = re.compile(
     r"^\s*(?P<comparator><=|>=|[<>≤≥＜＞])?\s*"
     r"(?P<number>[+＋\-－−]?(?:\d+(?:\.\d*)?|\.\d+))\s*"
-    r"(?P<unit>[A-Za-zµμΩΩ℃°%]+(?:\([^)]*\))?)?\s*$"
+    r"(?P<unit>[A-Za-zµμΩΩ℃°%²0-9]+(?:\([^)]*\))?)?\s*$"
 )
 
 
 def parse_report_numeric(text: Any, unit_context: str | None = None) -> ParsedNumeric | None:
-    source = display_text(text)
+    source = display_text(text).replace("％", "%")
     match = _NUMERIC_RE.fullmatch(source)
     if not match:
         return None
@@ -510,6 +563,193 @@ def parse_report_numeric(text: Any, unit_context: str | None = None) -> ParsedNu
     )
 
 
+_NUMBER_TOKEN = r"[+＋\-－−]?(?:\d+(?:\.\d*)?|\.\d+)"
+_UNIT_TOKEN = r"(?:dB\(A\)|dB\(C\)|MHz|KHz|kHz|Hz|MΩ|kΩ|mΩ|Ω|Ω|kV|mV|V|kW|mW|W|kPa|Pa|mA|uA|µA|μA|nA|A|uF|µF|μF|pF|nF|F|ms|us|µs|μs|s|mm²|mm2|mm|cm|m|kg|mg|g|N|%|％|°C|℃|[A-Za-zµμΩΩ℃°%²0-9]+(?:\([^)]*\))?)"
+
+
+def _decimal_places(number_token: str) -> int:
+    return len(number_token.partition(".")[2]) if "." in number_token else 0
+
+
+def _normalized_number(token: str) -> Decimal:
+    return Decimal(
+        token.replace("＋", "+")
+        .replace("－", "-")
+        .replace("−", "-")
+    )
+
+
+def _normalize_polarity(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = compact(value)
+    if normalized in {"+", "＋", "正", "positive", "POS"}:
+        return "+"
+    if normalized in {"-", "−", "－", "负", "negative", "NEG"}:
+        return "-"
+    return None
+
+
+def _interval_unit_and_values(
+    lower: Decimal,
+    lower_unit: str | None,
+    upper: Decimal,
+    upper_unit: str | None,
+    unit_context: str | None,
+) -> tuple[Decimal, Decimal, str | None] | None:
+    """Resolve endpoint units without silently assuming a medical unit."""
+
+    first = normalize_unit(lower_unit or unit_context)
+    second = normalize_unit(upper_unit or unit_context)
+    if first is None and second is None:
+        return lower, upper, None
+    if first is None:
+        first = second
+    if second is None:
+        second = first
+    try:
+        converted_upper = convert_decimal(upper, second, first)
+    except (TypeError, ValueError):
+        return None
+    return lower, converted_upper, first
+
+
+def parse_numeric_constraint(
+    text: Any,
+    unit_context: str | None = None,
+) -> NumericConstraint | None:
+    """Parse an exact value, threshold, or explicitly written interval.
+
+    Bracketed ranges (for example ``[0.5, 1.0] mA``) carry proven endpoint
+    inclusion.  Tilde, ``至`` and hyphen ranges are retained as intervals but
+    marked with ``bounds_explicit=False`` because the source text does not
+    establish open/closed endpoint semantics.  Callers must return ``manual``
+    for those ranges instead of guessing a domain convention.
+    """
+
+    source = display_text(text).replace("％", "%").strip()
+    if not source:
+        return None
+
+    # Explicit bracketed interval.  Units may appear on either endpoint or in
+    # the surrounding requirement context; compatible units are converted to
+    # the first resolved unit.
+    bracket = re.fullmatch(
+        rf"\s*(?P<left>[\[(])\s*(?P<lower>{_NUMBER_TOKEN})\s*(?P<lower_unit>{_UNIT_TOKEN})?\s*[,，]\s*"
+        rf"(?P<upper>{_NUMBER_TOKEN})\s*(?P<upper_unit>{_UNIT_TOKEN})?\s*(?P<right>[\])])\s*(?P<trailing_unit>{_UNIT_TOKEN})?\s*",
+        source,
+        flags=re.IGNORECASE,
+    )
+    if bracket:
+        lower_token = bracket.group("lower")
+        upper_token = bracket.group("upper")
+        values = _interval_unit_and_values(
+            _normalized_number(lower_token),
+            bracket.group("lower_unit"),
+            _normalized_number(upper_token),
+            bracket.group("upper_unit"),
+            bracket.group("trailing_unit") or unit_context,
+        )
+        if values is None:
+            return None
+        lower, upper, unit = values
+        if lower > upper:
+            return None
+        return NumericConstraint(
+            kind="interval",
+            value=lower,
+            unit=unit,
+            decimal_places=max(_decimal_places(lower_token), _decimal_places(upper_token)),
+            lower=lower,
+            upper=upper,
+            lower_inclusive=bracket.group("left") == "[",
+            upper_inclusive=bracket.group("right") == "]",
+            bounds_explicit=True,
+        )
+
+    # Plus/minus uncertainty is explicit arithmetic, but whether the
+    # resulting endpoints are acceptance bounds is domain-specific.  Keep it
+    # marked unresolved and therefore manual at comparison time.
+    plus_minus = re.fullmatch(
+        rf"\s*(?P<center>{_NUMBER_TOKEN})\s*(?:±|\+/-|\+\-+)\s*(?P<delta>{_NUMBER_TOKEN})\s*(?P<unit>{_UNIT_TOKEN})?\s*",
+        source,
+        flags=re.IGNORECASE,
+    )
+    if plus_minus:
+        center_token = plus_minus.group("center")
+        delta_token = plus_minus.group("delta")
+        center = _normalized_number(center_token)
+        delta = abs(_normalized_number(delta_token))
+        return NumericConstraint(
+            kind="interval",
+            value=center,
+            unit=normalize_unit(plus_minus.group("unit") or unit_context),
+            decimal_places=max(_decimal_places(center_token), _decimal_places(delta_token)),
+            lower=center - delta,
+            upper=center + delta,
+            lower_inclusive=None,
+            upper_inclusive=None,
+            bounds_explicit=False,
+        )
+
+    # Unbracketed range.  The first endpoint may be negative; the separator
+    # is therefore matched only after a complete numeric token.
+    ranged = re.fullmatch(
+        rf"\s*(?P<lower>{_NUMBER_TOKEN})\s*(?P<lower_unit>{_UNIT_TOKEN})?\s*(?P<separator>~|～|〜|∼|至|到|[-－])\s*"
+        rf"(?P<upper>{_NUMBER_TOKEN})\s*(?P<upper_unit>{_UNIT_TOKEN})?\s*",
+        source,
+        flags=re.IGNORECASE,
+    )
+    if ranged:
+        lower_token = ranged.group("lower")
+        upper_token = ranged.group("upper")
+        values = _interval_unit_and_values(
+            _normalized_number(lower_token),
+            ranged.group("lower_unit"),
+            _normalized_number(upper_token),
+            ranged.group("upper_unit"),
+            unit_context,
+        )
+        if values is None:
+            return None
+        lower, upper, unit = values
+        if lower > upper:
+            return None
+        return NumericConstraint(
+            kind="interval",
+            value=lower,
+            unit=unit,
+            decimal_places=max(_decimal_places(lower_token), _decimal_places(upper_token)),
+            lower=lower,
+            upper=upper,
+            lower_inclusive=None,
+            upper_inclusive=None,
+            bounds_explicit=False,
+        )
+
+    # Scalar/threshold with an optional explicit polarity annotation.  A sign
+    # on the numeric token remains part of the value and is not polarity.
+    scalar = re.fullmatch(
+        rf"\s*(?P<comparator><=|>=|[<>≤≥＜＞])?\s*(?P<number>{_NUMBER_TOKEN})\s*(?P<unit>{_UNIT_TOKEN})?\s*(?:\((?P<polarity>[+＋\-−－])\)|(?P<bare_polarity>[正负]))?\s*",
+        source,
+        flags=re.IGNORECASE,
+    )
+    if not scalar:
+        return None
+    comparator = scalar.group("comparator")
+    if comparator:
+        comparator = {"＜": "<", "＞": ">", "≤": "<=", "≥": ">="}.get(comparator, comparator)
+    number_token = scalar.group("number")
+    return NumericConstraint(
+        kind="threshold" if comparator else "exact",
+        value=_normalized_number(number_token),
+        unit=normalize_unit(scalar.group("unit") or unit_context),
+        decimal_places=_decimal_places(number_token),
+        comparator=comparator,
+        polarity=_normalize_polarity(scalar.group("polarity") or scalar.group("bare_polarity")),
+    )
+
+
 def quantize_for_report(value: Decimal | int | str | float, decimal_places: int) -> Decimal:
     if decimal_places < 0:
         raise ValueError("decimal_places must not be negative")
@@ -522,50 +762,170 @@ def compare_numeric_observation(
     record_unit: str | None,
     report_text: Any,
     report_unit_context: str | None = None,
+    *,
+    record_polarity: str | None = None,
 ) -> ComparisonResult:
-    parsed = parse_report_numeric(report_text, report_unit_context)
-    if parsed is None:
+    constraint = parse_numeric_constraint(report_text, report_unit_context)
+    if constraint is None:
         return ComparisonResult(
             "manual",
             "report_numeric_not_parsed",
             None,
             compact(report_text) or None,
         )
+    expected_value = constraint.value
+    if constraint.polarity is not None:
+        normalized_record_polarity = _normalize_polarity(record_polarity)
+        if normalized_record_polarity is None:
+            return ComparisonResult(
+                "manual",
+                "numeric_polarity_unresolved",
+                constraint.polarity,
+                compact(report_text) or None,
+            )
+        if normalized_record_polarity != constraint.polarity:
+            return ComparisonResult(
+                "mismatch",
+                "numeric_polarity_mismatch",
+                constraint.polarity,
+                normalized_record_polarity,
+            )
     try:
-        converted = convert_decimal(record_value, record_unit, parsed.unit)
+        converted = convert_decimal(record_value, record_unit, constraint.unit)
     except (TypeError, ValueError) as exc:
         return ComparisonResult(
             "manual",
             "unit_conversion_unresolved",
-            str(parsed.value),
+            str(expected_value) if expected_value is not None else None,
             str(exc),
         )
 
-    if parsed.comparator is not None:
-        comparisons = {
-            "<": converted < parsed.value,
-            "<=": converted <= parsed.value,
-            ">": converted > parsed.value,
-            ">=": converted >= parsed.value,
-        }
-        matched = comparisons[parsed.comparator]
+    if constraint.kind == "interval":
+        if (
+            not constraint.bounds_explicit
+            or constraint.lower is None
+            or constraint.upper is None
+            or constraint.lower_inclusive is None
+            or constraint.upper_inclusive is None
+        ):
+            return ComparisonResult(
+                "manual",
+                "numeric_interval_bounds_unresolved",
+                f"{constraint.lower}..{constraint.upper}",
+                str(converted),
+                converted,
+            )
+        lower_match = (
+            converted >= constraint.lower
+            if constraint.lower_inclusive
+            else converted > constraint.lower
+        )
+        upper_match = (
+            converted <= constraint.upper
+            if constraint.upper_inclusive
+            else converted < constraint.upper
+        )
+        matched = lower_match and upper_match
+        left = "[" if constraint.lower_inclusive else "("
+        right = "]" if constraint.upper_inclusive else ")"
         return ComparisonResult(
             "match" if matched else "mismatch",
-            "numeric_threshold_matched" if matched else "numeric_threshold_mismatch",
-            f"{parsed.comparator}{parsed.value}",
+            "numeric_interval_matched" if matched else "numeric_interval_mismatch",
+            f"{left}{constraint.lower},{constraint.upper}{right}",
             str(converted),
             converted,
         )
 
-    rounded = quantize_for_report(converted, parsed.decimal_places)
-    matched = rounded == parsed.value
+    if constraint.comparator is not None:
+        comparisons = {
+            "<": converted < constraint.value,
+            "<=": converted <= constraint.value,
+            ">": converted > constraint.value,
+            ">=": converted >= constraint.value,
+        }
+        matched = comparisons[constraint.comparator]
+        return ComparisonResult(
+            "match" if matched else "mismatch",
+            "numeric_threshold_matched" if matched else "numeric_threshold_mismatch",
+            f"{constraint.comparator}{constraint.value}",
+            str(converted),
+            converted,
+        )
+
+    rounded = quantize_for_report(converted, constraint.decimal_places)
+    matched = rounded == constraint.value
     return ComparisonResult(
         "match" if matched else "mismatch",
         "numeric_value_matched" if matched else "numeric_value_mismatch",
-        str(parsed.value),
+        str(constraint.value),
         str(rounded),
         converted,
     )
+
+
+def aggregate_numeric_observations(
+    values: Sequence[tuple[Decimal | int | str | float, str | None]],
+    *,
+    target_unit: str | None = None,
+    strategy: Literal["maximum", "minimum"] = "maximum",
+    absolute: bool = False,
+) -> dict[str, Any]:
+    """Aggregate numeric cells only after explicit unit resolution.
+
+    ``target_unit`` is required when source cells do not all declare the same
+    unit.  The default strategy is signed maximum; callers that need magnitude
+    selection must opt into ``absolute=True`` because polarity changes the
+    meaning of a maximum.  Any unresolved conversion returns ``manual`` with
+    the source values preserved.
+    """
+
+    if not values:
+        return {
+            "decision": "manual",
+            "reason_code": "numeric_aggregation_empty",
+            "values": [],
+        }
+    normalized_units = [normalize_unit(unit) for _, unit in values]
+    resolved_target = normalize_unit(target_unit)
+    if resolved_target is None:
+        known_units = {unit for unit in normalized_units if unit is not None}
+        if len(known_units) == 1 and all(unit is not None for unit in normalized_units):
+            resolved_target = next(iter(known_units))
+        else:
+            return {
+                "decision": "manual",
+                "reason_code": "numeric_aggregation_unit_unresolved",
+                "values": [str(value) for value, _ in values],
+                "units": normalized_units,
+            }
+    converted: list[Decimal] = []
+    for (value, unit), normalized_unit in zip(values, normalized_units):
+        try:
+            converted.append(convert_decimal(value, normalized_unit, resolved_target))
+        except (TypeError, ValueError) as exc:
+            return {
+                "decision": "manual",
+                "reason_code": "numeric_aggregation_unit_unresolved",
+                "values": [str(item) for item, _ in values],
+                "units": normalized_units,
+                "target_unit": resolved_target,
+                "detail": str(exc),
+            }
+    key = abs if absolute else lambda item: item
+    selected_index = (max if strategy == "maximum" else min)(
+        range(len(converted)), key=lambda index: key(converted[index])
+    )
+    selected_value = converted[selected_index]
+    return {
+        "decision": "match",
+        "reason_code": "numeric_aggregation_resolved",
+        "strategy": strategy,
+        "absolute": absolute,
+        "target_unit": resolved_target,
+        "values": [str(item) for item in converted],
+        "selected_index": selected_index,
+        "selected_value": str(selected_value),
+    }
 
 
 _PERCENT_NUMBER = r"[+＋\-－−]?(?:\d+(?:\.\d*)?|\.\d+)"

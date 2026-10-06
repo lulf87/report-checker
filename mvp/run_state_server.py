@@ -46,8 +46,15 @@ class RunStateHTTPServer(ThreadingHTTPServer):
         output_root: str = "output/runs",
         allow_unresolved_inputs: bool = False,
     ) -> None:
-        super().__init__(server_address, RunStateRequestHandler)
+        # ``socketserver.TCPServer.__init__`` calls ``server_close`` when
+        # binding or activation fails.  Seed the cleanup flags before the
+        # parent constructor so a rejected bind cannot trip over attributes
+        # that are initialized only after a successful bind.
         self.store = store
+        self._executor = None
+        self._executor_closed = True
+        self._store_closed = False
+        super().__init__(server_address, RunStateRequestHandler)
         self.documents = DocumentStore(store, storage_root)
         self.allow_unresolved_inputs = allow_unresolved_inputs
         self.output_root = Path(output_root).expanduser().resolve()
@@ -64,7 +71,7 @@ class RunStateHTTPServer(ThreadingHTTPServer):
 
     def server_close(self) -> None:
         super().server_close()
-        if not self._executor_closed:
+        if not self._executor_closed and self._executor is not None:
             # Do not close SQLite while the background worker can still be
             # reading or publishing a Run. HTTP has already stopped accepting
             # requests at this point, so waiting gives the worker a clean
@@ -161,7 +168,7 @@ class RunStateRequestHandler(CapabilityRequestHandler):
             return {}
         return {
             "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Headers": "Content-Type, X-CSRF-Token, X-Actor-Id",
+            "Access-Control-Allow-Headers": "Content-Type, X-CSRF-Token",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Expose-Headers": "Content-Disposition, Content-Range, Accept-Ranges, X-Request-ID",
             "Vary": "Origin",
@@ -263,20 +270,43 @@ class RunStateRequestHandler(CapabilityRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _require_csrf(self) -> None:
+    def _require_local_request(self) -> None:
+        """Reject requests whose network/browser context is not loopback."""
+
         host_header = self.headers.get("Host", "").strip()
+        if not host_header:
+            raise RunStoreError("INVALID_LOCAL_HOST", "状态服务必须提供本机 Host", status=403)
         if host_header.startswith("["):
-            host = host_header[1:].split("]", 1)[0].lower()
+            closing = host_header.find("]")
+            if closing < 0:
+                raise RunStoreError("INVALID_LOCAL_HOST", "状态服务只接受有效的本机 Host", status=403)
+            host = host_header[1:closing].lower()
+            suffix = host_header[closing + 1 :]
+            if suffix and (not suffix.startswith(":") or not suffix[1:].isdigit()):
+                raise RunStoreError("INVALID_LOCAL_HOST", "状态服务只接受有效的本机 Host", status=403)
         else:
-            host = host_header.rsplit(":", 1)[0].lower() if host_header.count(":") == 1 else host_header.lower()
-        if host and host not in {"localhost", "127.0.0.1", "::1"}:
+            if host_header.count(":") > 1:
+                raise RunStoreError("INVALID_LOCAL_HOST", "IPv6 Host 必须使用方括号", status=403)
+            if ":" in host_header:
+                host, port = host_header.rsplit(":", 1)
+                if not port.isdigit():
+                    raise RunStoreError("INVALID_LOCAL_HOST", "状态服务只接受有效的本机 Host", status=403)
+            else:
+                host = host_header
+            host = host.lower()
+        if host not in {"localhost", "127.0.0.1", "::1"}:
             raise RunStoreError("INVALID_LOCAL_HOST", "状态服务只接受本机 Host", status=403)
         origin = self.headers.get("Origin")
         if origin and self._allowed_origin(origin) is None:
             raise RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "请求来源不是受信任的本机 Origin", status=403)
         fetch_site = self.headers.get("Sec-Fetch-Site")
-        if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+        if fetch_site and fetch_site.strip().lower() not in {"same-origin", "same-site", "none"}:
             raise RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "拒绝跨站写请求", status=403)
+
+    def _require_csrf(self) -> None:
+        self._require_local_request()
+        if datetime.now(timezone.utc) >= self.server.csrf_expires_at:
+            raise RunStoreError("CSRF_TOKEN_EXPIRED", "本机会话 CSRF token 已过期", status=403)
         if self.headers.get("X-CSRF-Token") != self.server.csrf_token:
             raise RunStoreError("CSRF_VALIDATION_FAILED", "缺少或无效的本机 CSRF token", status=403)
 
@@ -414,11 +444,10 @@ class RunStateRequestHandler(CapabilityRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802 - browser CORS preflight hook
         """Accept preflight requests from the local workbench only."""
 
-        origin = self.headers.get("Origin")
-        if origin and self._allowed_origin(origin) is None:
-            self._write_error(
-                RunStoreError("CROSS_SITE_REQUEST_BLOCKED", "请求来源不是受信任的本机 Origin", status=403)
-            )
+        try:
+            self._require_local_request()
+        except RunStoreError as error:
+            self._write_error(error)
             return
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Content-Length", "0")
@@ -430,6 +459,7 @@ class RunStateRequestHandler(CapabilityRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
         try:
+            self._require_local_request()
             path = urlsplit(self.path).path
             content_parts = path.split("/")
             if (
@@ -557,13 +587,27 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                     rule_bundle_id=RULE_BUNDLE_ID,
                 )
                 if not any(item.get("unresolved") for item in input_snapshot.values()):
-                    self.server.documents.bind_run_inputs(
-                        run_id=run["id"],
-                        case_id=case_id,
-                        mode=mode,
-                        inputs=normalized,
-                    )
-                    self.server.submit_run(run["id"])
+                    try:
+                        self.server.documents.bind_run_inputs(
+                            run_id=run["id"],
+                            case_id=case_id,
+                            mode=mode,
+                            inputs=normalized,
+                        )
+                        self.server.submit_run(run["id"])
+                    except (RunStoreError, OSError) as error:
+                        # A failed bind/submit must not leave an orphaned
+                        # queued Run that can be mistaken for a recoverable
+                        # job on the next process start.
+                        current = self.server.store.get_run(run["id"])
+                        if current["lifecycle_status"] == "queued":
+                            self.server.store.transition_run(
+                                run["id"],
+                                "failed",
+                                reason_code="RUN_DISPATCH_FAILED",
+                                reason_message=str(error)[:1000],
+                            )
+                        raise
                 run = self.server.store.get_run(run["id"])
                 self._send_json(HTTPStatus.ACCEPTED, run)
                 return
@@ -610,7 +654,7 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                 response = self.server.store.append_review_action(
                     finding_id,
                     action,
-                    actor_id=self.headers.get("X-Actor-Id") or self.server.session_id,
+                    actor_id=self.server.session_id,
                     base_review_revision=base_revision,
                     observation=observation,
                     note=payload.get("note"),
@@ -668,13 +712,31 @@ def create_server(
         # Production and test servers use the same strict input contract. A
         # legacy unresolved-input fixture must opt in explicitly.
         allow_unresolved_inputs = False
-    return RunStateHTTPServer(
+    server = RunStateHTTPServer(
         (host, port),
         store,
         storage_root=storage_root,
         output_root=output_root,
         allow_unresolved_inputs=allow_unresolved_inputs,
     )
+    # A queued Run is durable work, not an in-memory promise.  Resubmit it
+    # after the server and single-worker executor are ready; unresolved test
+    # fixtures remain queued for the caller to bind later.
+    for run in store.list_queued_runs():
+        if any(item.get("unresolved") for item in (run.get("input_snapshot") or {}).values()):
+            continue
+        try:
+            server.submit_run(run["id"])
+        except (RunStoreError, OSError) as error:
+            current = store.get_run(run["id"])
+            if current["lifecycle_status"] == "queued":
+                store.transition_run(
+                    run["id"],
+                    "failed",
+                    reason_code="RUN_DISPATCH_FAILED",
+                    reason_message=str(error)[:1000],
+                )
+    return server
 
 
 def build_parser() -> argparse.ArgumentParser:

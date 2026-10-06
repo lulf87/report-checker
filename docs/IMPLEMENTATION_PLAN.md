@@ -279,7 +279,7 @@ POST create run
 - `machine_status`、`review_resolution`、`resolved_status` 并列展示；
 - 新复核记录追加保存，旧记录不覆盖。
 
-退出门槛：SAMPLE-D 输入两个 `123.4 μA` 后数值 Finding 重算一致，但 Case/Run 仍因 R07 为 `error`；提交前界面和 API 响应均不泄露 Report 目标值到录入步骤；无法辨认时保持 `indeterminate/manual`。
+退出门槛：SAMPLE-D 输入两个 `123.4 μA` 后，9706.1 对比 Run 的数值 Finding 重算一致；该 Run 只包含 `RECORD-*` 规则，机器总体和复核后总体均按该 Run 的规则计算。Report 项目 132、140 的 `REPORT-R07` 错误只在单独的 `report_self` Run 验证，不进入对比 Run 的 Finding、计数或总体状态。提交前界面和 API 响应均不泄露 Report 目标值到录入步骤；无法辨认时保持 `indeterminate/manual`。
 
 ### 阶段 5：导出、诊断和恢复
 
@@ -369,7 +369,7 @@ Golden 不是可随意重录的截图。任何业务状态变化必须对应：�
 
 | 场景 | 必须观察到的结果 | 禁止结果 |
 |---|---|---|
-| SAMPLE-D / Report + 9706.1 | Run 成功；R07 项目 132/140 为 error；数值为 manual；复核数值一致后整体仍 error | 人工复核把机器 manual 改写成 pass；整体误变 pass |
+| SAMPLE-D / Report + 9706.1 | 9706.1 对比 Run 成功；数值为 manual；复核数值一致后该 Run 的 resolved 状态按 `RECORD-*` Finding 重算；Report 项目 132/140 的 R07 error 仅在单独的 `report_self` Run 中验证 | 人工复核把机器 manual 改写成 pass；把 `REPORT-R07` 注入对比 Run 或据此改变其总体状态 |
 | SAMPLE-C / Report + 9706.202 | 项目 3 error；24/24 页编号明确空白；`201.15.101.9` 确定性不一致 | 将空白描述成 OCR 失败；提供人工“忽略错误”按钮 |
 | 完整文档与 Q 定位 | Report 自检可浏览完整 Report；对比模式始终保留 Report + PTR/Record 两个文档槽；点击 Q 跳到全部相关页/bbox；切状态 tab 只筛 Q 而不重建查看器或丢失页码/滚动/缩放；检查项/判定抽屉开合、任务信息展开和窄屏文档页签切换保持 viewer identity 与双方浏览状态；当前 Q 不在非空筛选中时提示但保留上下文，零项筛选只隐藏 Q 定位和详情；裁剪只作辅助 | 只显示裁剪图；单侧 Q 使另一文档槽消失；辅助面板或 tab 操作重建 PDF、丢浏览状态、更换 Q 或使 Q 重编号；零项筛选卸载文档；warning 被合并到 error/pass |
 | SAMPLE-B / 9706.1 | 结构与状态链可自动裁决；手写值未达门槛时 manual | 用 Report 值反推 Record；因肉眼可读而冒充自动通过 |

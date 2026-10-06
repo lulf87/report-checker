@@ -102,6 +102,32 @@ MODE_CATALOG: dict[str, dict[str, Any]] = {
         "disabled_reason_code": "PTR_NOT_VALIDATED",
         "disabled_message": "PTR 检查尚未启用",
     },
+    "report_ptr_report": {
+        "label": "PTR + Report 组合比对",
+        "enabled": False,
+        "status": "disabled",
+        "required_roles": ("report", "ptr"),
+        "forbidden_roles": ("record_9706_1", "record_9706_202"),
+        "includes_report_self": True,
+        "rule_ids": ("PTR-P01",),
+        "runner": None,
+        "disabled_reason_code": "PTR_NOT_VALIDATED",
+        "disabled_message": "PTR + Report 组合模式尚未启用；PTR 证据链未完成验证",
+    },
+    "report_diff": {
+        "label": "Report 差异模式",
+        "enabled": False,
+        "status": "disabled",
+        # The difference-mode input contract is deliberately not guessed
+        # until its two-document roles and rule plan are frozen.
+        "required_roles": (),
+        "forbidden_roles": ("report", "ptr", "record_9706_1", "record_9706_202"),
+        "includes_report_self": False,
+        "rule_ids": (),
+        "runner": None,
+        "disabled_reason_code": "DIFF_NOT_SPECIFIED",
+        "disabled_message": "差异模式的输入角色与规则计划尚未冻结",
+    },
     "report_record_9706_1": {
         "label": "Report + GB 9706.1 Record",
         "enabled": True,
@@ -554,7 +580,7 @@ RULE_CATALOG: dict[str, dict[str, Any]] = {
         "status": "disabled",
         "catalog_status": "disabled",
         "enabled": False,
-        "modes": ("report_ptr",),
+        "modes": ("report_ptr", "report_ptr_report"),
         "disabled_reason_code": "PTR_NOT_VALIDATED",
     },
 }

@@ -7,7 +7,7 @@
 
 当前工程已经实现能力目录、Case/Document/Run 状态、Blob 存储、自动队列 Worker、Finding/Evidence 发布和 ReviewAction 追加：`.venv/bin/python -m mvp.capability_server` 提供 `/healthz`、`/api/v1/capabilities` 和 `/api/v1/rules`；`.venv/bin/python -m mvp.run_state_server` 提供本机 CSRF 会话、Case、Document、Run preflight、Run 快照、规则执行账本、事件、Finding、复核和取消入口；`mvp.run_coordinator` 负责一次 queued Run 的子进程执行与发布闸门。该服务的模式和规则目录来自 `mvp.capabilities`，PTR 保持 `PTR_NOT_VALIDATED` 禁用。
 
-> **当前实现边界（2026-10-03）**：以上代码路由是可运行契约。本文中标注“规划”的幂等键、SSE、Artifact 图片、导出、签名和完整分页游标尚未暴露为当前路由；公开脱敏页 `docs/prototypes/workbench-upload.html` 与本机真实工作台均已接入上传、模式选择、preflight、Run 启动和结果轮询。当前事件通过 `GET /api/v1/runs/{run_id}/events` 轮询读取，创建接口默认不提供业务幂等保证。客户端和部署说明应以代码路由为准，规划章节只用于后续设计。
+> **当前实现边界（2026-10-05）**：以上代码路由是可运行契约。幂等键、SSE、Artifact 图片、导出、签名和完整分页游标尚未暴露为当前路由；当前事件通过 `GET /api/v1/runs/{run_id}/events` 列表轮询读取，创建接口默认不提供业务幂等保证。下列端点也尚未实现，均属于规划：`GET /api/v1/version`、`GET /api/v1/system/diagnostics`、`GET /api/v1/documents/{document_id}/pages/{page_number}/image`、`POST /api/v1/runs/{run_id}:rerun`、`GET /api/v1/runs`。公开脱敏页 `docs/prototypes/workbench-upload.html` 与本机真实工作台已接入上传、模式选择、preflight、Run 启动和结果轮询。客户端和部署说明应以代码路由为准，规划章节只用于后续设计。
 
 本 API 只暴露结构化、可追溯的事实和状态。服务端拥有模式校验、规则计算、总体聚合、证据路径和人工复核重算的解释权；客户端不能提交机器结论或派生结论。
 
@@ -133,8 +133,12 @@ DocumentRole:
 |---|---|---|---|
 | `report_self` | `report` | 其他全部 | 是 |
 | `report_ptr` | `report`, `ptr` | 两种 Record | 否 |
+| `report_ptr_report` | `report`, `ptr` | 两种 Record | 禁用 |
+| `report_diff` | 尚未冻结 | 全部 | 禁用 |
 | `report_record_9706_1` | `report`, `record_9706_1` | PTR、9706.202 | 否 |
 | `report_record_9706_202` | `report`, `record_9706_202` | PTR、9706.1 | 否 |
+
+能力目录显式列出四种边界：`report_self` 已启用；`report_ptr` 与 `report_ptr_report` 均以 `enabled=false`、`PTR_NOT_VALIDATED` 禁用；`report_diff` 以 `enabled=false`、`DIFF_NOT_SPECIFIED` 禁用，因为其双输入角色与规则计划尚未冻结。组合模式不能当作 `report_ptr` 别名，差异模式也不能从现有 Record 模式推导；这些请求会在 preflight/create/worker/publish 生命周期按 `MODE_DISABLED` 拒绝。
 
 每个角色恰好一个 Document。创建 Run 时多传、少传、角色不符都拒绝，不自动猜测或选择“最近上传”的文件。
 对比模式仍解析并完整显示 Report，也可在对应模式 Finding 中引用 Report 侧比较证据；但不会执行、注入、显示或聚合 `REPORT-*` 自检 Finding。
@@ -540,15 +544,14 @@ Run 的 `machine_overall_status` 仅在 `lifecycle_status=succeeded` 时有值�
   },
   "base_run_review_revision": 0,
   "run_review_revision": 1,
-  "actor_id": "local-user",
-  "actor_source": "loopback_session",
+  "actor_id": "<opaque-loopback-session-id>",
   "note": "按 Record 裁剪人工读取",
   "created_at": "2026-09-29T09:00:00.000Z",
   "withdraws_review_action_id": null
 }
 ```
 
-ReviewAction 只追加，不物理修改或删除。`actor_id` 与 `actor_source` 由后端从已验证的本机会话固定派生，不接受客户端传入；第一版单用户默认为 `local-user / loopback_session`，未来增加用户系统时必须保留旧值的原始语义。
+ReviewAction 只追加，不物理修改或删除。当前实现仅持久化由已验证本机会话派生的 opaque `actor_id`（每个状态服务进程固定的 session id）；不接受客户端传入，也不把 `X-Actor-Id` 作为身份来源。`actor_source` 仍是后续用户系统的契约字段，当前响应不伪造该字段。
 
 ### 2.10 `Artifact`
 
@@ -606,7 +609,7 @@ GET /healthz
 
 数据库不可用时返回 `503`。该端点不返回路径、文件名或敏感诊断。
 
-### 3.2 版本
+### 3.2 版本（规划；当前未实现）
 
 ```http
 GET /api/v1/version
@@ -799,7 +802,7 @@ GET /api/v1/rules
 
 当前规则目录与上述计划保持一致：Report 自检为 12 条独立规则；9706.1 启用结构、模板外数值发现和元数据对象核对；9706.202 启用图例、结构、字段映射、身份和元数据核对。9706.202 每个正文单元还会在 `RECORD202-BODY-STATUS` 中严格比较项目名称，项目名差异进入 `mismatch`，证据不足进入 `manual`；`scope_ledger` 保存项目、条款、要求、出现次序、数值、身份和元数据的对象级记录，S48 表 3 内容标记为 `excluded`。`REPORT-R09-R10` 仅为早期结果兼容别名，不在当前 Report 自检计划中。上述 ID 与 `mvp.capabilities.RULE_CATALOG` 及 `/api/v1/rules` 返回值保持一致。
 
-### 3.5 系统诊断
+### 3.5 系统诊断（规划；当前未实现）
 
 ```http
 GET /api/v1/system/diagnostics
@@ -1140,7 +1143,7 @@ ETag: "<blob-sha256>"
 
 这是完整 PDF.js 查看器的权威字节来源，不是下载单个证据裁剪的接口。Report 自检加载完整 Report；对比模式分别加载完整 Report 与完整 PTR/Record。客户端可按 Evidence 的页码和 bbox 跳转高亮，但必须允许用户继续浏览该 Document 的所有页面。
 
-### 5.5 渲染单页图像
+### 5.5 渲染单页图像（规划；当前未实现）
 
 ```http
 GET /api/v1/documents/{document_id}/pages/{page_number}/image?scale=1.5&format=webp
@@ -1256,7 +1259,7 @@ X-CSRF-Token: <token>
 
 客户端断开或关闭页面不会自动调用取消。
 
-### 6.4 重跑
+### 6.4 重跑（规划；当前未实现）
 
 ```http
 POST /api/v1/runs/{run_id}:rerun
@@ -1278,7 +1281,7 @@ X-CSRF-Token: <token>
 
 重跑复用精确 Document ID 和 Blob 哈希，创建新 Run，并设置 `parent_run_id`。若任一输入 Blob 缺失或哈希不符，返回 `409 RUN_INPUT_UNAVAILABLE`。旧 ReviewAction 不复制到新 Run。
 
-### 6.5 Run 列表
+### 6.5 Run 列表（规划；当前未实现）
 
 ```http
 GET /api/v1/runs?query=SAMPLE-D&mode=report_record_9706_1&lifecycle_status=succeeded&machine_overall_status=error&created_from=2026-09-01T00:00:00%2B08:00&created_to=2026-10-01T00:00:00%2B08:00&limit=25&cursor=...
@@ -1294,7 +1297,7 @@ GET /api/v1/runs?query=SAMPLE-D&mode=report_record_9706_1&lifecycle_status=succe
 
 `query` 不搜索 PDF 正文、OCR 全文、Finding 摘要或本机路径。`report_number_search` 只由达到可靠性门槛的 Report 身份提取写入；未可靠提取时为 `null`，仍可以用原始文件名前缀找到 Run。结果按 `created_at DESC, id DESC` 排序，cursor 绑定全部筛选条件的哈希；条件改变后不得复用旧 cursor。数据库为 Report 编号搜索键、Document 文件名搜索键、mode/状态/日期建立索引，列表请求不临时重读 PDF。
 
-## 7. SSE 事件流
+## 7. SSE 事件流（规划；当前未实现）
 
 ```http
 GET /api/v1/runs/{run_id}/events
@@ -1635,6 +1638,12 @@ RUN_INPUT_UNAVAILABLE
 RUN_PREFLIGHT_REQUIRED
 RUN_PLAN_CHANGED
 NO_EXECUTABLE_RULES
+RULE_EXECUTION_NO_FINDING
+RULE_EXECUTION_ZERO_RESULT_INVALID
+RUN_INPUT_SNAPSHOT_INVALID
+RUN_INPUT_HASH_MISMATCH
+WORKER_ARTIFACT_INVALID
+RUN_DISPATCH_FAILED
 REQUIRED_COMPONENT_UNAVAILABLE
 MODE_DISABLED
 RULE_BUNDLE_UNAVAILABLE
@@ -1650,6 +1659,7 @@ Finding、Evidence 与 Review：
 FINDING_NOT_REVIEWABLE
 INVALID_REVIEW_ACTION
 REVIEW_INPUT_SCHEMA_MISMATCH
+REVIEW_ACTION_NOT_FOUND
 READ_ONLY_FIELD_SUBMITTED
 REVIEW_ACTION_HAS_DEPENDENTS
 REVIEW_REVISION_NOT_FOUND

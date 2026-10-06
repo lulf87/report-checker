@@ -38,6 +38,7 @@ class UploadWorkbenchTests(unittest.TestCase):
 
     def test_root_entry_opens_public_upload_workbench(self) -> None:
         root_entry = ROOT_ENTRY_PATH.read_text(encoding="utf-8")
+        self.assertIn("/workbench-upload.html", root_entry)
         self.assertIn("/docs/prototypes/workbench-upload.html", root_entry)
         self.assertIn("window.location.replace", root_entry)
 

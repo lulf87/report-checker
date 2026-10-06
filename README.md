@@ -246,15 +246,23 @@ docs/prototypes/workbench-upload.html
 
 ```bash
 .venv/bin/python -m mvp.run_state_server --port 8767
-python3 -m http.server 8765
+python3 -m mvp.static_server --mode upload --bind 127.0.0.1 --port 8765
 ```
 
-访问 `http://127.0.0.1:8765/` 进入报告核对前端；根路径会打开上传工作台。选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。上传工作台的直接地址仍为 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html`。
+访问 `http://127.0.0.1:8765/` 进入报告核对前端；也可以直接访问 `http://127.0.0.1:8765/workbench-upload.html`。历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html` 继续兼容。安全静态启动器固定监听 `127.0.0.1`，上传模式只允许 `docs/prototypes` 下的页面和依赖，不会暴露项目根目录中的素材、运行结果、SQLite 数据库或 Git 元数据。选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。
+
+9706.1 Record 如果不是已验证的 851 状态框模板，会生成一条带双侧证据的 `manual` 输入变体 Finding，并将未执行的规则标记为 `unsupported`，保留实际库存、模板期望和复核动作。Worker 不会把该情况报告成通用运行崩溃。
 
 上传页面契约测试：
 
 ```bash
 .venv/bin/python -m unittest tests.test_workbench_upload -v
+```
+
+静态启动器的回环、路径穿越和敏感路径阻断测试：
+
+```bash
+.venv/bin/python -m unittest tests.test_static_server -v
 ```
 
 ## 真实数据核对工作台
@@ -270,14 +278,20 @@ docs/prototypes/workbench-real.html
 在项目根目录启动本机 HTTP 服务：
 
 ```bash
-python3 -m http.server 8765
+python3 -m mvp.static_server --mode real --bind 127.0.0.1 --port 8765
 ```
 
 然后打开：
 
 ```text
-http://127.0.0.1:8765/docs/prototypes/workbench-real.html
+http://127.0.0.1:8765/workbench-real.html
 ```
+
+真实工作台的历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-real.html` 继续兼容；根路径在 `--mode real` 下会直接打开真实工作台。
+
+真实模式仍只监听回环地址；启动器从页面中的 10 份运行清单读取 `result.json`，并且只允许这些结果声明的证据图片和 `素材/` 下源 PDF。项目根目录、未列入清单的 `output` 文件、SQLite、`.git` 和 `.aws` 均不会被静态服务读取。
+
+通用 Record 数值比较层支持显式括号区间、阈值、单位换算、报告精度和显式极性判定；未声明端点包含关系的 `~`、`至`、`±` 文本进入人工复核。两个完整 Record 扫描器仍按各自模板路径逐步接入这些语义，未接入的字段继续保留 `partial` 状态。
 
 不要直接双击 HTML 文件；`file://` 会受到浏览器本地资源读取限制。页面也会在这种情况下显示上述启动提示。
 

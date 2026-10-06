@@ -30,6 +30,7 @@ from mvp.checker import (
     render_cell_for_ocr,
     sha256_file,
 )
+from mvp.input_variants import Record61StatusInventoryError
 from mvp.record_full import (
     ComparisonResult,
     CoverageEntry,
@@ -55,6 +56,7 @@ BODY_LAST_PDF_PAGE = 96
 EXPECTED_NATIVE_BOX_TRIPLETS = 849
 EXPECTED_ALTERNATE_BOX_TRIPLETS = 2
 EXPECTED_STATUS_ROWS = EXPECTED_NATIVE_BOX_TRIPLETS + EXPECTED_ALTERNATE_BOX_TRIPLETS
+
 
 STATUS_BY_COLUMN = {0: "符合", 1: "不符合", 2: "不适用"}
 BOX_GLYPHS = {"□", "\uf0a3"}
@@ -393,9 +395,13 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
         or native_count != EXPECTED_NATIVE_BOX_TRIPLETS
         or alternate_count != EXPECTED_ALTERNATE_BOX_TRIPLETS
     ):
-        raise ValueError(
-            "unexpected GB 9706.1 status inventory: "
-            f"total={len(rows)}, native={native_count}, alternate={alternate_count}"
+        raise Record61StatusInventoryError(
+            total=len(rows),
+            native=native_count,
+            alternate=alternate_count,
+            expected_total=EXPECTED_STATUS_ROWS,
+            expected_native=EXPECTED_NATIVE_BOX_TRIPLETS,
+            expected_alternate=EXPECTED_ALTERNATE_BOX_TRIPLETS,
         )
     return rows, {
         "method": "native_box_glyphs_grouped_by_page_and_y_then_bound_to_status_table_cell",
@@ -3049,6 +3055,7 @@ __all__ = [
     "EXPECTED_ALTERNATE_BOX_TRIPLETS",
     "EXPECTED_NATIVE_BOX_TRIPLETS",
     "EXPECTED_STATUS_ROWS",
+    "Record61StatusInventoryError",
     "NUMERIC_TARGETS_BY_SAMPLE",
     "extract_record_61_status_rows",
     "run_record_61_full",

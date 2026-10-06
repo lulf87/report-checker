@@ -106,12 +106,14 @@ class ReportSelfRunnerTests(unittest.TestCase):
 
 
 class FourModeDispatcherTests(unittest.TestCase):
-    def test_capability_registry_has_four_modes(self) -> None:
+    def test_capability_registry_has_explicit_mode_boundaries(self) -> None:
         self.assertEqual(
             tuple(MODE_CAPABILITIES),
             (
                 "report_self",
                 "report_ptr",
+                "report_ptr_report",
+                "report_diff",
                 "report_record_9706_1",
                 "report_record_9706_202",
             ),

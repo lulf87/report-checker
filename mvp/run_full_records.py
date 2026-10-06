@@ -15,6 +15,9 @@ try:
 except ImportError:
     import fitz
 
+from mvp.capabilities import MODE_CATALOG
+from mvp.input_variants import Record61StatusInventoryError
+
 
 MODE_CONFIG = {
     "report_record_9706_1": {
@@ -425,6 +428,126 @@ def _overall_status(
     return "pass"
 
 
+def _inventory_evidence_location(page_rects: Sequence[fitz.Rect], page: int) -> dict[str, Any]:
+    """Return a small, valid page anchor for an input-variant finding."""
+
+    if not page_rects:
+        raise ValueError("PDF has no pages for inventory evidence")
+    page = max(1, min(page, len(page_rects)))
+    rect = page_rects[page - 1]
+    # Keep the anchor away from a page edge while remaining valid for small
+    # synthetic fixtures used by the contract tests.
+    x0 = min(max(1.0, float(rect.x0) + 1.0), max(float(rect.x0), float(rect.x1) - 2.0))
+    y0 = min(max(1.0, float(rect.y0) + 1.0), max(float(rect.y0), float(rect.y1) - 2.0))
+    x1 = min(float(rect.x1) - 1.0, x0 + 1.0)
+    y1 = min(float(rect.y1) - 1.0, y0 + 1.0)
+    if x1 <= x0 or y1 <= y0:
+        x0, y0 = float(rect.x0), float(rect.y0)
+        x1, y1 = float(rect.x1), float(rect.y1)
+    return {"pdf_page": page, "bbox": [round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)]}
+
+
+def _unsupported_record61_inventory_result(
+    error: Record61StatusInventoryError,
+    *,
+    report: Path,
+    record: Path,
+    report_page_rects: Sequence[fitz.Rect],
+    record_page_rects: Sequence[fitz.Rect],
+) -> dict[str, Any]:
+    """Build an auditable result for a known but unsupported 9706.1 variant.
+
+    The structure rule emits one manual Finding with both source locations.
+    All downstream rules are explicitly marked unsupported, so the API keeps
+    the difference between an input variant and a Worker crash.
+    """
+
+    report_location = _inventory_evidence_location(report_page_rects, 1)
+    record_location = _inventory_evidence_location(record_page_rects, 6)
+    details = {
+        "reason_code": error.code,
+        "inventory": error.inventory,
+        "report_filename": report.name,
+        "record_filename": record.name,
+        "next_action": "确认Record模板版本、页面完整性或补充适配后重新运行",
+    }
+    rule_ids = MODE_CATALOG["report_record_9706_1"]["rule_ids"]
+    structure_rule = "RECORD61-STRUCTURE"
+    finding = {
+        "id": "RECORD61-STRUCTURE:status-inventory",
+        "rule_id": structure_rule,
+        "status": "manual",
+        "title": "9706.1 Record 状态库存不在已验证模板范围",
+        "summary": (
+            f"检测到 {error.inventory['observed']['total']} 条状态行 "
+            f"（原生 {error.inventory['observed']['native']}、异体 {error.inventory['observed']['alternate']}），"
+            f"当前模板要求 {error.inventory['expected']['total']} 条；需确认模板版本或页面完整性。"
+        ),
+        "details": details,
+        "reason_code": error.code,
+        "evidence_locations": [
+            {**report_location, "role": "report", "semantic_role": "comparison_context"},
+            {**record_location, "role": "record_9706_1", "semantic_role": "status_inventory"},
+        ],
+    }
+    source_row_id = "record61:status_inventory"
+    report_row_id = "report:status_inventory"
+    ledger_entry = {
+        "entry_id": source_row_id,
+        "rule_id": structure_rule,
+        "source_row_id": source_row_id,
+        "target_row_id": report_row_id,
+        "disposition": "manual",
+        "reason_code": error.code,
+        "reason_detail": details,
+        "record_location": record_location,
+        "report_location": report_location,
+    }
+    coverage = {
+        "level": "input_validation",
+        "comparison_complete": False,
+        "source_rows": {
+            "eligible": 1,
+            "accounted": 1,
+            "conserved": True,
+            "row_ids": [source_row_id],
+            "dispositions": {"matched": 0, "manual": 1, "mismatch": 0, "not_applicable": 0, "excluded": 0},
+        },
+        "report_rows": {
+            "eligible": 1,
+            "accounted": 1,
+            "conserved": True,
+            "row_ids": [report_row_id],
+            "dispositions": {"matched": 0, "manual": 1, "mismatch": 0, "not_applicable": 0, "excluded": 0},
+        },
+        "input_variant": details,
+    }
+    execution_states = {
+        rule_id: (
+            {"state": "succeeded"}
+            if rule_id == structure_rule
+            else {
+                "state": "unsupported",
+                "reason_code": error.code,
+                "reason_detail": details,
+            }
+        )
+        for rule_id in rule_ids
+    }
+    return {
+        "schema_version": "record-full-input-variant-1.0",
+        "mode": "report_record_9706_1",
+        "overall_status": "manual",
+        "machine_overall_status": "manual",
+        "comparison_complete": False,
+        "input_variant": details,
+        "rule_execution_states": execution_states,
+        "findings": [finding],
+        "ledger": [ledger_entry],
+        "coverage": coverage,
+    }
+
+
 def _position_text(location: dict[str, Any] | None, role_label: str) -> str:
     if location is None:
         return "—"
@@ -532,11 +655,22 @@ def run_full_records(
     before = {"report": _sha256(report), "record": _sha256(record)}
     try:
         scanner = _load_scanner(mode)
-        scanner_payload = scanner(
-            report_path=report,
-            record_path=record,
-            output_dir=output,
-        )
+        try:
+            scanner_payload = scanner(
+                report_path=report,
+                record_path=record,
+                output_dir=output,
+            )
+        except Record61StatusInventoryError as exc:
+            if mode != "report_record_9706_1":
+                raise
+            scanner_payload = _unsupported_record61_inventory_result(
+                exc,
+                report=report,
+                record=record,
+                report_page_rects=report_page_rects,
+                record_page_rects=record_page_rects,
+            )
         payload = _validate_payload(
             mode,
             scanner_payload,

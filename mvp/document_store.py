@@ -75,6 +75,19 @@ class DocumentStore:
                 pdf_version = str(document.pdf_version())
             except Exception:
                 pdf_version = None
+            page_geometry = []
+            for page_index in range(page_count):
+                page = document.load_page(page_index)
+                rect = page.rect
+                page_geometry.append(
+                    {
+                        "page_index": page_index,
+                        "page_number": page_index + 1,
+                        "page_width": float(rect.width),
+                        "page_height": float(rect.height),
+                        "rotation": int(page.rotation or 0),
+                    }
+                )
         finally:
             document.close()
 
@@ -107,6 +120,7 @@ class DocumentStore:
             "media_type": "application/pdf",
             "page_count": page_count,
             "encrypted": encrypted,
+            "page_geometry": page_geometry,
         }
         document_id = str(uuid4())
         with self.store._lock:
@@ -190,7 +204,7 @@ class DocumentStore:
         document = self.get_document(document_id)
         with self.store._lock:
             row = self.store._connection.execute(
-                "SELECT storage_relpath FROM blobs WHERE id = ?", (document["blob"]["id"],)
+                "SELECT storage_relpath, sha256, size_bytes FROM blobs WHERE id = ?", (document["blob"]["id"],)
             ).fetchone()
         if row is None:
             raise RunStoreError("DOCUMENT_STORAGE_INVALID", "Document Blob 引用无效", status=500)
@@ -200,11 +214,37 @@ class DocumentStore:
         path = (self.storage_root / relative).resolve()
         if self.storage_root not in path.parents or not path.is_file():
             raise RunStoreError("DOCUMENT_CONTENT_MISSING", "Document 内容不存在", status=500)
+        digest = hashlib.sha256()
+        size_bytes = 0
+        try:
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    size_bytes += len(chunk)
+                    digest.update(chunk)
+        except OSError as exc:
+            raise RunStoreError("DOCUMENT_CONTENT_MISSING", "Document 内容读取失败", status=500) from exc
+        if size_bytes != int(row["size_bytes"]) or digest.hexdigest() != str(row["sha256"]):
+            raise RunStoreError(
+                "DOCUMENT_CONTENT_INTEGRITY_ERROR",
+                "Document Blob 内容与数据库哈希或大小不一致",
+                status=409,
+                details={"document_id": document_id},
+            )
         return path
 
     def read_content(self, document_id: str) -> bytes:
         try:
-            return self.source_path(document_id).read_bytes()
+            path = self.source_path(document_id)
+            content = path.read_bytes()
+            document = self.get_document(document_id)
+            if len(content) != int(document["blob"]["size_bytes"]) or hashlib.sha256(content).hexdigest() != document["blob"]["sha256"]:
+                raise RunStoreError(
+                    "DOCUMENT_CONTENT_INTEGRITY_ERROR",
+                    "Document Blob 内容与数据库哈希或大小不一致",
+                    status=409,
+                    details={"document_id": document_id},
+                )
+            return content
         except OSError as exc:
             raise RunStoreError("DOCUMENT_CONTENT_MISSING", "Document 内容读取失败", status=500) from exc
 
@@ -244,6 +284,7 @@ class DocumentStore:
                 "page_count": document["page_count"],
                 "pdf_version": document["pdf_version"],
                 "preflight_status": document["preflight_status"],
+                "page_geometry": document["preflight"].get("page_geometry", []),
             }
         return snapshot
 

@@ -92,6 +92,23 @@ class RunStoreTests(unittest.TestCase):
         self.assertEqual(store.recover_interrupted_runs(), [])
         store.close()
 
+    def test_list_queued_runs_excludes_cancelled_and_running_jobs(self) -> None:
+        store = RunStore()
+        case = store.create_case("queued listing")
+        queued = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "queued"}
+        )
+        running = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "running"}
+        )
+        store.transition_run(running["id"], "running")
+        cancelled = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "cancelled"}
+        )
+        store.transition_run(cancelled["id"], "cancelled")
+        self.assertEqual([item["id"] for item in store.list_queued_runs()], [queued["id"]])
+        store.close()
+
     def test_recovery_quarantines_a_legacy_disabled_mode(self) -> None:
         store = RunStore()
         case = store.create_case("legacy ptr")
@@ -170,6 +187,22 @@ class RunStoreTests(unittest.TestCase):
         store = RunStore()
         case = store.create_case("重复运行 ID")
 
+        timestamp = _now()
+        with store._lock:
+            store._connection.execute(
+                "INSERT INTO blobs(id, sha256, size_bytes, media_type, storage_relpath, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+                ("blob-repeated", "a" * 64, 1, "application/pdf", "aa/" + "a" * 64 + ".pdf", timestamp),
+            )
+            for document_id in ("r1", "r2"):
+                store._connection.execute(
+                    """INSERT INTO documents(
+                        id, case_id, blob_id, role, original_filename, page_count, pdf_version,
+                        encrypted, preflight_status, preflight_json, created_at
+                    ) VALUES(?, ?, ?, 'report', ?, 1, '1.7', 0, 'passed', ?, ?)""",
+                    (document_id, case["id"], "blob-repeated", document_id + ".pdf",
+                     _json({"status": "passed", "page_count": 1, "page_geometry": [{"page_width": 612.0, "page_height": 792.0, "rotation": 0}]}), timestamp),
+                )
+
         def publish_one(run_id: str) -> dict:
             store.transition_run(run_id, "running")
             for execution in store.get_rule_executions(run_id):
@@ -197,11 +230,23 @@ class RunStoreTests(unittest.TestCase):
                 },
             )
 
+        def snapshot(document_id: str) -> dict:
+            return {
+                "report": {
+                    "document_id": document_id,
+                    "blob_sha256": "a" * 64,
+                    "page_count": 1,
+                    "page_geometry": [{"page_width": 612.0, "page_height": 792.0, "rotation": 0}],
+                }
+            }
+
         first = store.create_run(
-            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r1"}
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r1"},
+            input_snapshot=snapshot("r1"),
         )
         second = store.create_run(
-            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r2"}
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r2"},
+            input_snapshot=snapshot("r2"),
         )
         self.assertEqual(publish_one(first["id"])["lifecycle_status"], "succeeded")
         self.assertEqual(publish_one(second["id"])["lifecycle_status"], "succeeded")
@@ -274,9 +319,86 @@ class RunStoreTests(unittest.TestCase):
         self.assertEqual(store.get_run(run["id"])["lifecycle_status"], "failed")
         store.close()
 
+    def test_publish_gate_rejects_succeeded_rule_without_finding(self) -> None:
+        store = RunStore()
+        case = store.create_case("missing finding")
+        run = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r"}
+        )
+        store.transition_run(run["id"], "running")
+        for execution in store.get_rule_executions(run["id"]):
+            store.transition_rule_execution(run["id"], execution["rule_id"], "running")
+            store.transition_rule_execution(
+                run["id"], execution["rule_id"], "succeeded", finding_count=0
+            )
+        with self.assertRaises(RunStoreError) as error:
+            store.publish_result(
+                run["id"],
+                {
+                    "mode": "report_self",
+                    "machine_overall_status": "pass",
+                    "status_counts": {"pass": 0, "warning": 0, "manual": 0, "error": 0},
+                    "findings": [],
+                },
+            )
+        self.assertEqual(error.exception.code, "RULE_EXECUTION_NO_FINDING")
+        self.assertEqual(store.get_run(run["id"])["lifecycle_status"], "failed")
+        self.assertEqual(store.list_findings(run["id"]), [])
+        store.close()
+
+    def test_publish_gate_allows_explicit_non_applicable_rules_without_findings(self) -> None:
+        store = RunStore()
+        case = store.create_case("explicit rule disposition")
+        run = store.create_run(
+            case_id=case["id"], mode="report_self", inputs={"report_document_id": "r"}
+        )
+        store.transition_run(run["id"], "running")
+        executions = store.get_rule_executions(run["id"])
+        for index, execution in enumerate(executions):
+            store.transition_rule_execution(run["id"], execution["rule_id"], "running")
+            if index == 0:
+                store.transition_rule_execution(
+                    run["id"], execution["rule_id"], "succeeded", finding_count=1
+                )
+            else:
+                store.transition_rule_execution(
+                    run["id"],
+                    execution["rule_id"],
+                    "not_applicable",
+                    reason_code=f"FIXTURE_{execution['rule_id']}_NOT_APPLICABLE",
+                )
+        published = store.publish_result(
+            run["id"],
+            {
+                "mode": "report_self",
+                "machine_overall_status": "pass",
+                "status_counts": {"pass": 1, "warning": 0, "manual": 0, "error": 0},
+                "findings": [
+                    {"id": "REPORT-R01-FIXTURE", "rule_id": executions[0]["rule_id"], "status": "pass"}
+                ],
+            },
+        )
+        self.assertEqual(published["lifecycle_status"], "succeeded")
+        self.assertEqual(published["finding_counts"]["pass"], 1)
+        store.close()
+
     def test_published_findings_evidence_and_review_are_auditable(self) -> None:
         store = RunStore()
         case = store.create_case("case")
+        timestamp = _now()
+        with store._lock:
+            store._connection.execute(
+                "INSERT INTO blobs(id, sha256, size_bytes, media_type, storage_relpath, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+                ("blob-review", "a" * 64, 1, "application/pdf", "aa/" + "a" * 64 + ".pdf", timestamp),
+            )
+            store._connection.execute(
+                """INSERT INTO documents(
+                    id, case_id, blob_id, role, original_filename, page_count, pdf_version,
+                    encrypted, preflight_status, preflight_json, created_at
+                ) VALUES(?, ?, ?, 'report', 'report.pdf', 1, '1.7', 0, 'passed', ?, ?)""",
+                ("report", case["id"], "blob-review",
+                 _json({"status": "passed", "page_count": 1, "page_geometry": [{"page_width": 612.0, "page_height": 792.0, "rotation": 0}]}), timestamp),
+            )
         run = store.create_run(
             case_id=case["id"],
             mode="report_self",
@@ -286,18 +408,24 @@ class RunStoreTests(unittest.TestCase):
                         "document_id": "report",
                         "blob_sha256": "a" * 64,
                         "page_count": 1,
+                        "page_geometry": [{"page_width": 612.0, "page_height": 792.0, "rotation": 0}],
                     }
                 },
         )
         store.transition_run(run["id"], "running")
         for rule in store.get_rule_executions(run["id"]):
             store.transition_rule_execution(run["id"], rule["rule_id"], "running")
-            store.transition_rule_execution(
-                run["id"],
-                rule["rule_id"],
-                "succeeded",
-                finding_count=1 if rule["rule_id"] == "REPORT-R01" else 0,
-            )
+            if rule["rule_id"] == "REPORT-R01":
+                store.transition_rule_execution(
+                    run["id"], rule["rule_id"], "succeeded", finding_count=1
+                )
+            else:
+                store.transition_rule_execution(
+                    run["id"],
+                    rule["rule_id"],
+                    "not_applicable",
+                    reason_code=f"FIXTURE_{rule['rule_id']}_NOT_APPLICABLE",
+                )
         store.publish_result(
             run["id"],
             {
@@ -342,18 +470,36 @@ class RunStoreTests(unittest.TestCase):
             )
         self.assertEqual(readonly.exception.code, "READ_ONLY_FIELD_SUBMITTED")
         withdrawn = store.append_review_action(
-            finding["id"], "withdraw", base_review_revision=1
+            finding["id"],
+            "withdraw",
+            base_review_revision=1,
+            observation={"review_action_id": reviewed["action"]["id"]},
         )
         self.assertEqual(withdrawn["finding"]["review_status"], "pending")
         self.assertIsNone(withdrawn["finding"]["resolved_status"])
         self.assertEqual(store.get_run(run["id"])["resolved_overall_status"], "manual")
-        repeated_withdraw = store.append_review_action(
-            finding["id"], "withdraw", base_review_revision=2
+        with self.assertRaises(RunStoreError) as repeated_withdraw:
+            store.append_review_action(
+                finding["id"],
+                "withdraw",
+                base_review_revision=2,
+                observation={"review_action_id": reviewed["action"]["id"]},
+            )
+        self.assertEqual(repeated_withdraw.exception.code, "REVIEW_ACTION_HAS_DEPENDENTS")
+        second_review = store.append_review_action(
+            finding["id"],
+            "confirm_candidate",
+            base_review_revision=2,
+            observation={"candidate_id": "candidate-2", "confirmation": True},
         )
-        self.assertEqual(repeated_withdraw["finding"]["review_status"], "pending")
-        self.assertIsNone(repeated_withdraw["finding"]["resolved_status"])
+        self.assertEqual(second_review["review_revision"], 3)
         with self.assertRaises(RunStoreError) as conflict:
-            store.append_review_action(finding["id"], "withdraw", base_review_revision=0)
+            store.append_review_action(
+                finding["id"],
+                "withdraw",
+                base_review_revision=2,
+                observation={"review_action_id": second_review["action"]["id"]},
+            )
         self.assertEqual(conflict.exception.code, "REVIEW_REVISION_CONFLICT")
         store.close()
 

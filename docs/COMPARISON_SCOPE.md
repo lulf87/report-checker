@@ -5,7 +5,9 @@
 **适用模式**：`report_self`、`report_record_9706_1`、`report_record_9706_202`。  
 **PTR**：`report_ptr` 仍保持禁用，原因是 `PTR_NOT_VALIDATED`；当前目录规则 `PTR-P01` 仅作为禁用占位，不将 PTR 自动比对视为已交付能力。
 
-本文件是范围确认文件，不把“已列入范围”表述为“已经全部自动实现”。“实现状态”用于说明当前规则目录中已有的规则和仍需接入的检查项。纳入范围的对象在运行结果中必须进入 Coverage Ledger；无法可靠识别时记为 `manual`，不能静默跳过。
+`report_ptr_report` 与 `report_diff` 已在能力目录中显式保留为禁用边界：前者沿用 `PTR_NOT_VALIDATED`，后者使用 `DIFF_NOT_SPECIFIED`。两者仍没有可执行规则计划；输入角色和规则冻结前必须在 preflight/create/worker/publish 全链路拒绝，不能从现有 `report_ptr` 或 Record 模式推导。
+
+本文件是范围确认文件，不把“已列入范围”表述为“已经全部自动实现”。“实现状态”用于说明当前规则目录中已有的规则和仍需接入的检查项。`confirmed` 仅表示范围已确认；`validated` 表示当前实现、运行结果、证据与测试已闭合；`partial` 表示已接入但仍有字段、语义、发现范围或判定细节待扩展；`planned` 表示已纳入范围但尚未接入当前规则目录。纳入范围的对象在运行结果中必须进入 Coverage Ledger；无法可靠识别时记为 `manual`，不能静默跳过。
 
 ## 结果处置
 
@@ -21,7 +23,7 @@
 
 ## 范围总表
 
-状态说明：`confirmed` 表示已确认纳入；`excluded_phase1` 表示第一阶段排除；`planned` 表示已纳入范围但当前规则目录尚未完成对应实现；`validated` 表示当前规则目录已有对应规则。
+状态说明：`confirmed` 表示已确认纳入；`excluded_phase1` 表示第一阶段排除；`planned` 表示已纳入范围但尚未接入当前规则目录；`partial` 表示已接入但字段、语义、发现范围或判定细节仍待扩展；`validated` 表示当前实现、运行结果、证据与测试已闭合。
 
 ### A. 三个模式共用基础检查（S01–S08）
 
@@ -61,15 +63,15 @@
 | S22 | Record 首页报告编号、制造商、样品名称、型号规格、出厂编号与 Report 实际值 | confirmed | `RECORD61-IDENTITY` / validated |
 | S23 | Record 页码、打印页码、表头和模板结构完整 | confirmed | `RECORD61-STRUCTURE` / validated；范围映射仍由 `RECORD61-SCOPE` 支撑 |
 | S24 | 物理页 6–96 的全部 851 个状态框均被识别 | confirmed | `RECORD61-BODY-STATUS` / validated |
-| S25 | 状态框选中列、空白、注销线和异体状态框正确识别 | confirmed | `RECORD61-BODY-STATUS` / validated；需扩展状态语义 |
-| S26 | 每个 Record 状态行映射到 Report 项目、条款、标准要求、建议/条件、检验结果 | confirmed | `RECORD61-SCOPE` / validated；需扩展字段级映射 |
+| S25 | 状态框选中列、空白、注销线和异体状态框正确识别 | confirmed | `RECORD61-BODY-STATUS` / partial；需扩展状态语义 |
+| S26 | 每个 Record 状态行映射到 Report 项目、条款、标准要求、建议/条件、检验结果 | confirmed | `RECORD61-SCOPE` / partial；需扩展字段级映射 |
 | S27 | Record“符合、不符合、不适用”等状态与 Report 结果一致 | confirmed | `RECORD61-BODY-STATUS` / validated |
 | S28 | Report 序号 1–117 的每个单项结论与 Record 状态聚合结果一致 | confirmed | `RECORD61-SEQUENCE-CONCLUSION` / validated |
 | S29 | Report 序号 118 / 第 17 章按当前模板规则处置为 `not_applicable` | confirmed | `RECORD61-SEQUENCE-CONCLUSION` / validated |
-| S30 | 当前 5 个数值块之外，当前已知模板中的全部可识别数值和百分比单元格 | confirmed | `RECORD61-BODY-NUMERIC`、`RECORD61-BODY-PERCENT` / validated；需扩展发现范围 |
-| S31 | 数值单位换算、上下限、区间、精度、极性、最大值和聚合方式 | confirmed | `RECORD61-BODY-NUMERIC` / validated；需扩展判定细节 |
-| S32 | Record 与 Report 的项目、条款、要求、建议、条件、单位、结果文本逐字段一致 | confirmed | `RECORD61-SCOPE` / validated；需扩展字段级比对 |
-| S33 | Record/Report 缺失行、额外行、无法唯一映射行或模板版本变化 | confirmed | `RECORD61-SCOPE` / validated；需扩展异常分类 |
+| S30 | 当前 5 个数值块之外，当前已知模板中的全部可识别数值和百分比单元格 | confirmed | `RECORD61-BODY-NUMERIC`、`RECORD61-BODY-PERCENT` / partial；需扩展发现范围 |
+| S31 | 数值单位换算、上下限、区间、精度、极性、最大值和聚合方式 | confirmed | `RECORD61-BODY-NUMERIC` / partial；需扩展判定细节 |
+| S32 | Record 与 Report 的项目、条款、要求、建议、条件、单位、结果文本逐字段一致 | confirmed | `RECORD61-SCOPE` / partial；需扩展字段级比对 |
+| S33 | Record/Report 缺失行、额外行、无法唯一映射行或模板版本变化 | confirmed | `RECORD61-SCOPE` / partial；需扩展异常分类 |
 | S34 | Record 中“不符合”生成独立不符合警示 | confirmed | `RECORD61-NONCONFORMING-ALERT` / validated |
 | S35 | 日期、检测仪器、检测人员、复核人员、签字、备注等元数据 | confirmed | `RECORD61-METADATA` / validated |
 
@@ -79,12 +81,12 @@
 | --- | --- | --- | --- |
 | S36 | Record 24 页报告编号逐页与 Report 一致 | confirmed | `RECORD202-NUMBER` / validated |
 | S37 | `√`、`×`、`△`、`/` 图例的实际语义先完成核验 | confirmed | `RECORD202-SYMBOLS` / validated |
-| S38 | 表 2 的 38 个项目、175 个 Record 逻辑行与 Report 176 个物理行正确映射 | confirmed | `RECORD202-BODY-STATUS` / validated；需扩展行级映射 |
+| S38 | 表 2 的 38 个项目、175 个 Record 逻辑行与 Report 176 个物理行正确映射 | confirmed | `RECORD202-BODY-STATUS` / partial；需扩展行级映射 |
 | S39 | 项目名称、父条款号、标准要求和出现次序逐项一致；项目名采用严格相等判定 | confirmed | `RECORD202-BODY-STATUS` / validated；项目名严格比较已进入每个正文单元 |
 | S40 | `√`、`×`、`△`、`/` 状态与 Report 检验结果一致 | confirmed | `RECORD202-BODY-STATUS` / validated |
 | S41 | `×` 生成独立不符合警示 | confirmed | `RECORD202-NONCONFORMING` / validated |
-| S42 | 所有可识别数值和百分比纳入比对 | confirmed | `RECORD202-BODY-NUMERIC`、`RECORD202-BODY-PERCENT` / validated；需扩展发现范围 |
-| S43 | 数值接受标准、单位、精度、上下限、误差和区间 | confirmed | `RECORD202-BODY-NUMERIC` / validated；需扩展判定细节 |
+| S42 | 所有可识别数值和百分比纳入比对 | confirmed | `RECORD202-BODY-NUMERIC`、`RECORD202-BODY-PERCENT` / partial；需扩展发现范围 |
+| S43 | 数值接受标准、单位、精度、上下限、误差和区间 | confirmed | `RECORD202-BODY-NUMERIC` / partial；需扩展判定细节 |
 | S44 | 表头、页码、行连续性、项目字段和结果字段完整 | confirmed | `RECORD202-STRUCTURE` / validated |
 | S45 | 首页或固定位置的身份信息、产品信息、型号、批号等与 Report 比对 | confirmed | `RECORD202-IDENTITY` / validated；当前模板缺少 Record 固定字段时记录 `not_applicable` |
 | S46 | 日期、检测仪器、检测人员、复核人员、签字、备注等元数据 | confirmed | `RECORD202-METADATA` / validated；当前模板缺少 Record 固定字段时记录 `not_applicable` |

@@ -42,6 +42,9 @@ class DocumentStoreTests(unittest.TestCase):
                 inputs={"report_document_id": report["id"], "record_document_id": record["id"]},
             )
             self.assertEqual(snapshot["report"]["blob_sha256"], snapshot["record_9706_1"]["blob_sha256"])
+            self.assertEqual(snapshot["report"]["page_geometry"][0]["page_number"], 1)
+            self.assertGreater(snapshot["report"]["page_geometry"][0]["page_width"], 0)
+            self.assertGreater(snapshot["report"]["page_geometry"][0]["page_height"], 0)
             with self.assertRaises(RunStoreError) as mismatch:
                 documents.validate_inputs(
                     case_id=case["id"],
@@ -60,6 +63,23 @@ class DocumentStoreTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "INVALID_PDF")
         self.assertEqual(documents.list_documents(case["id"]), [])
         store.close()
+
+    def test_blob_tampering_is_rejected_on_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = RunStore(root / "state.sqlite3")
+            documents = DocumentStore(store, root / "blobs")
+            case = store.create_case("case")
+            content = one_page_pdf()
+            uploaded = documents.upload_pdf(
+                case_id=case["id"], role="report", original_filename="report.pdf", content=content
+            )
+            blob_path = root / "blobs" / uploaded["blob"]["sha256"][:2] / f"{uploaded['blob']['sha256']}.pdf"
+            blob_path.write_bytes(b"tampered")
+            with self.assertRaises(RunStoreError) as error:
+                documents.read_content(uploaded["id"])
+            self.assertEqual(error.exception.code, "DOCUMENT_CONTENT_INTEGRITY_ERROR")
+            store.close()
 
 
 if __name__ == "__main__":

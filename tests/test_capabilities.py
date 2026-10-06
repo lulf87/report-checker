@@ -17,12 +17,14 @@ from mvp.capability_server import create_server
 
 
 class CapabilityCatalogTests(unittest.TestCase):
-    def test_catalog_lists_four_modes_and_roles(self) -> None:
+    def test_catalog_lists_mode_boundaries_and_roles(self) -> None:
         self.assertEqual(
             tuple(MODE_CATALOG),
             (
                 "report_self",
                 "report_ptr",
+                "report_ptr_report",
+                "report_diff",
                 "report_record_9706_1",
                 "report_record_9706_202",
             ),
@@ -38,6 +40,13 @@ class CapabilityCatalogTests(unittest.TestCase):
             "PTR_NOT_VALIDATED",
         )
         self.assertEqual(MODE_CATALOG["report_ptr"]["rule_ids"], ("PTR-P01",))
+        self.assertFalse(MODE_CATALOG["report_ptr_report"]["enabled"])
+        self.assertEqual(
+            MODE_CATALOG["report_ptr_report"]["disabled_reason_code"],
+            "PTR_NOT_VALIDATED",
+        )
+        self.assertFalse(MODE_CATALOG["report_diff"]["enabled"])
+        self.assertEqual(MODE_CATALOG["report_diff"]["disabled_reason_code"], "DIFF_NOT_SPECIFIED")
 
     def test_rule_catalog_matches_mode_rule_plans(self) -> None:
         for mode_id, mode in MODE_CATALOG.items():

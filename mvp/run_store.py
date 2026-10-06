@@ -85,7 +85,7 @@ def _parse_json(value: str) -> Any:
 class RunStore:
     """Thread-safe SQLite repository for the local checker domain."""
 
-    schema_version = 7
+    schema_version = 8
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = str(path)
@@ -103,15 +103,44 @@ class RunStore:
         if self.path != ":memory:":
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA synchronous = NORMAL")
-        self._initialize()
+        try:
+            self._initialize()
+        except Exception:
+            self._connection.close()
+            raise
 
     def _initialize(self) -> None:
         with self._lock:
+            # Reject a future database before any DDL is applied.  Otherwise
+            # CREATE TABLE IF NOT EXISTS could modify a database whose
+            # contract this runtime does not understand.
+            has_meta = self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            ).fetchone()
+            if has_meta:
+                version_row = self._connection.execute(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+                ).fetchone()
+                if version_row is not None:
+                    try:
+                        stored_version = int(version_row["value"])
+                    except (TypeError, ValueError) as exc:
+                        raise RunStoreError("INVALID_SCHEMA_VERSION", "SQLite schema_version 不是整数", status=500) from exc
+                    if stored_version > self.schema_version:
+                        raise RunStoreError(
+                            "UNSUPPORTED_SCHEMA_VERSION", "SQLite 数据库版本不受当前运行时支持", status=500,
+                            details={"expected_max": self.schema_version, "actual": stored_version},
+                        )
             self._connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS schema_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL,
+                    details_json TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS cases (
                     id TEXT PRIMARY KEY,
@@ -220,6 +249,7 @@ class RunStore:
                     finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
                     run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
                     rule_execution_id TEXT,
+                    document_id TEXT REFERENCES documents(id),
                     document_sha256 TEXT,
                     input_snapshot_json TEXT,
                     role TEXT NOT NULL,
@@ -259,7 +289,53 @@ class RunStore:
                 raise
 
     def _migrate_schema_locked(self) -> None:
-        """Apply all additive migrations as one re-entrant startup transaction."""
+        """Apply additive migrations and fail closed on unverifiable legacy data.
+
+        The repository historically used a single ``schema_meta`` integer and
+        marked every older database as current after probing a few columns.
+        Keep the additive shape for compatibility, but record the upgrade step
+        and validate all legacy traceability links before advancing the version.
+        """
+
+        meta_row = self._connection.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if meta_row is None:
+            has_data = any(
+                self._connection.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                for table in ("cases", "runs", "findings", "evidence", "review_actions")
+            )
+            if has_data:
+                raise RunStoreError(
+                    "SCHEMA_VERSION_MISSING",
+                    "已有数据的 SQLite 数据库缺少 schema_version，拒绝猜测迁移来源",
+                    status=500,
+                )
+            stored_version = self.schema_version
+        else:
+            try:
+                stored_version = int(meta_row["value"])
+            except (TypeError, ValueError) as exc:
+                raise RunStoreError(
+                    "INVALID_SCHEMA_VERSION",
+                    "SQLite schema_version 不是整数",
+                    status=500,
+                ) from exc
+        if stored_version > self.schema_version:
+            raise RunStoreError(
+                "UNSUPPORTED_SCHEMA_VERSION",
+                "SQLite 数据库版本不受当前运行时支持",
+                status=500,
+                details={"expected_max": self.schema_version, "actual": stored_version},
+            )
+        if stored_version < 6:
+            raise RunStoreError(
+                "UNSUPPORTED_SCHEMA_VERSION",
+                "SQLite 数据库版本过旧，缺少可验证的 v6 迁移基线",
+                status=500,
+                details={"minimum_supported": 6, "actual": stored_version},
+            )
+        legacy_upgrade = stored_version == 6
 
         existing_columns = {
             str(item["name"])
@@ -311,6 +387,8 @@ class RunStore:
             self._connection.execute("ALTER TABLE evidence ADD COLUMN document_sha256 TEXT")
         if "input_snapshot_json" not in evidence_columns:
             self._connection.execute("ALTER TABLE evidence ADD COLUMN input_snapshot_json TEXT")
+        if "document_id" not in evidence_columns:
+            self._connection.execute("ALTER TABLE evidence ADD COLUMN document_id TEXT")
         review_action_columns = {
             str(item["name"])
             for item in self._connection.execute("PRAGMA table_info(review_actions)").fetchall()
@@ -319,9 +397,10 @@ class RunStore:
             self._connection.execute("ALTER TABLE review_actions ADD COLUMN actor_id TEXT")
         if "new_run_review_revision" not in review_action_columns:
             self._connection.execute("ALTER TABLE review_actions ADD COLUMN new_run_review_revision INTEGER")
-        # Backfill the traceability columns for databases created before v6/v7.
-        # Legacy rows without a matching execution plan remain explicitly
-        # nullable; new published rows are always written with these links.
+        # Backfill each traceability field independently.  A legacy row may
+        # already have a rule_execution_id while still missing its input
+        # snapshot; coupling both updates behind one WHERE clause was the
+        # source of a silent v6->v7 data-loss path.
         self._connection.execute(
             """UPDATE findings
                SET rule_execution_id = (
@@ -335,6 +414,13 @@ class RunStore:
                WHERE rule_execution_id IS NULL"""
         )
         self._connection.execute(
+            """UPDATE findings
+               SET input_snapshot_json = (
+                       SELECT r.input_snapshot_json FROM runs r WHERE r.id = findings.run_id
+                   )
+               WHERE input_snapshot_json IS NULL"""
+        )
+        self._connection.execute(
             """UPDATE evidence
                SET run_id = (SELECT f.run_id FROM findings f WHERE f.id = evidence.finding_id),
                    rule_execution_id = (
@@ -345,6 +431,196 @@ class RunStore:
                    )
                WHERE run_id IS NULL OR rule_execution_id IS NULL OR input_snapshot_json IS NULL"""
         )
+        # Fill document identity/hash from the immutable Run input snapshot;
+        # rows whose role cannot be resolved remain legacy-invalid and are
+        # rejected below instead of being exposed with a guessed source.
+        evidence_rows = self._connection.execute(
+            "SELECT id, role, input_snapshot_json FROM evidence WHERE document_id IS NULL OR document_sha256 IS NULL"
+        ).fetchall()
+        for evidence_row in evidence_rows:
+            snapshot = _parse_json(evidence_row["input_snapshot_json"]) if evidence_row["input_snapshot_json"] else None
+            item = snapshot.get(evidence_row["role"]) if isinstance(snapshot, Mapping) else None
+            if isinstance(item, Mapping):
+                document_id = item.get("document_id")
+                document_sha256 = item.get("blob_sha256")
+                self._connection.execute(
+                    "UPDATE evidence SET document_id = COALESCE(document_id, ?), document_sha256 = COALESCE(document_sha256, ?) WHERE id = ?",
+                    (document_id if isinstance(document_id, str) else None,
+                     document_sha256 if isinstance(document_sha256, str) else None,
+                     evidence_row["id"]),
+                )
+
+        # Rebuild per-rule Finding links for legacy published runs.
+        execution_rows = self._connection.execute(
+            "SELECT id, run_id, rule_id FROM rule_executions WHERE finding_ids_json IS NULL"
+        ).fetchall()
+        for execution in execution_rows:
+            finding_ids = [
+                item["id"]
+                for item in self._connection.execute(
+                    "SELECT id FROM findings WHERE run_id = ? AND rule_id = ? ORDER BY display_sequence, id",
+                    (execution["run_id"], execution["rule_id"]),
+                ).fetchall()
+            ]
+            self._connection.execute(
+                "UPDATE rule_executions SET finding_ids_json = ? WHERE id = ?",
+                (_json(finding_ids), execution["id"]),
+            )
+
+        # Recompute immutable machine counters for old succeeded runs when
+        # their summary was not persisted by the pre-v7 writer.
+        for run_row in self._connection.execute(
+            "SELECT id, mode, machine_overall_status FROM runs WHERE lifecycle_status = 'succeeded' AND (finding_counts_json IS NULL OR published_summary_json IS NULL)"
+        ).fetchall():
+            counts = {status: 0 for status in ("pass", "warning", "manual", "error")}
+            for finding in self._connection.execute(
+                "SELECT machine_status FROM findings WHERE run_id = ?", (run_row["id"],)
+            ).fetchall():
+                if finding["machine_status"] not in counts:
+                    raise RunStoreError(
+                        "SCHEMA_MIGRATION_INTEGRITY_ERROR",
+                        "旧 Finding 的 machine_status 无法重建",
+                        status=500,
+                        details={"run_id": run_row["id"]},
+                    )
+                counts[finding["machine_status"]] += 1
+            summary = {
+                "schema_version": None,
+                "mode": run_row["mode"],
+                "machine_overall_status": run_row["machine_overall_status"],
+                "status_counts": counts,
+                "coverage": None,
+            }
+            self._connection.execute(
+                "UPDATE runs SET finding_counts_json = COALESCE(finding_counts_json, ?), published_summary_json = COALESCE(published_summary_json, ?) WHERE id = ?",
+                (_json(counts), _json(summary), run_row["id"]),
+            )
+
+        # Reconstruct RunInput rows where the old snapshot identifies an
+        # existing Document and its immutable Blob hash.  Do not invent rows
+        # for unresolved or malformed snapshots.
+        for run_row in self._connection.execute(
+            "SELECT id, input_snapshot_json FROM runs WHERE input_snapshot_json IS NOT NULL"
+        ).fetchall():
+            snapshot = _parse_json(run_row["input_snapshot_json"])
+            if not isinstance(snapshot, Mapping):
+                raise RunStoreError(
+                    "SCHEMA_MIGRATION_INTEGRITY_ERROR",
+                    "旧 Run input_snapshot 不是对象",
+                    status=500,
+                    details={"run_id": run_row["id"]},
+                )
+            for role, item in snapshot.items():
+                if not isinstance(item, Mapping):
+                    continue
+                document_id = item.get("document_id")
+                blob_sha256 = item.get("blob_sha256")
+                if not isinstance(document_id, str) or not isinstance(blob_sha256, str):
+                    continue
+                document = self._connection.execute(
+                    "SELECT d.id, b.sha256 FROM documents d JOIN blobs b ON b.id = d.blob_id WHERE d.id = ?",
+                    (document_id,),
+                ).fetchone()
+                if document is None or document["sha256"] != blob_sha256:
+                    continue
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO run_inputs(run_id, role, document_id, blob_sha256) VALUES(?, ?, ?, ?)",
+                    (run_row["id"], role, document_id, blob_sha256),
+                )
+
+        # Existing review rows have no new revision column in old databases.
+        # Replay the append-only order and reject contradictory base revisions;
+        # never reset a non-empty history back to revision zero.
+        for run_row in self._connection.execute("SELECT id, review_revision FROM runs").fetchall():
+            actions = self._connection.execute(
+                # Review actions are append-only.  A timestamp is not a safe
+                # ordering key because multiple actions can share the same
+                # second (or millisecond); rowid preserves insertion order
+                # for legacy rows while we reconstruct the revision chain.
+                "SELECT id, base_run_review_revision, new_run_review_revision FROM review_actions WHERE run_id = ? ORDER BY rowid",
+                (run_row["id"],),
+            ).fetchall()
+            if not actions:
+                continue
+            expected = 0
+            for action in actions:
+                base = action["base_run_review_revision"]
+                if base != expected:
+                    raise RunStoreError(
+                        "SCHEMA_MIGRATION_INTEGRITY_ERROR",
+                        "旧 ReviewAction revision 链不连续",
+                        status=500,
+                        details={"run_id": run_row["id"], "action_id": action["id"], "expected": expected, "actual": base},
+                    )
+                expected += 1
+                self._connection.execute(
+                    "UPDATE review_actions SET new_run_review_revision = ? WHERE id = ?",
+                    (expected, action["id"]),
+                )
+            self._connection.execute(
+                "UPDATE runs SET review_revision = ? WHERE id = ? AND review_revision < ?",
+                (expected, run_row["id"], expected),
+            )
+
+        if legacy_upgrade:
+            unresolved = []
+            unresolved.extend(
+                {"table": "findings", "id": row["id"], "reason": "missing_traceability"}
+                for row in self._connection.execute(
+                    "SELECT id FROM findings WHERE rule_execution_id IS NULL OR input_snapshot_json IS NULL"
+                ).fetchall()
+            )
+            unresolved.extend(
+                {"table": "evidence", "id": row["id"], "reason": "missing_document_binding"}
+                for row in self._connection.execute(
+                    """SELECT e.id FROM evidence e
+                       LEFT JOIN documents d ON d.id = e.document_id
+                       LEFT JOIN blobs b ON b.id = d.blob_id
+                       WHERE e.run_id IS NULL OR e.rule_execution_id IS NULL
+                          OR e.document_id IS NULL OR d.id IS NULL
+                          OR e.document_sha256 IS NULL OR b.sha256 IS NULL
+                          OR e.document_sha256 != b.sha256
+                          OR e.input_snapshot_json IS NULL"""
+                ).fetchall()
+            )
+            unresolved.extend(
+                {"table": "run_inputs", "id": row["id"], "reason": "missing_run_input"}
+                for row in self._connection.execute(
+                    "SELECT r.id FROM runs r WHERE r.lifecycle_status = 'succeeded' AND NOT EXISTS (SELECT 1 FROM run_inputs i WHERE i.run_id = r.id)"
+                ).fetchall()
+            )
+            if unresolved:
+                raise RunStoreError(
+                    "SCHEMA_MIGRATION_INTEGRITY_ERROR",
+                    "旧数据库存在无法验证的结果绑定，拒绝完成迁移",
+                    status=500,
+                    details={"issues": unresolved[:100], "issue_count": len(unresolved)},
+                )
+
+        # ALTER TABLE cannot add a foreign key to a legacy SQLite table.  The
+        # triggers below provide the same fail-closed binding for v6/v7 tables;
+        # fresh databases additionally have the declarative FK in CREATE TABLE.
+        self._connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS evidence_document_binding_insert
+               BEFORE INSERT ON evidence
+               WHEN NEW.document_id IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM documents d WHERE d.id = NEW.document_id
+               )
+               BEGIN
+                   SELECT RAISE(ABORT, 'evidence document binding missing');
+               END"""
+        )
+        self._connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS evidence_document_binding_update
+               BEFORE UPDATE OF document_id ON evidence
+               WHEN NEW.document_id IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM documents d WHERE d.id = NEW.document_id
+               )
+               BEGIN
+                   SELECT RAISE(ABORT, 'evidence document binding missing');
+               END"""
+        )
+
         row = self._connection.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()
@@ -353,23 +629,26 @@ class RunStore:
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)",
                 (str(self.schema_version),),
             )
-        elif int(row["value"]) > self.schema_version:
-            raise RunStoreError(
-                "UNSUPPORTED_SCHEMA_VERSION",
-                "SQLite 数据库版本不受当前运行时支持",
-                status=500,
-                details={"expected_max": self.schema_version, "actual": int(row["value"])},
-            )
         elif int(row["value"]) < self.schema_version:
             self._connection.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(self.schema_version),),
             )
+        for version in range(max(stored_version + 1, 7), self.schema_version + 1):
+            self._connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at, details_json) VALUES(?, ?, ?)",
+                (version, _now(), _json({"from_version": version - 1, "legacy_upgrade": legacy_upgrade})),
+            )
+        if stored_version == self.schema_version:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at, details_json) VALUES(?, ?, ?)",
+                (self.schema_version, _now(), _json({"from_version": None, "baseline": True})),
+            )
         required_columns = {
             "runs": {"planned_rule_ids_json", "input_snapshot_json", "review_revision"},
             "rule_executions": {"contributes_to_overall", "finding_ids_json"},
             "findings": {"rule_execution_id", "input_snapshot_json"},
-            "evidence": {"run_id", "rule_execution_id", "document_sha256", "input_snapshot_json"},
+            "evidence": {"run_id", "rule_execution_id", "document_id", "document_sha256", "input_snapshot_json"},
         }
         for table, required in required_columns.items():
             actual = {str(item["name"]) for item in self._connection.execute(f"PRAGMA table_info({table})")}
@@ -559,6 +838,18 @@ class RunStore:
                 self._attach_run_inputs_locked(run)
             return runs
 
+    def list_queued_runs(self) -> list[dict[str, Any]]:
+        """Return durable queued Runs in creation order for startup recovery."""
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM runs WHERE lifecycle_status = 'queued' ORDER BY created_at, id"
+            ).fetchall()
+            runs = [self._run_from_row(row) for row in rows]
+            for run in runs:
+                self._attach_run_inputs_locked(run)
+            return runs
+
     def get_rule_executions(self, run_id: str) -> list[dict[str, Any]]:
         self.get_run(run_id)
         with self._lock:
@@ -641,11 +932,44 @@ class RunStore:
                 ).fetchone()
             )
 
+    def _finish_publish_failure(self, run_id: str, code: str, message: str) -> None:
+        """Persist a publish failure while preserving a committed cancellation.
+
+        Validation and the final publish transaction intentionally happen in
+        separate critical sections.  If the cancel endpoint wins between
+        those sections, a generic failure transition must close the Run as
+        ``cancelled`` instead of converting it to ``failed`` or leaving it in
+        ``cancel_requested``.
+        """
+
+        try:
+            current = self.get_run(run_id)
+            if current["lifecycle_status"] == "cancel_requested":
+                self.transition_run(
+                    run_id,
+                    "cancelled",
+                    reason_code="USER_CANCELLED",
+                    reason_message="发布失败前已收到取消请求",
+                )
+            elif current["lifecycle_status"] == "running":
+                self.transition_run(run_id, "failed", reason_code=code, reason_message=message)
+        except RunStoreError:
+            # Preserve the original publish error.  A concurrent transition
+            # may already have closed the Run; callers inspect the persisted
+            # state and do not need a second exception here.
+            return
+
     def publish_result(self, run_id: str, result: Mapping[str, Any]) -> dict[str, Any]:
         """Validate a worker result and atomically publish its Run summary."""
 
         run = self.get_run(run_id)
         if run["lifecycle_status"] != "running":
+            if run["lifecycle_status"] == "cancel_requested":
+                self._finish_publish_failure(
+                    run_id,
+                    "RUN_NOT_PUBLISHABLE",
+                    "Run 已收到取消请求，不能发布结果",
+                )
             raise RunStoreError(
                 "RUN_NOT_PUBLISHABLE",
                 "只有 running Run 可以发布结果",
@@ -655,12 +979,7 @@ class RunStore:
         try:
             self.require_mode_enabled(run["mode"], operation="publish_result")
         except RunStoreError as error:
-            self.transition_run(
-                run_id,
-                "failed",
-                reason_code=error.code,
-                reason_message=error.message,
-            )
+            self._finish_publish_failure(run_id, error.code, error.message)
             raise
         try:
             self._validate_result(run, result)
@@ -703,6 +1022,45 @@ class RunStore:
                     "规则执行账本的 Finding 数量与待发布结果不一致",
                     details={"mismatches": count_mismatches},
                 )
+            # A rule that executed successfully must leave an auditable
+            # Finding.  Treating an omitted result as an implicit pass would
+            # let a Worker silently skip a planned rule while still
+            # publishing a succeeded Run.  The only legal zero-Finding
+            # terminal states are an explicit not_applicable/unsupported
+            # state with a stable reason code; those states are still subject
+            # to the all-non-executable guard below.
+            missing_findings = [
+                execution["rule_id"]
+                for execution in executions
+                if execution["execution_state"] == "succeeded"
+                and execution["finding_count"] == 0
+            ]
+            if missing_findings:
+                raise RunStoreError(
+                    "RULE_EXECUTION_NO_FINDING",
+                    "succeeded 规则必须至少发布一个 Finding",
+                    details={"rule_ids": missing_findings},
+                )
+            invalid_zero_result_states = [
+                {
+                    "rule_id": execution["rule_id"],
+                    "state": execution["execution_state"],
+                    "reason_code": execution["reason_code"],
+                }
+                for execution in executions
+                if execution["execution_state"] in {"not_applicable", "unsupported"}
+                and (
+                    execution["finding_count"] != 0
+                    or not isinstance(execution["reason_code"], str)
+                    or not execution["reason_code"].strip()
+                )
+            ]
+            if invalid_zero_result_states:
+                raise RunStoreError(
+                    "RULE_EXECUTION_ZERO_RESULT_INVALID",
+                    "not_applicable/unsupported 规则必须以零 Finding 和稳定 reason_code 结束",
+                    details={"rules": invalid_zero_result_states},
+                )
             if executions and not result["findings"] and all(
                 item["execution_state"] in {"not_applicable", "unsupported"} for item in executions
             ):
@@ -712,12 +1070,7 @@ class RunStore:
                     details={"run_id": run_id},
                 )
         except RunStoreError as error:
-            self.transition_run(
-                run_id,
-                "failed",
-                reason_code=error.code,
-                reason_message=error.message,
-            )
+            self._finish_publish_failure(run_id, error.code, error.message)
             raise
         # Recompute summary counters from the immutable Finding payload. The
         # worker-provided counters were validated above, but are never trusted
@@ -800,15 +1153,7 @@ class RunStore:
                 self._connection.execute("COMMIT")
             except RunStoreError as error:
                 self._connection.execute("ROLLBACK")
-                try:
-                    self.transition_run(
-                        run_id,
-                        "failed",
-                        reason_code=error.code,
-                        reason_message=error.message,
-                    )
-                except RunStoreError:
-                    pass
+                self._finish_publish_failure(run_id, error.code, error.message)
                 raise
             except Exception as error:
                 self._connection.execute("ROLLBACK")
@@ -818,15 +1163,7 @@ class RunStore:
                     status=500,
                     details={"error_type": type(error).__name__},
                 )
-                try:
-                    self.transition_run(
-                        run_id,
-                        "failed",
-                        reason_code=failure.code,
-                        reason_message=failure.message,
-                    )
-                except RunStoreError:
-                    pass
+                self._finish_publish_failure(run_id, failure.code, failure.message)
                 raise failure from error
         return self.get_run(run_id)
 
@@ -944,6 +1281,11 @@ class RunStore:
                 ):
                     raise RunStoreError("WORKER_RESULT_EVIDENCE_INVALID", "Worker evidence 坐标无效")
                 snapshot_item = (input_snapshot or {}).get(role)
+                document_id = (
+                    snapshot_item.get("document_id")
+                    if isinstance(snapshot_item, Mapping) and isinstance(snapshot_item.get("document_id"), str)
+                    else None
+                )
                 document_sha256 = (
                     snapshot_item.get("blob_sha256")
                     if isinstance(snapshot_item, Mapping) and isinstance(snapshot_item.get("blob_sha256"), str)
@@ -951,14 +1293,15 @@ class RunStore:
                 )
                 self._connection.execute(
                     """INSERT INTO evidence(
-                        id, finding_id, run_id, rule_execution_id, document_sha256,
+                        id, finding_id, run_id, rule_execution_id, document_id, document_sha256,
                         input_snapshot_json, role, pdf_page, bbox_json, semantic_role, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         _uuid(),
                         finding_id,
                         run_id,
                         execution["id"],
+                        document_id,
                         document_sha256,
                         _json(input_snapshot) if input_snapshot is not None else None,
                         role.strip(),
@@ -1022,26 +1365,62 @@ class RunStore:
                     raise RunStoreError("WORKER_RESULT_EVIDENCE_INVALID", "Worker evidence 必须是对象")
                 role = location.get("role")
                 page = location.get("pdf_page")
-                if snapshot:
-                    if role not in snapshot:
-                        raise RunStoreError(
-                            "WORKER_RESULT_EVIDENCE_ROLE_INVALID",
-                            "Worker evidence role 不属于当前 Run 输入",
-                            details={"role": role, "allowed": sorted(snapshot)},
-                        )
-                    max_page = snapshot[role].get("page_count")
-                    if not isinstance(page, int) or isinstance(page, bool) or page < 1:
-                        raise RunStoreError(
-                            "WORKER_RESULT_EVIDENCE_PAGE_INVALID",
-                            "Worker evidence 页码必须从 1 开始",
-                            details={"role": role, "pdf_page": page},
-                        )
-                    if isinstance(max_page, int) and page > max_page:
-                        raise RunStoreError(
-                            "WORKER_RESULT_EVIDENCE_PAGE_INVALID",
-                            "Worker evidence 页码超出输入 PDF 页数",
-                            details={"role": role, "pdf_page": page, "page_count": max_page},
-                        )
+                if not isinstance(snapshot, Mapping) or not snapshot:
+                    raise RunStoreError(
+                        "WORKER_RESULT_INPUT_BINDING_MISSING",
+                        "包含 Evidence 的 Run 必须具有完整输入快照",
+                    )
+                if role not in snapshot or not isinstance(snapshot[role], Mapping):
+                    raise RunStoreError(
+                        "WORKER_RESULT_EVIDENCE_ROLE_INVALID",
+                        "Worker evidence role 不属于当前 Run 输入",
+                        details={"role": role, "allowed": sorted(snapshot)},
+                    )
+                snapshot_item = snapshot[role]
+                document_id = snapshot_item.get("document_id")
+                document_sha256 = snapshot_item.get("blob_sha256")
+                if not isinstance(document_id, str) or not document_id.strip() or not isinstance(document_sha256, str):
+                    raise RunStoreError(
+                        "WORKER_RESULT_INPUT_BINDING_MISSING",
+                        "Worker evidence 缺少绑定的 Document 或 Blob 哈希",
+                        details={"role": role},
+                    )
+                max_page = snapshot_item.get("page_count")
+                if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+                    raise RunStoreError(
+                        "WORKER_RESULT_EVIDENCE_PAGE_INVALID",
+                        "Worker evidence 页码必须从 1 开始",
+                        details={"role": role, "pdf_page": page},
+                    )
+                if not isinstance(max_page, int) or page > max_page:
+                    raise RunStoreError(
+                        "WORKER_RESULT_EVIDENCE_PAGE_INVALID",
+                        "Worker evidence 页码超出输入 PDF 页数",
+                        details={"role": role, "pdf_page": page, "page_count": max_page},
+                    )
+                geometry = snapshot_item.get("page_geometry")
+                if not isinstance(geometry, list) or len(geometry) < page:
+                    raise RunStoreError(
+                        "WORKER_RESULT_EVIDENCE_GEOMETRY_MISSING",
+                        "Worker evidence 缺少对应页面几何快照",
+                        details={"role": role, "pdf_page": page},
+                    )
+                page_geometry = geometry[page - 1]
+                if not isinstance(page_geometry, Mapping):
+                    raise RunStoreError("WORKER_RESULT_EVIDENCE_GEOMETRY_INVALID", "页面几何快照无效")
+                page_width = page_geometry.get("page_width")
+                page_height = page_geometry.get("page_height")
+                if (
+                    not isinstance(page_width, (int, float))
+                    or isinstance(page_width, bool)
+                    or not math.isfinite(float(page_width))
+                    or not isinstance(page_height, (int, float))
+                    or isinstance(page_height, bool)
+                    or not math.isfinite(float(page_height))
+                    or page_width <= 0
+                    or page_height <= 0
+                ):
+                    raise RunStoreError("WORKER_RESULT_EVIDENCE_GEOMETRY_INVALID", "页面尺寸快照无效")
                 bbox = location.get("bbox")
                 if (
                     not isinstance(bbox, (list, tuple))
@@ -1056,8 +1435,10 @@ class RunStore:
                     or bbox[1] < 0
                     or bbox[0] >= bbox[2]
                     or bbox[1] >= bbox[3]
+                    or bbox[2] > float(page_width)
+                    or bbox[3] > float(page_height)
                 ):
-                    raise RunStoreError("WORKER_RESULT_EVIDENCE_INVALID", "Worker evidence 坐标无效")
+                    raise RunStoreError("WORKER_RESULT_EVIDENCE_INVALID", "Worker evidence 坐标超出页面范围")
         if set(counts) != set(expected_counts) or any(
             not isinstance(counts.get(key), int) or isinstance(counts.get(key), bool)
             for key in expected_counts
@@ -1254,7 +1635,7 @@ class RunStore:
                 """SELECT id, run_id, finding_id, actor_id, action_type,
                           base_run_review_revision, new_run_review_revision,
                           observation_json, note, created_at
-                   FROM review_actions WHERE run_id = ? ORDER BY created_at, id""",
+                   FROM review_actions WHERE run_id = ? ORDER BY rowid""",
                 (run_id,),
             ).fetchall()
             return [self._review_action_from_row(row) for row in rows]
@@ -1305,6 +1686,26 @@ class RunStore:
                 _json(observation)
             except (TypeError, ValueError) as exc:
                 raise RunStoreError("INVALID_REVIEW_OBSERVATION", "审核观察记录不是可序列化 JSON") from exc
+        if action_type in {"confirm_candidate", "record_observation", "mark_source_unreadable"}:
+            if not isinstance(observation, Mapping) or not observation:
+                raise RunStoreError(
+                    "INVALID_REVIEW_OBSERVATION",
+                    "该审核动作必须提交非空源文件观察记录",
+                    details={"action_type": action_type},
+                )
+        if action_type == "confirm_candidate" and isinstance(observation, Mapping):
+            candidate_id = observation.get("candidate_id")
+            confirmation = observation.get("confirmation")
+            if not isinstance(candidate_id, str) or not candidate_id.strip():
+                raise RunStoreError(
+                    "REVIEW_INPUT_SCHEMA_MISMATCH",
+                    "confirm_candidate 必须提供 candidate_id",
+                )
+            if confirmation is not True:
+                raise RunStoreError(
+                    "REVIEW_INPUT_SCHEMA_MISMATCH",
+                    "confirm_candidate 必须明确 confirmation=true",
+                )
         if note is not None and (not isinstance(note, str) or len(note) > 4000):
             raise RunStoreError("INVALID_REVIEW_NOTE", "审核备注最多 4000 个字符")
         with self._lock:
@@ -1320,6 +1721,55 @@ class RunStore:
                 raise RunStoreError("RUN_NOT_REVIEWABLE", "只有 succeeded Run 可以审核", status=409)
             if row["machine_status"] != "manual":
                 raise RunStoreError("FINDING_NOT_REVIEWABLE", "只有 manual Finding 可以审核", status=409)
+            if action_type == "withdraw":
+                target_id = observation.get("review_action_id") if isinstance(observation, Mapping) else None
+                if not isinstance(target_id, str) or not target_id.strip():
+                    raise RunStoreError(
+                        "REVIEW_INPUT_SCHEMA_MISMATCH",
+                        "withdraw 必须提供 review_action_id",
+                    )
+                target = self._connection.execute(
+                    """SELECT id, action_type FROM review_actions
+                       WHERE id = ? AND run_id = ? AND finding_id = ?""",
+                    (target_id, row["run_id"], finding_id),
+                ).fetchone()
+                if target is None or target["action_type"] == "withdraw":
+                    raise RunStoreError(
+                        "REVIEW_ACTION_NOT_FOUND",
+                        "可撤销的 ReviewAction 不存在",
+                        status=409,
+                        details={"review_action_id": target_id, "finding_id": finding_id},
+                    )
+                action_rows = self._connection.execute(
+                    """SELECT id, action_type, observation_json
+                       FROM review_actions WHERE run_id = ? AND finding_id = ?
+                       ORDER BY rowid""",
+                    (row["run_id"], finding_id),
+                ).fetchall()
+                effective_action_id: str | None = None
+                for action_row in action_rows:
+                    if action_row["action_type"] == "withdraw":
+                        action_observation = (
+                            _parse_json(action_row["observation_json"])
+                            if action_row["observation_json"]
+                            else None
+                        )
+                        withdrawn_id = (
+                            action_observation.get("review_action_id")
+                            if isinstance(action_observation, Mapping)
+                            else None
+                        )
+                        if withdrawn_id == effective_action_id:
+                            effective_action_id = None
+                    else:
+                        effective_action_id = str(action_row["id"])
+                if effective_action_id != target_id:
+                    raise RunStoreError(
+                        "REVIEW_ACTION_HAS_DEPENDENTS",
+                        "只能撤销当前 Finding 的有效 ReviewAction",
+                        status=409,
+                        details={"review_action_id": target_id, "effective_action_id": effective_action_id},
+                    )
             current_revision = int(row["review_revision"])
             if base_review_revision is None:
                 base_review_revision = current_revision
@@ -1434,7 +1884,7 @@ class RunStore:
     def _attach_evidence_locked(self, finding: dict[str, Any]) -> None:
         rows = self._connection.execute(
             """SELECT id, role, pdf_page, bbox_json, semantic_role, created_at,
-                      run_id, rule_execution_id, document_sha256, input_snapshot_json
+                      run_id, rule_execution_id, document_id, document_sha256, input_snapshot_json
                FROM evidence WHERE finding_id = ? ORDER BY rowid""",
             (finding["id"],),
         ).fetchall()
@@ -1447,6 +1897,7 @@ class RunStore:
                 "semantic_role": row["semantic_role"],
                 "run_id": row["run_id"],
                 "rule_execution_id": row["rule_execution_id"],
+                "document_id": row["document_id"],
                 "document_sha256": row["document_sha256"],
                 "input_snapshot": _parse_json(row["input_snapshot_json"])
                 if row["input_snapshot_json"]

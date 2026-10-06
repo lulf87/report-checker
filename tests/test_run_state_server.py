@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -126,6 +127,101 @@ class RunStateServerTests(unittest.TestCase):
             urlopen(request, timeout=5)
         self.assertEqual(error.exception.code, 403)
 
+    def test_reads_require_loopback_host_origin_and_fetch_metadata(self) -> None:
+        for headers, expected_code in (
+            ({"Host": "attacker.example"}, "INVALID_LOCAL_HOST"),
+            ({"Host": "localhost:invalid"}, "INVALID_LOCAL_HOST"),
+            ({"Origin": "https://evil.example"}, "CROSS_SITE_REQUEST_BLOCKED"),
+            ({"Sec-Fetch-Site": "cross-site"}, "CROSS_SITE_REQUEST_BLOCKED"),
+        ):
+            request = Request(self.base_url + "/api/v1/session", headers=headers)
+            with self.subTest(headers=headers), self.assertRaises(HTTPError) as error:
+                urlopen(request, timeout=5)
+            self.assertEqual(error.exception.code, 403)
+            payload = json.loads(error.exception.read())
+            self.assertEqual(payload["error"]["code"], expected_code)
+
+    def test_expired_csrf_token_is_rejected(self) -> None:
+        original_expiry = self.server.csrf_expires_at
+        self.server.csrf_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        try:
+            request = Request(
+                self.base_url + "/api/v1/cases",
+                method="POST",
+                data=b'{"name":"expired token"}',
+                headers={"Content-Type": "application/json", "X-CSRF-Token": self.csrf},
+            )
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request, timeout=5)
+            self.assertEqual(error.exception.code, 403)
+            payload = json.loads(error.exception.read())
+            self.assertEqual(payload["error"]["code"], "CSRF_TOKEN_EXPIRED")
+        finally:
+            self.server.csrf_expires_at = original_expiry
+
+    def test_review_actor_is_derived_from_session_not_client_header(self) -> None:
+        case = self.server.store.create_case("actor header test")
+        run = self.server.store.create_run(
+            case_id=case["id"],
+            mode="report_self",
+            inputs={"report_document_id": "actor-report"},
+            input_snapshot={
+                "report": {
+                    "document_id": "actor-report",
+                    "blob_sha256": "a" * 64,
+                    "page_count": 1,
+                }
+            },
+        )
+        self.server.store.transition_run(run["id"], "running")
+        for execution in self.server.store.get_rule_executions(run["id"]):
+            self.server.store.transition_rule_execution(run["id"], execution["rule_id"], "running")
+            self.server.store.transition_rule_execution(
+                run["id"],
+                execution["rule_id"],
+                "succeeded",
+                finding_count=1,
+            )
+        self.server.store.publish_result(
+            run["id"],
+            {
+                "mode": "report_self",
+                "machine_overall_status": "manual",
+                "status_counts": {"pass": 11, "warning": 0, "manual": 1, "error": 0},
+                "findings": [
+                    {
+                        "id": rule_id,
+                        "rule_id": rule_id,
+                        "status": "manual" if rule_id == "REPORT-R01" else "pass",
+                        "details": {},
+                        "evidence_locations": [],
+                    }
+                    for rule_id in REPORT_SELF_RULE_ORDER
+                ],
+            },
+        )
+        finding_id = self.server.store.list_findings(run["id"])[0]["id"]
+        request = Request(
+            self.base_url + f"/api/v1/findings/{finding_id}/reviews",
+            method="POST",
+            data=json.dumps(
+                {"action": "record_observation", "observation": {"raw_value": "x"}}
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-CSRF-Token": self.csrf,
+                "X-Actor-Id": "forged-actor",
+            },
+        )
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["action"]["actor_id"], self.server.session_id)
+        self.assertNotEqual(payload["action"]["actor_id"], "forged-actor")
+
+    def test_failed_bind_closes_without_partial_constructor_attributes(self) -> None:
+        with self.assertRaises(OSError):
+            create_server(host="127.0.0.1", port=self.server.server_port)
+
     def test_workbench_cors_preflight_and_write_from_static_port(self) -> None:
         origin = "http://127.0.0.1:8765"
         request = Request(
@@ -141,6 +237,7 @@ class RunStateServerTests(unittest.TestCase):
             self.assertEqual(response.status, 204)
             self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
             self.assertIn("POST", response.headers.get("Access-Control-Allow-Methods", ""))
+            self.assertNotIn("X-Actor-Id", response.headers.get("Access-Control-Allow-Headers", ""))
 
         request = Request(self.base_url + "/api/v1/session", headers={"Origin": origin})
         with urlopen(request, timeout=5) as response:

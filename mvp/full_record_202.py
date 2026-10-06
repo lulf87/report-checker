@@ -14,6 +14,7 @@ import re
 import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -42,6 +43,7 @@ from mvp.record_full import (
     compare_final_percentage,
     compare_numeric_observation,
     compare_record202_status_result,
+    convert_decimal,
     extract_percentage_values,
     extract_unit_context,
     parse_report_numeric,
@@ -854,32 +856,44 @@ def _expanded_scope_ledger(
         for target_ordinal, report_row in enumerate(report_group, start=1):
             result_text = str(report_row.get("result", ""))
             requirement_text = str(report_row.get("requirement", ""))
-            result_tokens = [match.group(0) for match in _NATIVE_MEASUREMENT_RE.finditer(result_text)]
-            requirement_tokens = [match.group(0) for match in _NATIVE_MEASUREMENT_RE.finditer(requirement_text)]
+            result_unit_context = extract_unit_context(requirement_text)
+            result_tokens = _extract_numeric_tokens(result_text, unit_context=result_unit_context)
+            requirement_tokens = [
+                _numeric_token_dict(match, result_unit_context)
+                for match in _NATIVE_MEASUREMENT_RE.finditer(compact(requirement_text))
+            ]
             if not result_tokens and not requirement_tokens:
                 continue
             record_text = str(record_row.get("native_result_text", ""))
-            record_tokens = [match.group(0) for match in _NATIVE_MEASUREMENT_RE.finditer(record_text)]
+            record_tokens = _extract_numeric_tokens(record_text, unit_context=result_unit_context)
+            acceptance = _acceptance_constraints(requirement_text)
             if "表3" in compact(record_text):
                 numeric_decision, numeric_disposition, reason = "excluded", "excluded", "TABLE3_OUT_OF_SCOPE"
-            elif len(result_tokens) == 1 and len(requirement_tokens) <= 1:
+            elif len(result_tokens) == 1:
                 candidate = _native_measurement_candidate(record_text)
                 if candidate is None:
                     numeric_decision, numeric_disposition, reason = "manual", "manual", "record_numeric_not_uniquely_resolved"
                 else:
-                    parsed_candidate = parse_report_numeric(candidate)
+                    parsed_candidate = parse_report_numeric(candidate, result_unit_context)
                     if parsed_candidate is None:
                         numeric_decision, numeric_disposition, reason = "manual", "manual", "record_numeric_not_parsed"
                     else:
                         comparison = compare_numeric_observation(
                             parsed_candidate.value,
                             parsed_candidate.unit,
-                            result_tokens[0],
-                            extract_unit_context(requirement_text),
+                            result_text,
+                            result_unit_context,
                         )
                         numeric_decision = comparison.decision
                         numeric_disposition = _scope_disposition(numeric_decision)
                         reason = comparison.reason_code
+                        acceptance_comparison = _compare_record_to_acceptance(record_text, requirement_text)
+                        if acceptance_comparison["decision"] == "mismatch":
+                            numeric_decision, numeric_disposition, reason = "mismatch", "mismatch", acceptance_comparison["reason_code"]
+                        elif acceptance_comparison["decision"] == "manual" and numeric_decision == "match":
+                            numeric_decision, numeric_disposition, reason = "manual", "manual", acceptance_comparison["reason_code"]
+            elif not result_tokens and requirement_tokens:
+                numeric_decision, numeric_disposition, reason = "manual", "manual", "report_numeric_result_missing"
             elif result_tokens or requirement_tokens:
                 numeric_decision, numeric_disposition, reason = "manual", "manual", "numeric_target_not_uniquely_resolved"
             entry_id = f"RECORD202-NUMERIC-I{item:02d}-R{ordinal:02d}-T{target_ordinal:02d}"
@@ -891,7 +905,7 @@ def _expanded_scope_ledger(
                     "scope_category": "numeric_target",
                     "id": entry_id,
                     "entry_id": entry_id,
-                    "rule_id": "RECORD202-BODY-PERCENT" if "%" in result_text else "RECORD202-BODY-NUMERIC",
+                    "rule_id": "RECORD202-BODY-PERCENT" if ("%" in result_text or "％" in result_text or "%" in requirement_text or "％" in requirement_text) else "RECORD202-BODY-NUMERIC",
                     "source_row_id": str(record_row["row_id"]),
                     "target_row_id": str(report_row["row_id"]),
                     "target_row_ids": [str(report_row["row_id"])],
@@ -907,6 +921,7 @@ def _expanded_scope_ledger(
                         "result_tokens": result_tokens,
                         "acceptance_text": requirement_text,
                         "acceptance_tokens": requirement_tokens,
+                        "acceptance": acceptance,
                     },
                 },
                 source_id,
@@ -1356,12 +1371,163 @@ def _mapping_field_comparisons(
     return field_comparisons
 
 
-_NATIVE_MEASUREMENT_RE = re.compile(
-    r"(?<![\d.])(?P<number>[+＋\-－−]?(?:\d+(?:\.\d*)?|\.\d+))\s*"
-    r"(?P<unit>dB\(A\)|dB\(C\)|dB|MHz|KHz|kHz|Hz|MΩ|kΩ|mΩ|Ω|Ω|"
+_NUMBER_TOKEN = r"[+＋\-－−]?(?:\d+(?:\.\d*)?|\.\d+)"
+_UNIT_TOKEN = (
+    r"dB\(A\)|dB\(C\)|dB|MHz|KHz|kHz|Hz|MΩ|kΩ|mΩ|Ω|Ω|"
     r"mm/kV|mm2|mm|cm|kg|g|kV|mV|V|kW|mW|W|mA|uA|µA|μA|A|"
-    r"uF|µF|μF|pF|nF|F|ms|s|N|Pa|kPa|m|°C|℃|%)"
+    r"uF|µF|μF|pF|nF|F|ms|s|N|Pa|kPa|m|°C|℃|%|％"
 )
+_NATIVE_MEASUREMENT_RE = re.compile(
+    rf"(?<![\d.])(?P<number>{_NUMBER_TOKEN})\s*(?P<unit>{_UNIT_TOKEN})"
+)
+_BARE_NUMERIC_RE = re.compile(
+    rf"^(?P<comparator><=|>=|≤|≥|＜|＞|<|>)?\s*(?P<number>{_NUMBER_TOKEN})\s*$"
+)
+_ACCEPTANCE_RANGE_RE = re.compile(
+    rf"(?P<lower>{_NUMBER_TOKEN})\s*(?P<lower_unit>{_UNIT_TOKEN})?\s*"
+    rf"(?:~|～|〜|∼|至|到|—|－|-)\s*"
+    rf"(?P<upper>{_NUMBER_TOKEN})\s*(?P<upper_unit>{_UNIT_TOKEN})?"
+)
+_ACCEPTANCE_TOLERANCE_RE = re.compile(
+    rf"(?:±|\+/-)\s*(?P<number>{_NUMBER_TOKEN})\s*(?P<unit>{_UNIT_TOKEN})?"
+)
+_BOUND_WORDS = (
+    ("不超过", "<="),
+    ("不得超过", "<="),
+    ("不大于", "<="),
+    ("不应超过", "<="),
+    ("不小于", ">="),
+    ("不得低于", ">="),
+    ("不低于", ">="),
+    ("至少", ">="),
+    ("大于", ">"),
+    ("小于", "<"),
+)
+
+
+def _numeric_token_dict(match: re.Match[str], unit_context: str | None = None) -> dict[str, Any]:
+    number_text = match.group("number").replace("＋", "+").replace("－", "-").replace("−", "-")
+    unit = match.groupdict().get("unit") or unit_context
+    try:
+        value = Decimal(number_text)
+    except InvalidOperation:
+        value = None
+    return {
+        "raw": match.group(0),
+        "value": str(value) if value is not None else None,
+        "unit": unit,
+        "decimal_places": len(number_text.partition(".")[2]) if "." in number_text else 0,
+        "start": match.start(),
+        "end": match.end(),
+    }
+
+
+def _extract_numeric_tokens(text: str, *, unit_context: str | None = None) -> list[dict[str, Any]]:
+    """Extract explicit measurements and a single bare result with context.
+
+    Bare numbers are accepted only when the whole result cell is numeric. This
+    prevents clause numbers, dates and page references in requirement prose
+    from being treated as measurements.
+    """
+
+    source = compact(text)
+    tokens = [_numeric_token_dict(match, unit_context) for match in _NATIVE_MEASUREMENT_RE.finditer(source)]
+    if tokens:
+        return tokens
+    bare = _BARE_NUMERIC_RE.fullmatch(source)
+    if bare and unit_context:
+        token = _numeric_token_dict(bare, unit_context)
+        token["raw"] = source
+        return [token]
+    return []
+
+
+def _acceptance_constraints(requirement: str) -> dict[str, Any]:
+    """Extract explicit limits/ranges without inventing semantics.
+
+    The returned object is always published. Unrecognised prose is marked
+    ``unresolved`` so S43 remains visible for manual review.
+    """
+
+    source = compact(requirement)
+    unit_context = extract_unit_context(source)
+    ranges: list[dict[str, Any]] = []
+    occupied: list[tuple[int, int]] = []
+    for match in _ACCEPTANCE_RANGE_RE.finditer(source):
+        lower_unit = match.group("lower_unit") or unit_context
+        upper_unit = match.group("upper_unit") or lower_unit or unit_context
+        ranges.append({
+            "lower": match.group("lower"),
+            "upper": match.group("upper"),
+            "lower_unit": lower_unit,
+            "upper_unit": upper_unit,
+            "raw": match.group(0),
+        })
+        occupied.append(match.span())
+
+    tolerances = [
+        {"value": match.group("number"), "unit": match.group("unit") or unit_context, "raw": match.group(0)}
+        for match in _ACCEPTANCE_TOLERANCE_RE.finditer(source)
+    ]
+    bounds: list[dict[str, Any]] = []
+    for match in _NATIVE_MEASUREMENT_RE.finditer(source):
+        if any(start <= match.start() < end for start, end in occupied):
+            continue
+        before = source[max(0, match.start() - 16):match.start()]
+        after = source[match.end():match.end() + 8]
+        operator = None
+        for word, candidate in _BOUND_WORDS:
+            if word in before:
+                operator = candidate
+                break
+        if operator is None:
+            immediate = before[-2:].replace(" ", "")
+            operator = {"≤": "<=", "＜": "<", "≥": ">=", "＞": ">"}.get(immediate)
+        if operator is None and re.match(r"(?:以上|以下|以内)", after):
+            operator = ">=" if after.startswith("以上") else "<="
+        if operator is not None:
+            token = _numeric_token_dict(match, unit_context)
+            token["operator"] = operator
+            bounds.append(token)
+    explicit = bool(ranges or bounds or tolerances)
+    return {
+        "raw": requirement,
+        "unit_context": unit_context,
+        "ranges": ranges,
+        "bounds": bounds,
+        "tolerances": tolerances,
+        "status": "resolved" if explicit else "unresolved",
+        "reason_code": "acceptance_constraints_resolved" if explicit else "acceptance_relation_unresolved",
+    }
+
+
+def _compare_record_to_acceptance(record_text: str, requirement: str) -> dict[str, Any]:
+    acceptance = _acceptance_constraints(requirement)
+    if not acceptance["ranges"] and not acceptance["bounds"] and not acceptance["tolerances"]:
+        return {"decision": "not_applicable", "reason_code": acceptance["reason_code"], "acceptance": acceptance}
+    candidate = _extract_numeric_tokens(record_text, unit_context=acceptance["unit_context"])
+    if len(candidate) != 1:
+        return {"decision": "manual", "reason_code": "record_acceptance_value_not_uniquely_resolved", "acceptance": acceptance}
+    parsed = parse_report_numeric(candidate[0]["raw"], acceptance["unit_context"])
+    if parsed is None or parsed.comparator is not None or parsed.value is None:
+        return {"decision": "manual", "reason_code": "record_acceptance_value_not_parsed", "acceptance": acceptance}
+    try:
+        for bound in acceptance["bounds"]:
+            converted = convert_decimal(parsed.value, parsed.unit, bound["unit"])
+            limit = Decimal(bound["value"])
+            ok = {"<": converted < limit, "<=": converted <= limit, ">": converted > limit, ">=": converted >= limit}[bound["operator"]]
+            if not ok:
+                return {"decision": "mismatch", "reason_code": "acceptance_limit_mismatch", "acceptance": acceptance, "observed": str(converted)}
+        for interval in acceptance["ranges"]:
+            low = convert_decimal(parsed.value, parsed.unit, interval["lower_unit"])
+            high = convert_decimal(parsed.value, parsed.unit, interval["upper_unit"])
+            if not (low >= Decimal(interval["lower"]) and high <= Decimal(interval["upper"])):
+                return {"decision": "mismatch", "reason_code": "acceptance_range_mismatch", "acceptance": acceptance, "observed": str(parsed.value)}
+        if acceptance["tolerances"]:
+            return {"decision": "manual", "reason_code": "acceptance_tolerance_reference_unresolved", "acceptance": acceptance}
+    except (TypeError, ValueError, InvalidOperation):
+        return {"decision": "manual", "reason_code": "acceptance_unit_conversion_unresolved", "acceptance": acceptance}
+    return {"decision": "match", "reason_code": "acceptance_limit_matched", "acceptance": acceptance, "observed": str(parsed.value)}
 
 
 def _report_numeric(value: str, requirement: str = "") -> Any:
@@ -1369,7 +1535,7 @@ def _report_numeric(value: str, requirement: str = "") -> Any:
 
 
 def _is_report_measurement(value: str, requirement: str = "") -> bool:
-    return _report_numeric(value, requirement) is not None and "%" not in compact(value)
+    return _report_numeric(value, requirement) is not None and "%" not in compact(value) and "％" not in compact(value)
 
 
 def parse_measurement(value: str) -> dict[str, Any] | None:
@@ -1408,7 +1574,10 @@ def _native_measurement_candidate(record_text: str) -> str | None:
     if not normalized or re.search(r"表3|P_+|见GB|环境温湿度|检测仪器|日期", normalized):
         return None
     matches = list(_NATIVE_MEASUREMENT_RE.finditer(normalized))
-    return matches[0].group(0) if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0].group(0)
+    bare = _BARE_NUMERIC_RE.fullmatch(normalized)
+    return normalized if bare else None
 
 
 def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1450,10 +1619,7 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
     measurement_rows = [
         (str(row.get("result", "")), str(row.get("requirement", "")))
         for row in report_group
-        if _is_report_measurement(
-            str(row.get("result", "")),
-            str(row.get("requirement", "")),
-        )
+        if _is_report_measurement(str(row.get("result", "")), str(row.get("requirement", "")))
     ]
     percentage_rows = [value for value in report_results if extract_percentage_values(value)]
     numeric_comparison: dict[str, Any] | None = None
@@ -1476,6 +1642,9 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
                 record_text,
                 percentage_rows[0],
             ).to_dict()
+            numeric_comparison["acceptance"] = _acceptance_constraints(
+                str(report_group[0].get("requirement", ""))
+            )
     elif measurement_rows:
         record_candidate = _native_measurement_candidate(str(record_row.get("native_result_text", "")))
         if record_candidate is None or len(measurement_rows) != 1:
@@ -1485,8 +1654,8 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
                 "report_values": [value for value, _ in measurement_rows],
             }
         else:
-            parsed_record = parse_report_numeric(record_candidate)
             report_value, report_requirement = measurement_rows[0]
+            parsed_record = parse_report_numeric(record_candidate, extract_unit_context(report_requirement))
             if parsed_record is None or parsed_record.comparator is not None:
                 numeric_comparison = {
                     "decision": "manual",
@@ -1500,6 +1669,17 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
                     report_value,
                     extract_unit_context(report_requirement),
                 ).to_dict()
+                acceptance = _compare_record_to_acceptance(
+                    str(record_row.get("native_result_text", "")),
+                    report_requirement,
+                )
+                numeric_comparison["acceptance"] = acceptance
+                if acceptance["decision"] == "mismatch":
+                    numeric_comparison["decision"] = "mismatch"
+                    numeric_comparison["reason_code"] = acceptance["reason_code"]
+                elif acceptance["decision"] == "manual" and numeric_comparison["decision"] == "match":
+                    numeric_comparison["decision"] = "manual"
+                    numeric_comparison["reason_code"] = acceptance["reason_code"]
 
     component_decisions = [status_comparison["decision"], project_comparison["decision"]]
     if numeric_comparison is not None and numeric_comparison["decision"] != "excluded":
