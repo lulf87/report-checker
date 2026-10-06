@@ -30,6 +30,7 @@ from mvp.checker import (
     render_cell_for_ocr,
     sha256_file,
 )
+from mvp.capabilities import MODE_CATALOG
 from mvp.input_variants import Record61StatusInventoryError
 from mvp.record_full import (
     ComparisonResult,
@@ -2989,6 +2990,86 @@ def _overall_status(ledger: Sequence[Mapping[str, Any]], findings: Sequence[Mapp
     return "pass"
 
 
+def _record61_rule_execution_states(
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    coverage: Mapping[str, Any],
+    ledger: Sequence[Mapping[str, Any]],
+    record_status_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Declare only proven empty conditional rules as not applicable.
+
+    All ordinary rules remain succeeded, including a missing result.  The
+    coordinator then rejects a missing ordinary Finding instead of silently
+    treating it as a pass.  These three conditional rules can legitimately
+    have no Finding after their target inventory has been inspected.
+    """
+
+    rule_ids = MODE_CATALOG[MODE]["rule_ids"]
+    counts = Counter(str(finding.get("rule_id") or "") for finding in findings)
+    states = {rule_id: {"state": "succeeded"} for rule_id in rule_ids}
+
+    def declare_empty(rule_id: str, reason_code: str, reason_detail: Mapping[str, Any]) -> None:
+        if counts[rule_id] == 0:
+            states[rule_id] = {
+                "state": "not_applicable",
+                "disposition": "not_applicable",
+                "reason_code": reason_code,
+                "reason_detail": dict(reason_detail),
+            }
+
+    discovery = coverage.get("numeric_discovery", {})
+    if (
+        discovery.get("eligible") == 0
+        and discovery.get("accounted") == 0
+        and discovery.get("conserved") is True
+    ):
+        declare_empty(
+            "RECORD61-NUMERIC-DISCOVERY",
+            "RECORD61_NUMERIC_DISCOVERY_NO_TARGETS",
+            {
+                "target_count": 0,
+                "search_basis": "Report sequences 1-117, actual numeric or percentage results outside validated numeric blocks",
+                "inventory_conserved": True,
+            },
+        )
+
+    numeric = coverage.get("numeric_targets", {})
+    if (
+        numeric.get("target_counts", {}).get("4.11") == 0
+        and numeric.get("expected_target_counts", {}).get("4.11") == 0
+    ):
+        declare_empty(
+            "RECORD61-BODY-PERCENT",
+            "RECORD61_BODY_PERCENT_NO_TARGETS",
+            {
+                "clause": "4.11",
+                "target_count": 0,
+                "expected_target_count": 0,
+                "search_basis": "Report actual final-percentage targets in clause 4.11",
+            },
+        )
+
+    matched_nonconforming = sum(
+        bool(entry.get("nonconforming_alert")) and entry.get("disposition") == "matched"
+        for entry in ledger
+    )
+    if matched_nonconforming == 0:
+        declare_empty(
+            "RECORD61-NONCONFORMING-ALERT",
+            "RECORD61_NONCONFORMING_ALERT_NO_MATCHED_ROWS",
+            {
+                "scanned_status_row_count": len(record_status_rows),
+                "record_nonconforming_row_count": sum(
+                    row.get("status") == "不符合" for row in record_status_rows
+                ),
+                "matched_nonconforming_row_count": 0,
+                "search_basis": "All extracted Record status rows and matched body-status ledger entries",
+            },
+        )
+    return states
+
+
 def _structure_finding(
     extraction: Mapping[str, Any],
     report_rows: Sequence[ReportRow],
@@ -3192,6 +3273,12 @@ def run_record_61_full(
         "coverage": coverage,
         "ledger": ledger,
         "findings": findings,
+        "rule_execution_states": _record61_rule_execution_states(
+            findings,
+            coverage=coverage,
+            ledger=ledger,
+            record_status_rows=record_status_rows,
+        ),
     }
 
 
