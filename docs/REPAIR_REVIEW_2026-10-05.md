@@ -23,7 +23,7 @@
 | VERIFIED | 9706.1 状态框区分选中、空白、注销线、歧义和异体字形；字段级 Ledger 包含项目、条款、要求、建议、条件、单位和结果；缺失、额外、歧义映射使用独立原因码 | `tests.test_record61_scope_expanded`、`tests.test_full_record_61` |
 | VERIFIED | 9706.202 发布映射库存，明确 38 项、Record 逻辑行和 Report 物理行的缺失、额外、歧义情况；未映射 Report 行进入 manual scope Ledger；数值接受标准进入对象级 Ledger | `tests.test_record202_scope_expanded`、`tests.test_full_record_202` |
 | VERIFIED | 上传工作台总体 warning 徽标；真实工作台 warning 状态、筛选、计数、颜色和 Report self scope ledger 校验 | `tests.test_workbench_upload`、`tests.test_workbench_real` |
-| VERIFIED | 真实工作台 2795 Report self 静态结果按当前规则重新生成：pass 7 / manual 4 / error 1；旧目录保留为 `2795-legacy-20261006-180009` | `output/report-self-unified-20260930-v3/2795/result.json` |
+| VERIFIED | 真实工作台 2795 Report self 静态结果按当前规则重新生成：pass 7 / manual 4 / error 1；旧目录已移入 `output/backups/report-self-legacy/` | `output/report-self-unified-20260930-v3/2795/result.json` |
 | VERIFIED | 范围与界面补丁局部回归 | `79 tests OK` |
 
 ## P0/P1 关闭项
