@@ -14,7 +14,7 @@
 | VERIFIED | 9706.1 状态库存 `813/native812/alternate1` 被转为结构化 `manual` Finding；其余 9 条规则记录 `unsupported` 与稳定原因码 | `tests.test_input_variant`；真实 Report + Record 临时持久化 Coordinator Run：`succeeded/manual` |
 | VERIFIED | 数值约束支持显式括号区间、阈值、单位换算、精度和显式极性；无边界语义的 `~`、`至`、`±` 保持 `manual` | `tests.test_record_full_numeric_semantics`（7 条） |
 | VERIFIED | 原始 SQLite 已备份并从 v7 迁移到 v8；关键表数量保持 `20/21/20/236/192/3055/76/0/22`，`quick_check=ok`、外键检查为空 | `output/backups/pre-v8-*/migration-report.json` |
-| VERIFIED | 全量测试 | `232 tests OK` |
+| VERIFIED | 全量测试（范围补齐前） | `232 tests OK` |
 
 ## 2026-10-06 范围补齐与界面修复
 
@@ -25,6 +25,7 @@
 | VERIFIED | 上传工作台总体 warning 徽标；真实工作台 warning 状态、筛选、计数、颜色和 Report self scope ledger 校验 | `tests.test_workbench_upload`、`tests.test_workbench_real` |
 | VERIFIED | 真实工作台 2795 Report self 静态结果按当前规则重新生成：pass 7 / manual 4 / error 1；旧目录已移入 `output/backups/report-self-legacy/` | `output/report-self-unified-20260930-v3/2795/result.json` |
 | VERIFIED | 范围与界面补丁局部回归 | `79 tests OK` |
+| VERIFIED | 最终全量测试 | `246 tests OK` |
 
 ## P0/P1 关闭项
 
