@@ -70,6 +70,7 @@
     .status-label.pass { color: var(--pass); background: var(--pass-soft); }
     .status-label.error { color: var(--error); background: var(--error-soft); }
     .status-label.manual { color: var(--manual); background: var(--manual-soft); }
+    .status-label.warning { color: #735596; background: #f4edfc; }
     .status-label.running { color: var(--teal); background: var(--teal-soft); }
     .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
     .meta-item { padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
@@ -756,7 +757,13 @@
         if (lifecycle === "succeeded") {
           const overall = String(current.machine_overall_status || current.resolved_overall_status || "manual");
           const overallLabel = STATUS_LABELS[overall] || overall;
-          const overallKind = overall === "error" ? "error" : overall === "pass" ? "pass" : "manual";
+          const overallKind = overall === "error"
+            ? "error"
+            : overall === "pass"
+              ? "pass"
+              : overall === "warning"
+                ? "warning"
+                : "manual";
           setRunStatus(`已完成 · ${overallLabel}`, overallKind);
           statusMessage.textContent = "运行完成，以下为服务端发布的 Finding。";
           await loadFindings(current, mode);

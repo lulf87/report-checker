@@ -8,6 +8,8 @@ from mvp.full_record_202 import (
     RECORD202_IDENTITY_FIELDS,
     RECORD202_METADATA_FIELDS,
     compare_record_202_sample,
+    _acceptance_constraints,
+    _record_202_inventory_diagnostics,
 )
 
 
@@ -78,6 +80,35 @@ class Record202ExpandedScopeTests(unittest.TestCase):
         self.assertTrue(all(entry["record"]["value"] == "" for entry in identity + metadata))
         self.assertTrue(all(entry["disposition"] in {"not_applicable", "manual"} for entry in identity + metadata))
         self.assertTrue(all(entry["report"]["field"] and "value" in entry["report"] for entry in identity + metadata))
+
+    def test_inventory_drift_is_explicit_and_item_16_one_to_many_is_allowed(self) -> None:
+        record_rows = [
+            {"item": 1, "logical_row": 1},
+            {"item": 16, "logical_row": 1},
+        ]
+        report_groups = {
+            1: [[{"row_id": "report:1", "item": 119}]],
+            16: [[{"row_id": "report:16a"}, {"row_id": "report:16b"}], [{"row_id": "report:16c"}]],
+        }
+        inventory = _record_202_inventory_diagnostics(record_rows, report_groups)
+        self.assertFalse(inventory["valid"])
+        self.assertTrue(any(row["reason_code"] == "record_logical_row_missing" for row in inventory["missing_record_rows"]))
+        self.assertTrue(any(row["reason_code"] == "report_physical_row_missing" for row in inventory["missing_report_rows"]))
+        self.assertFalse(inventory["ambiguous_rows"], "Item 16's approved one-to-many mapping is not ambiguous")
+
+        ambiguous = _record_202_inventory_diagnostics(
+            [{"item": 1, "logical_row": 1}],
+            {1: [[{"row_id": "report:a"}, {"row_id": "report:b"}]]},
+        )
+        self.assertTrue(ambiguous["ambiguous_rows"])
+        self.assertEqual(ambiguous["ambiguous_rows"][0]["reason_code"], "report_mapping_ambiguous_one_to_many")
+
+    def test_acceptance_ledger_exposes_units_and_precision(self) -> None:
+        acceptance = _acceptance_constraints("单位：mA，0.50~1.00 mA，允许误差±0.05 mA")
+        self.assertEqual(acceptance["unit_context"], "mA")
+        self.assertEqual(acceptance["ranges"][0]["precision"], 2)
+        self.assertEqual(acceptance["tolerances"][0]["precision"], 2)
+        self.assertEqual(acceptance["precision"], 2)
 
 
 if __name__ == "__main__":

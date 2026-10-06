@@ -16,6 +16,16 @@
 | VERIFIED | 原始 SQLite 已备份并从 v7 迁移到 v8；关键表数量保持 `20/21/20/236/192/3055/76/0/22`，`quick_check=ok`、外键检查为空 | `output/backups/pre-v8-*/migration-report.json` |
 | VERIFIED | 全量测试 | `232 tests OK` |
 
+## 2026-10-06 范围补齐与界面修复
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | 9706.1 状态框区分选中、空白、注销线、歧义和异体字形；字段级 Ledger 包含项目、条款、要求、建议、条件、单位和结果；缺失、额外、歧义映射使用独立原因码 | `tests.test_record61_scope_expanded`、`tests.test_full_record_61` |
+| VERIFIED | 9706.202 发布映射库存，明确 38 项、Record 逻辑行和 Report 物理行的缺失、额外、歧义情况；未映射 Report 行进入 manual scope Ledger；数值接受标准进入对象级 Ledger | `tests.test_record202_scope_expanded`、`tests.test_full_record_202` |
+| VERIFIED | 上传工作台总体 warning 徽标；真实工作台 warning 状态、筛选、计数、颜色和 Report self scope ledger 校验 | `tests.test_workbench_upload`、`tests.test_workbench_real` |
+| VERIFIED | 真实工作台 2795 Report self 静态结果按当前规则重新生成：pass 7 / manual 4 / error 1；旧目录保留为 `2795-legacy-20261006-180009` | `output/report-self-unified-20260930-v3/2795/result.json` |
+| VERIFIED | 范围与界面补丁局部回归 | `79 tests OK` |
+
 ## P0/P1 关闭项
 
 | 状态 | 项目 | 证据 |
@@ -53,4 +63,4 @@
 - `FourModeDispatcherTests`：**6 passed**；`ReportSelfRunnerTests`：**2 passed**。
 - `compileall` 与 `git diff --check`：通过。
 - SQLite backup API 独立副本：v7→v8，原计数 `20/21/20/236/192/3055/0` 保持不变，`quick_check=ok`、`foreign_key_check=[]`；故障副本回滚后版本仍为 v7、迁移记录为 0。
-- 网络绑定测试已通过正式审批在 loopback 临时端口运行；数据库迁移前后均保留了可恢复备份。
+- 网络绑定测试已通过正式审批在 loopback 临时端口运行；数据库迁移前后均保留了可恢复备份。真实工作台文件包含本机私有样例清单，继续由 `.gitignore` 排除；公开仓库提交的是上传工作台和规则/服务代码。

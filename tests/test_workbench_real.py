@@ -51,6 +51,8 @@ def _manifest_entries(module_source: str) -> list[dict[str, str]]:
 class RealWorkbenchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if not HTML_PATH.is_file():
+            raise unittest.SkipTest("private real workbench fixture is unavailable")
         cls.html = HTML_PATH.read_text(encoding="utf-8")
         cls.module_source = _module_source(cls.html)
         cls.entries = _manifest_entries(cls.module_source)
@@ -94,6 +96,17 @@ class RealWorkbenchTests(unittest.TestCase):
                     self.assertEqual(result["coverage"]["attempted"], len(REPORT_SELF_RULE_ORDER))
                     self.assertEqual(result["coverage"]["completed"], len(REPORT_SELF_RULE_ORDER))
                     self.assertEqual(result["coverage"]["missing"], [])
+                    executions = result["coverage"].get("rule_executions")
+                    self.assertIsInstance(executions, list)
+                    self.assertEqual(
+                        [item["rule_id"] for item in executions],
+                        list(REPORT_SELF_RULE_ORDER),
+                    )
+                    finding_statuses = {finding["rule_id"]: finding["status"] for finding in result["findings"]}
+                    self.assertEqual(
+                        {item["rule_id"]: item["machine_status"] for item in executions},
+                        finding_statuses,
+                    )
                     self.assertEqual(
                         set(result["files"][0]),
                         {"role", "path", "sha256", "size"},
@@ -108,6 +121,23 @@ class RealWorkbenchTests(unittest.TestCase):
                         self.assertEqual(r07["status"], "error")
                         self.assertTrue(r07["evidence_locations"])
                         self.assertTrue(all(location["role"] == "report" for location in r07["evidence_locations"]))
+                    for finding in result["findings"]:
+                        if finding["status"] == "pass":
+                            continue
+                        with self.subTest(run=entry["id"], finding=finding["id"]):
+                            locations = finding.get("evidence_locations", [])
+                            self.assertTrue(locations, "非通过 Report Finding 必须带可定位证据")
+                            self.assertTrue(all(location.get("role") == "report" for location in locations))
+                            self.assertTrue(
+                                all(
+                                    isinstance(location.get("pdf_page"), int)
+                                    and location["pdf_page"] > 0
+                                    and len(location.get("bbox", [])) == 4
+                                    and float(location["bbox"][0]) < float(location["bbox"][2])
+                                    and float(location["bbox"][1]) < float(location["bbox"][3])
+                                    for location in locations
+                                )
+                            )
                 else:
                     expected_prefix = "RECORD61-" if entry["mode"] == "record61" else "RECORD202-"
                 if entry["mode"] == "self":
@@ -249,6 +279,15 @@ class RealWorkbenchTests(unittest.TestCase):
         self.assertIn("status_counts 与 Finding 明细不一致", self.module_source)
         self.assertIn("ledger_status_counts 与 Ledger 明细不一致", self.module_source)
         self.assertIn("cache: \"no-store\"", self.module_source)
+
+    def test_report_self_scope_ledger_and_warning_status_are_first_class(self) -> None:
+        self.assertIn('data-status="warning"', self.html)
+        self.assertIn('warning: { label: "警示", short: "警示" }', self.module_source)
+        self.assertIn('if (status === "warning" || disposition === "warning") return "warning";', self.module_source)
+        self.assertIn("REPORT_SELF_RULE_IDS", self.module_source)
+        self.assertIn("result.ledger_status_counts !== undefined", self.module_source)
+        self.assertIn("result.scope_coverage.conserved !== true", self.module_source)
+        self.assertNotIn('if (result.ledger !== undefined || result.ledger_status_counts !== undefined)', self.module_source)
 
     def test_compact_summary_separates_finding_and_ledger_counts(self) -> None:
         self.assertIn("Finding/Q", self.html)

@@ -522,14 +522,26 @@ def _unsupported_record61_inventory_result(
         },
         "input_variant": details,
     }
+    variant_evidence = [
+        {**report_location, "role": "report", "semantic_role": "comparison_context"},
+        {**record_location, "role": "record_9706_1", "semantic_role": "status_inventory"},
+    ]
     execution_states = {
         rule_id: (
-            {"state": "succeeded"}
+            {
+                "state": "succeeded",
+                "disposition": "manual",
+                "reason_code": error.code,
+                "reason_detail": details,
+                "evidence_locations": variant_evidence,
+            }
             if rule_id == structure_rule
             else {
                 "state": "unsupported",
+                "disposition": "unsupported",
                 "reason_code": error.code,
                 "reason_detail": details,
+                "evidence_locations": variant_evidence,
             }
         )
         for rule_id in rule_ids

@@ -3,8 +3,13 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import pymupdf as fitz
+
 from mvp.checker import SAMPLE_CONFIGS
 from mvp.full_record_61 import (
+    _mapping_reason_code,
+    _paired_field_comparisons,
+    _status_from_ink,
     _identity_decision,
     _numeric_discovery_targets,
     run_record_61_full,
@@ -48,6 +53,86 @@ class Record61IdentityEvidenceTests(unittest.TestCase):
 
 
 class Record61ScopeExpandedTests(unittest.TestCase):
+    def test_status_semantics_distinguish_blank_void_ambiguous_and_alternate(self) -> None:
+        status_cell = fitz.Rect(0, 0, 100, 10)
+        boxes = [fitz.Rect(5, 1, 15, 9), fitz.Rect(45, 1, 55, 9), fitz.Rect(85, 1, 95, 9)]
+        blank = _status_from_ink(status_cell, boxes, [])
+        self.assertEqual((blank["status"], blank["status_class"]), (None, "blank"))
+        void = _status_from_ink(
+            status_cell,
+            boxes,
+            [{"centroid_x": 50, "centroid_y": 5, "bbox": [0, 3, 100, 7], "point_count": 2}],
+        )
+        self.assertEqual((void["status"], void["status_class"]), (None, "void_or_crossed_out"))
+        ambiguous = _status_from_ink(
+            status_cell,
+            boxes,
+            [
+                {"centroid_x": 10, "centroid_y": 5, "bbox": [6, 3, 14, 8], "point_count": 2},
+                {"centroid_x": 90, "centroid_y": 5, "bbox": [86, 3, 94, 8], "point_count": 2},
+            ],
+            glyph_encoding="alternate_first_square_triplet",
+        )
+        self.assertEqual((ambiguous["status"], ambiguous["status_class"]), (None, "ambiguous"))
+        self.assertEqual(ambiguous["glyph_variant"], "alternate")
+
+    def test_field_comparisons_keep_suggestion_condition_unit_and_result(self) -> None:
+        record = {
+            "project": "项目",
+            "clause": "8.1",
+            "requirement": "要求",
+            "suggestion": "",
+            "condition": "",
+            "unit": None,
+            "result": "符合",
+        }
+        report = {
+            "project": "项目",
+            "clause": "8.1",
+            "requirement": "要求",
+            "suggestion": "",
+            "condition": "",
+            "unit": None,
+            "result": "符合要求",
+        }
+        comparisons = _paired_field_comparisons(
+            record,
+            report,
+            result_comparison={"decision": "match", "reason_code": "status_result_matched"},
+        )
+        self.assertEqual(
+            set(comparisons),
+            {"project", "clause", "requirement", "suggestion", "condition", "unit", "result"},
+        )
+        self.assertEqual(comparisons["result"]["decision"], "match")
+        self.assertEqual(comparisons["suggestion"]["decision"], "not_applicable")
+        unresolved = _paired_field_comparisons(record, report, mapped=False)
+        self.assertTrue(all(item["decision"] == "manual" for item in unresolved.values()))
+
+    def test_mapping_reason_codes_distinguish_missing_extra_and_ambiguous(self) -> None:
+        target = ReportRow(
+            row_id="report:1", sequence=1, row_ordinal=1, pdf_page=1,
+            project_raw="", clause_raw="8.1", requirement_raw="唯一要求文本",
+            result_raw="符合要求", conclusion_raw="符合", unit_context=None,
+            condition_tokens=(), requirement_rect=(1, 1, 2, 2),
+            result_rect=(2, 1, 3, 2), conclusion_rect=(3, 1, 4, 2),
+        )
+        source = {"row_id": "record:1", "clause": "8.1", "requirement": "其他要求"}
+        self.assertEqual(
+            _mapping_reason_code(source, None, [source], [target], "legacy"),
+            "record_row_missing_in_report",
+        )
+        self.assertEqual(
+            _mapping_reason_code(None, target, [source], [target], "legacy"),
+            "report_row_extra_vs_record",
+        )
+        first = {"row_id": "record:a", "clause": "8.1", "requirement": "唯一要求文本"}
+        second = {"row_id": "record:b", "clause": "8.1", "requirement": "唯一要求文本"}
+        self.assertEqual(
+            _mapping_reason_code(None, target, [first, second], [target], "legacy"),
+            "report_row_ambiguous_mapping",
+        )
+
     def test_numeric_discovery_emits_unvalidated_numeric_targets(self) -> None:
         row = ReportRow(
             row_id="report:s99", sequence=99, row_ordinal=1, pdf_page=10,

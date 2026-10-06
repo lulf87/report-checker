@@ -759,17 +759,30 @@ def _expanded_scope_ledger(
     report_ids: list[str] = []
     categories: Counter[str] = Counter()
 
-    def add_entry(entry: dict[str, Any], source_id: str, target_ids: Sequence[str]) -> None:
+    def add_entry(entry: dict[str, Any], source_id: str | None, target_ids: Sequence[str]) -> None:
         scope_ledger.append(entry)
-        source_ids.append(source_id)
-        if not target_ids:
-            target_ids = [f"{source_id}:target"]
+        if source_id is not None:
+            source_ids.append(source_id)
+        # A missing target is represented by a one-sided coverage edge.  Do not
+        # fabricate a target id: fabricated rows make coverage look conserved
+        # while hiding a missing Report physical row.
+        target_ids = list(target_ids)
         for target_id in target_ids:
             report_ids.append(target_id)
             coverage_entries.append(
                 CoverageEntry(
                     source_id,
                     target_id,
+                    entry["disposition"],
+                    entry["reason_code"],
+                    (entry["id"],),
+                )
+            )
+        if not target_ids and source_id is not None:
+            coverage_entries.append(
+                CoverageEntry(
+                    source_id,
+                    None,
                     entry["disposition"],
                     entry["reason_code"],
                     (entry["id"],),
@@ -857,16 +870,24 @@ def _expanded_scope_ledger(
             result_text = str(report_row.get("result", ""))
             requirement_text = str(report_row.get("requirement", ""))
             result_unit_context = extract_unit_context(requirement_text)
-            result_tokens = _extract_numeric_tokens(result_text, unit_context=result_unit_context)
+            result_tokens = _extract_numeric_tokens(
+                result_text,
+                unit_context=result_unit_context,
+                allow_bare=True,
+            )
             requirement_tokens = [
                 _numeric_token_dict(match, result_unit_context)
                 for match in _NATIVE_MEASUREMENT_RE.finditer(compact(requirement_text))
             ]
-            if not result_tokens and not requirement_tokens:
+            acceptance = _acceptance_constraints(requirement_text)
+            if not result_tokens and not requirement_tokens and acceptance["status"] != "resolved":
                 continue
             record_text = str(record_row.get("native_result_text", ""))
-            record_tokens = _extract_numeric_tokens(record_text, unit_context=result_unit_context)
-            acceptance = _acceptance_constraints(requirement_text)
+            record_tokens = _extract_numeric_tokens(
+                record_text,
+                unit_context=result_unit_context,
+                allow_bare=True,
+            )
             if "表3" in compact(record_text):
                 numeric_decision, numeric_disposition, reason = "excluded", "excluded", "TABLE3_OUT_OF_SCOPE"
             elif len(result_tokens) == 1:
@@ -892,7 +913,7 @@ def _expanded_scope_ledger(
                             numeric_decision, numeric_disposition, reason = "mismatch", "mismatch", acceptance_comparison["reason_code"]
                         elif acceptance_comparison["decision"] == "manual" and numeric_decision == "match":
                             numeric_decision, numeric_disposition, reason = "manual", "manual", acceptance_comparison["reason_code"]
-            elif not result_tokens and requirement_tokens:
+            elif not result_tokens and (requirement_tokens or acceptance["status"] == "resolved"):
                 numeric_decision, numeric_disposition, reason = "manual", "manual", "report_numeric_result_missing"
             elif result_tokens or requirement_tokens:
                 numeric_decision, numeric_disposition, reason = "manual", "manual", "numeric_target_not_uniquely_resolved"
@@ -928,6 +949,53 @@ def _expanded_scope_ledger(
                 [target_id],
             )
             categories["numeric_target"] += 1
+
+    # Preserve every Report physical row.  Rows that fall outside the frozen
+    # one-to-one/Item-16 mapping are explicit manual objects with only a target
+    # side; they cannot silently disappear from the ledger.
+    mapped_report_ids = {
+        target_id
+        for entry in scope_ledger
+        for target_id in entry.get("target_row_ids", [])
+        if target_id
+    }
+    for item, groups in report_groups.items():
+        for group in groups:
+            for report_row in group:
+                target_id = str(report_row["row_id"])
+                if target_id in mapped_report_ids:
+                    continue
+                entry_id = f"RECORD202-UNMATCHED-REPORT-{target_id.replace(':', '-') }"
+                entry = {
+                    "entry_type": "scope",
+                    "scope_category": "mapping_unmatched",
+                    "id": entry_id,
+                    "entry_id": entry_id,
+                    "rule_id": "RECORD202-SCOPE",
+                    "source_row_id": None,
+                    "target_row_id": target_id,
+                    "target_row_ids": [target_id],
+                    "disposition": "manual",
+                    "decision": "manual",
+                    "reason_code": "report_physical_row_extra_or_unmapped",
+                    "scope_ids": ["S38", "S39"],
+                    "record_location": {"pdf_page": 1, "bbox": _rect(record_doc[0].rect)},
+                    "report_locations": [{"pdf_page": report_row["pdf_page"], "bbox": report_row["result_bbox"]}],
+                    "record": {"item": item, "logical_row": None},
+                    "report": {
+                        "item": report_row.get("item"),
+                        "physical_row": report_row.get("physical_row"),
+                        "project": report_row.get("project", ""),
+                        "parent_clause": report_row.get("parent_clause", ""),
+                        "requirement": report_row.get("requirement", ""),
+                    },
+                }
+                scope_ledger.append(entry)
+                report_ids.append(target_id)
+                coverage_entries.append(
+                    CoverageEntry(None, target_id, "manual", entry["reason_code"], (entry_id,))
+                )
+                categories["mapping_unmatched"] += 1
 
     # Structure has two sides and must remain explicit even when a table is
     # malformed.  It is kept separate from the row mapping ledger.
@@ -1083,7 +1151,118 @@ def build_report_202_groups(
             groups[record_item] = [physical_rows[:2], physical_rows[2:3]]
         else:
             groups[record_item] = [[row] for row in physical_rows]
+    # Keep out-of-family Report items available for an explicit unmatched
+    # disposition instead of silently discarding a whole inserted section.
+    unexpected = [
+        row
+        for item, rows in report_rows.items()
+        if not 119 <= int(item) <= 156
+        for row in rows
+    ]
+    if unexpected:
+        groups[0] = [[row] for row in unexpected]
     return groups
+
+
+def _record_202_inventory_diagnostics(
+    record_rows: Sequence[Mapping[str, Any]],
+    report_groups: Mapping[int, Sequence[Sequence[Mapping[str, Any]]]],
+) -> dict[str, Any]:
+    """Describe row inventory drift without silently dropping an edge.
+
+    The frozen templates normally contain 175 Record logical rows and 176
+    comparable Report physical rows.  User supplied variants can contain
+    omitted, inserted, or ambiguous rows; those are a manual disposition in
+    the published result, rather than a parser exception or an inferred pass.
+    """
+
+    record_by_item: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in record_rows:
+        record_by_item[int(row.get("item", 0))].append(row)
+    items: list[dict[str, Any]] = []
+    missing_record_rows: list[dict[str, Any]] = []
+    extra_record_rows: list[dict[str, Any]] = []
+    missing_report_rows: list[dict[str, Any]] = []
+    extra_report_rows: list[dict[str, Any]] = []
+    ambiguous_rows: list[dict[str, Any]] = []
+    for item in range(1, 39):
+        expected_record = EXPECTED_ITEM_ROW_COUNTS[item]
+        expected_report = expected_record + (1 if item == 16 else 0)
+        actual_record = len(record_by_item.get(item, ()))
+        groups = list(report_groups.get(item, ()))
+        actual_report = sum(len(group) for group in groups)
+        if actual_record < expected_record:
+            missing_record_rows.extend(
+                {"item": item, "logical_row": ordinal, "reason_code": "record_logical_row_missing"}
+                for ordinal in range(actual_record + 1, expected_record + 1)
+            )
+        elif actual_record > expected_record:
+            extra_record_rows.extend(
+                {"item": item, "logical_row": ordinal, "reason_code": "record_logical_row_extra"}
+                for ordinal in range(expected_record + 1, actual_record + 1)
+            )
+        if actual_report < expected_report:
+            missing_report_rows.extend(
+                {"item": item, "physical_row": ordinal, "reason_code": "report_physical_row_missing"}
+                for ordinal in range(actual_report + 1, expected_report + 1)
+            )
+        elif actual_report > expected_report:
+            extra_report_rows.extend(
+                {"item": item, "physical_row": ordinal, "reason_code": "report_physical_row_extra"}
+                for ordinal in range(expected_report + 1, actual_report + 1)
+            )
+        for ordinal, group in enumerate(groups, start=1):
+            allowed_many = item == 16 and ordinal == 1
+            if len(group) > 1 and not allowed_many:
+                ambiguous_rows.append(
+                    {
+                        "item": item,
+                        "logical_row": ordinal,
+                        "target_row_ids": [str(row.get("row_id")) for row in group],
+                        "reason_code": "report_mapping_ambiguous_one_to_many",
+                    }
+                )
+        items.append(
+            {
+                "item": item,
+                "expected_record_logical_rows": expected_record,
+                "actual_record_logical_rows": actual_record,
+                "expected_report_physical_rows": expected_report,
+                "actual_report_physical_rows": actual_report,
+                "record_count_ok": actual_record == expected_record,
+                "report_count_ok": actual_report == expected_report,
+            }
+        )
+    for item, groups in report_groups.items():
+        if 1 <= int(item) <= 38:
+            continue
+        for ordinal, group in enumerate(groups, start=1):
+            for physical_row, row in enumerate(group, start=1):
+                extra_report_rows.append(
+                    {
+                        "item": int(item),
+                        "physical_row": physical_row,
+                        "row_id": str(row.get("row_id")),
+                        "reason_code": "report_physical_row_extra_item",
+                    }
+                )
+    return {
+        "expected_record_logical_rows": EXPECTED_COMPARISON_UNITS,
+        "actual_record_logical_rows": len(record_rows),
+        "expected_report_physical_rows": EXPECTED_REPORT_PHYSICAL_ROWS,
+        "actual_report_physical_rows": sum(
+            len(row) for groups in report_groups.values() for row in groups
+        ),
+        "items": items,
+        "missing_record_rows": missing_record_rows,
+        "extra_record_rows": extra_record_rows,
+        "missing_report_rows": missing_report_rows,
+        "extra_report_rows": extra_report_rows,
+        "ambiguous_rows": ambiguous_rows,
+        "valid": not any(
+            (missing_record_rows, extra_record_rows, missing_report_rows, extra_report_rows, ambiguous_rows)
+        ),
+    }
 
 
 _LEGAL_RECORD_SYMBOLS = {"√", "×", "△", "/"}
@@ -1412,22 +1591,29 @@ def _numeric_token_dict(match: re.Match[str], unit_context: str | None = None) -
         value = Decimal(number_text)
     except InvalidOperation:
         value = None
+    decimal_places = len(number_text.partition(".")[2]) if "." in number_text else 0
     return {
         "raw": match.group(0),
         "value": str(value) if value is not None else None,
         "unit": unit,
-        "decimal_places": len(number_text.partition(".")[2]) if "." in number_text else 0,
+        "decimal_places": decimal_places,
+        "precision": decimal_places,
         "start": match.start(),
         "end": match.end(),
     }
 
 
-def _extract_numeric_tokens(text: str, *, unit_context: str | None = None) -> list[dict[str, Any]]:
+def _extract_numeric_tokens(
+    text: str,
+    *,
+    unit_context: str | None = None,
+    allow_bare: bool = False,
+) -> list[dict[str, Any]]:
     """Extract explicit measurements and a single bare result with context.
 
-    Bare numbers are accepted only when the whole result cell is numeric. This
-    prevents clause numbers, dates and page references in requirement prose
-    from being treated as measurements.
+    Bare numbers are accepted only when the whole cell is numeric and the
+    caller explicitly enables ``allow_bare``. This prevents clause numbers,
+    dates and page references in requirement prose from being measurements.
     """
 
     source = compact(text)
@@ -1435,7 +1621,7 @@ def _extract_numeric_tokens(text: str, *, unit_context: str | None = None) -> li
     if tokens:
         return tokens
     bare = _BARE_NUMERIC_RE.fullmatch(source)
-    if bare and unit_context:
+    if bare and (unit_context or allow_bare):
         token = _numeric_token_dict(bare, unit_context)
         token["raw"] = source
         return [token]
@@ -1456,19 +1642,34 @@ def _acceptance_constraints(requirement: str) -> dict[str, Any]:
     for match in _ACCEPTANCE_RANGE_RE.finditer(source):
         lower_unit = match.group("lower_unit") or unit_context
         upper_unit = match.group("upper_unit") or lower_unit or unit_context
+        lower_token = match.group("lower")
+        upper_token = match.group("upper")
+        lower_precision = len(lower_token.partition(".")[2]) if "." in lower_token else 0
+        upper_precision = len(upper_token.partition(".")[2]) if "." in upper_token else 0
         ranges.append({
-            "lower": match.group("lower"),
-            "upper": match.group("upper"),
+            "lower": lower_token,
+            "upper": upper_token,
             "lower_unit": lower_unit,
             "upper_unit": upper_unit,
+            "lower_decimal_places": lower_precision,
+            "upper_decimal_places": upper_precision,
+            "precision": max(lower_precision, upper_precision),
             "raw": match.group(0),
         })
         occupied.append(match.span())
 
-    tolerances = [
-        {"value": match.group("number"), "unit": match.group("unit") or unit_context, "raw": match.group(0)}
-        for match in _ACCEPTANCE_TOLERANCE_RE.finditer(source)
-    ]
+    tolerances = []
+    for match in _ACCEPTANCE_TOLERANCE_RE.finditer(source):
+        token = match.group("number")
+        tolerances.append(
+            {
+                "value": token,
+                "unit": match.group("unit") or unit_context,
+                "decimal_places": len(token.partition(".")[2]) if "." in token else 0,
+                "precision": len(token.partition(".")[2]) if "." in token else 0,
+                "raw": match.group(0),
+            }
+        )
     bounds: list[dict[str, Any]] = []
     for match in _NATIVE_MEASUREMENT_RE.finditer(source):
         if any(start <= match.start() < end for start, end in occupied):
@@ -1489,6 +1690,11 @@ def _acceptance_constraints(requirement: str) -> dict[str, Any]:
             token = _numeric_token_dict(match, unit_context)
             token["operator"] = operator
             bounds.append(token)
+    precision_values = [
+        int(value.get("precision", 0))
+        for value in ranges + bounds + tolerances
+        if isinstance(value, Mapping)
+    ]
     explicit = bool(ranges or bounds or tolerances)
     return {
         "raw": requirement,
@@ -1496,6 +1702,7 @@ def _acceptance_constraints(requirement: str) -> dict[str, Any]:
         "ranges": ranges,
         "bounds": bounds,
         "tolerances": tolerances,
+        "precision": max(precision_values, default=None),
         "status": "resolved" if explicit else "unresolved",
         "reason_code": "acceptance_constraints_resolved" if explicit else "acceptance_relation_unresolved",
     }
@@ -1827,28 +2034,21 @@ def compare_record_202_documents(
         record_rows, extraction = extract_record_202_rows(record_doc)
         report_rows = extract_report_202_rows(report_doc)
         report_groups = build_report_202_groups(report_rows)
+        inventory = _record_202_inventory_diagnostics(record_rows, report_groups)
         number_check = _number_check(record_doc, report_doc)
         legend_check = _legend_check(record_doc)
         record_structure = _record_202_structure(record_doc)
         report_structure = _report_202_structure(report_doc)
 
         actual_counts = extraction["item_row_counts"]
-        if actual_counts != EXPECTED_ITEM_ROW_COUNTS:
-            raise ValueError(f"unexpected Record row inventory: {actual_counts}")
-        if extraction["row_count"] != EXPECTED_COMPARISON_UNITS:
-            raise ValueError(f"expected 175 Record rows, got {extraction['row_count']}")
 
         report_comparable_rows = [
             row
-            for item_groups in report_groups.values()
+            for item, item_groups in report_groups.items()
+            if 1 <= int(item) <= 38
             for group in item_groups
             for row in group
         ]
-        if len(report_comparable_rows) != EXPECTED_REPORT_PHYSICAL_ROWS:
-            raise ValueError(
-                f"expected {EXPECTED_REPORT_PHYSICAL_ROWS} comparable Report rows, "
-                f"got {len(report_comparable_rows)}"
-            )
 
         record_by_item: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for row in record_rows:
@@ -1856,13 +2056,14 @@ def compare_record_202_documents(
         item_mapping_state: dict[int, dict[str, Any]] = {}
         for item in range(1, 39):
             flat_report_rows = [row for group in report_groups.get(item, []) for row in group]
-            record_identity = _item_template_fingerprint(record_by_item[item])
+            record_item_rows = record_by_item.get(item, [])
+            record_identity = _item_template_fingerprint(record_item_rows)
             report_identity = _item_template_fingerprint(flat_report_rows)
             record_identity_ok = record_identity == FROZEN_RECORD_ITEM_IDENTITIES[item]
             report_identity_ok = report_identity == FROZEN_REPORT_ITEM_IDENTITIES[item]
             expected_report_rows = EXPECTED_ITEM_ROW_COUNTS[item] + (1 if item == 16 else 0)
             count_ok = (
-                len(record_by_item[item]) == EXPECTED_ITEM_ROW_COUNTS[item]
+                len(record_item_rows) == EXPECTED_ITEM_ROW_COUNTS[item]
                 and len(report_groups.get(item, [])) == EXPECTED_ITEM_ROW_COUNTS[item]
                 and len(flat_report_rows) == expected_report_rows
             )
@@ -2095,7 +2296,7 @@ def compare_record_202_documents(
     body_decisions = Counter(row["decision"] for row in body_ledger)
     if decisions["mismatch"]:
         overall_status = "error"
-    elif decisions["manual"]:
+    elif decisions["manual"] or not inventory["valid"] or scope_coverage["decision_counts"]["manual"]:
         overall_status = "manual"
     else:
         overall_status = "pass"
@@ -2134,6 +2335,7 @@ def compare_record_202_documents(
         "legend_check": legend_check,
         "structure": {"record": record_structure, "report": report_structure},
         "extraction": extraction,
+        "mapping_inventory": inventory,
         "coverage": {
             **coverage,
             "expected_items": 38,

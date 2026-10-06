@@ -263,6 +263,8 @@ def _status_from_ink(
     status_cell: fitz.Rect,
     boxes: Sequence[fitz.Rect],
     page_inks: Sequence[Mapping[str, Any]],
+    *,
+    glyph_encoding: str = "native_square_triplet",
 ) -> dict[str, Any]:
     centers = [(box.x0 + box.x1) / 2 for box in boxes]
     owned = [
@@ -297,18 +299,27 @@ def _status_from_ink(
     if not owned:
         status = None
         reason = "status_box_blank"
+        status_class = "blank"
     elif large_strike:
         status = None
         reason = "void_or_crossed_out"
+        status_class = "void_or_crossed_out"
     elif len(distinct_columns) != 1:
         status = None
         reason = "multiple_status_columns_selected"
+        status_class = "ambiguous"
     else:
         status = STATUS_BY_COLUMN[distinct_columns[0]]
         reason = "single_ink_column_resolved"
+        status_class = "selected"
     return {
         "status": status,
         "reason_code": reason,
+        "status_class": status_class,
+        "glyph_encoding": glyph_encoding,
+        "glyph_variant": (
+            "alternate" if glyph_encoding != "native_square_triplet" else "native"
+        ),
         "selected_columns": distinct_columns,
         "inks": public_inks,
     }
@@ -352,7 +363,12 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
                 active_project = display_text(row_values[1]) or active_project
             requirement = display_text(row_values[1]) if len(row_values) > 1 else ""
             suggestion = display_text(row_values[2]) if len(row_values) > 2 else ""
-            ink_result = _status_from_ink(status_cell, group["boxes"], inks)
+            ink_result = _status_from_ink(
+                status_cell,
+                group["boxes"],
+                inks,
+                glyph_encoding=group["glyph_encoding"],
+            )
             row_id = f"record61:status:p{pdf_page:03d}:r{page_ordinal:02d}"
             item = {
                 "row_id": row_id,
@@ -368,6 +384,11 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
                 "result": ink_result["status"],
                 "status": ink_result["status"],
                 "status_reason_code": ink_result["reason_code"],
+                "status_class": ink_result["status_class"],
+                "status_disposition": (
+                    "matched" if ink_result["status_class"] == "selected" else "manual"
+                ),
+                "status_glyph_variant": ink_result["glyph_variant"],
                 "selected_columns": ink_result["selected_columns"],
                 "inks": ink_result["inks"],
                 "status_bbox": _rect(status_cell),
@@ -388,6 +409,7 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
                 )
 
     encoding_counts = Counter(row["glyph_encoding"] for row in rows)
+    status_class_counts = Counter(row["status_class"] for row in rows)
     native_count = encoding_counts["native_square_triplet"]
     alternate_count = encoding_counts["alternate_first_square_triplet"]
     if (
@@ -409,10 +431,18 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
         "status_row_count": len(rows),
         "native_box_triplet_count": native_count,
         "alternate_glyph_triplet_count": alternate_count,
+        "status_class_counts": dict(status_class_counts),
         "alternate_glyph_rows": alternate_rows,
         "page_row_counts": page_counts,
         "ink_assignment": "polyline_point_centroid_to_nearest_printed_box_x",
         "unresolved_policy": "blank_multi_column_or_large_cross_column_strike_is_manual",
+        "status_semantics": {
+            "selected": "single ink column assigned to 符合/不符合/不适用",
+            "blank": "no owned ink in the three status boxes; manual",
+            "void_or_crossed_out": "long cancellation stroke across the status band; manual",
+            "ambiguous": "ink occupies multiple status columns; manual",
+            "glyph_variants": ["native_square_triplet", "alternate_first_square_triplet"],
+        },
         "template_structure": {
             "expected_physical_pages": [BODY_FIRST_PDF_PAGE, BODY_LAST_PDF_PAGE],
             "observed_physical_pages": list(range(BODY_FIRST_PDF_PAGE, BODY_LAST_PDF_PAGE + 1)),
@@ -452,6 +482,7 @@ def _report_row_payload(row: ReportRow) -> dict[str, Any]:
             "project": row.project_raw,
             "clause": row.clause_raw,
             "requirement": row.requirement_raw,
+            "suggestion": " ".join(row.condition_tokens),
             "condition": " ".join(row.condition_tokens),
             "unit": row.unit_context,
             "result": row.result_raw,
@@ -464,12 +495,24 @@ def _report_row_payload(row: ReportRow) -> dict[str, Any]:
 def _paired_field_comparisons(
     record_payload: Mapping[str, Any],
     report_payload: Mapping[str, Any],
+    *,
+    mapped: bool = True,
+    result_comparison: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     comparisons: dict[str, dict[str, Any]] = {}
-    for field in ("project", "clause", "requirement", "condition", "unit"):
+    # The six textual/metadata fields are deliberately retained even when a
+    # row cannot be paired.  A one-sided edge must expose unresolved evidence,
+    # rather than comparing the row with an arbitrary sequence-context row.
+    for field in ("project", "clause", "requirement", "suggestion", "condition", "unit"):
         record_value = compact(record_payload.get(field))
         report_value = compact(report_payload.get(field))
-        if not record_value or not report_value:
+        if not mapped:
+            decision = "manual"
+            reason = "row_mapping_unresolved"
+        elif not record_value and not report_value:
+            decision = "not_applicable"
+            reason = "paired_field_absent_on_both_sides"
+        elif not record_value or not report_value:
             decision = "manual"
             reason = "paired_field_unresolved"
         elif _identity_normalize(record_value) == _identity_normalize(report_value):
@@ -483,7 +526,26 @@ def _paired_field_comparisons(
             "reason_code": reason,
             "record": record_payload.get(field),
             "report": report_payload.get(field),
+            "record_value": record_payload.get(field),
+            "report_value": report_payload.get(field),
         }
+    if not mapped:
+        result_decision = "manual"
+        result_reason = "row_mapping_unresolved"
+    elif result_comparison is None:
+        result_decision = "manual"
+        result_reason = "paired_result_unresolved"
+    else:
+        result_decision = str(result_comparison.get("decision") or "manual")
+        result_reason = str(result_comparison.get("reason_code") or "paired_result_unresolved")
+    comparisons["result"] = {
+        "decision": result_decision,
+        "reason_code": result_reason,
+        "record": record_payload.get("result", record_payload.get("status")),
+        "report": report_payload.get("result"),
+        "record_value": record_payload.get("result", record_payload.get("status")),
+        "report_value": report_payload.get("result"),
+    }
     return comparisons
 
 
@@ -889,6 +951,69 @@ def _mapping_edges(
     return result
 
 
+def _mapping_reason_code(
+    source: Mapping[str, Any] | None,
+    target: ReportRow | None,
+    source_rows: Sequence[Mapping[str, Any]],
+    report_rows: Sequence[ReportRow],
+    method: str,
+) -> str:
+    """Classify an unresolved edge without changing the legacy edge method.
+
+    ``_mapping_edges`` intentionally keeps its historical method names for
+    callers that consume the algorithm directly.  The published ledger uses
+    these more actionable S33 reason codes so a reviewer can distinguish a
+    missing row, an extra row, and an ambiguous mapping.
+    """
+
+    if source is None and target is None:
+        return "row_mapping_unresolved"
+    if source is not None and target is not None:
+        return method
+    if source is not None:
+        source_clause = str(source.get("clause") or "")
+        source_requirement = str(source.get("requirement") or "")
+        candidates = [
+            report
+            for report in report_rows
+            if _clause_compatible(source_clause, report.clause_raw)
+            and (
+                _requirements_uniquely_correspond(source_requirement, report.requirement_raw)
+                or _clause_compatible(
+                    source_clause,
+                    _leading_clause_expression(report.requirement_raw),
+                )
+            )
+        ]
+        if not candidates:
+            return "record_row_missing_in_report"
+        if len(candidates) > 1:
+            return "record_row_ambiguous_mapping"
+        return "record_row_not_uniquely_mapped"
+
+    target_clause = target.clause_raw if target is not None else ""
+    target_requirement = target.requirement_raw if target is not None else ""
+    candidates = [
+        record
+        for record in source_rows
+        if _clause_compatible(str(record.get("clause") or ""), target_clause)
+        and (
+            _requirements_uniquely_correspond(
+                str(record.get("requirement") or ""), target_requirement
+            )
+            or _clause_compatible(
+                str(record.get("clause") or ""),
+                _leading_clause_expression(target_requirement),
+            )
+        )
+    ]
+    if not candidates:
+        return "report_row_extra_vs_record"
+    if len(candidates) > 1:
+        return "report_row_ambiguous_mapping"
+    return "report_row_not_uniquely_mapped"
+
+
 def _conclusion_check(
     source_rows: Sequence[Mapping[str, Any]],
     report_rows: Sequence[ReportRow],
@@ -1065,13 +1190,20 @@ def _status_ledger(
             comparison: dict[str, Any]
             if not automatic:
                 disposition = "manual"
-                reason_code = method
+                reason_code = _mapping_reason_code(
+                    source,
+                    target,
+                    sources,
+                    targets or context_targets,
+                    method,
+                )
                 comparison = {
                     "decision": "manual",
                     "reason_code": reason_code,
                     "record_status": source.get("status") if source is not None else None,
                     "report_result": target.result_raw if target is not None else None,
                     "unpaired_side": "record" if source is None else "report",
+                    "mapping_method": method,
                 }
             elif source is None or target is None:
                 raise ValueError("automatic status mapping cannot be one-sided")
@@ -1154,14 +1286,17 @@ def _status_ledger(
                 "comparison_target" if target is not None else "sequence_context"
             )
             comparison["field_comparisons"] = _paired_field_comparisons(
-                record_payload, report_payload
+                record_payload,
+                report_payload,
+                mapped=bool(automatic and source is not None and target is not None),
+                result_comparison=comparison,
             )
             ledger.append(
                 {
                     "entry_id": entry_id,
                     "id": entry_id,
                     "rule_id": "RECORD61-BODY-STATUS",
-                    "scope_ids": ["S25", "S30", "S31", "S33"],
+                    "scope_ids": ["S25", "S26", "S30", "S31", "S32", "S33"],
                     "source_row_id": source_row_id,
                     "target_row_id": target_row_id,
                     "source_row_ids": [source_row_id] if source_row_id is not None else [],
@@ -1177,6 +1312,15 @@ def _status_ledger(
                     "mapping": {
                         "automatic": automatic,
                         "method": method,
+                        "resolution": (
+                            "matched"
+                            if automatic
+                            else "record_row_missing"
+                            if source is None
+                            else "report_row_missing"
+                            if target is None
+                            else "unresolved"
+                        ),
                         "sequence": sequence,
                         "source_binding": (
                             "exact_row" if source is not None else "sequence_context_only"
@@ -1939,7 +2083,7 @@ def _numeric_discovery_ledger(
                 "entry_id": entry_id,
                 "id": entry_id,
                 "rule_id": "RECORD61-NUMERIC-DISCOVERY",
-                "scope_ids": ["S26", "S32", "S33"],
+                "scope_ids": ["S26", "S30", "S31", "S32", "S33"],
                 "source_row_id": source_id,
                 "target_row_id": target.row_id,
                 "source_row_ids": [source_id],
@@ -2275,7 +2419,7 @@ def _numeric_ledger(
                     "entry_id": entry_id,
                     "id": entry_id,
                     "rule_id": "RECORD61-BODY-PERCENT" if block == "4.11" else "RECORD61-BODY-NUMERIC",
-                    "scope_ids": ["S26", "S33"],
+                    "scope_ids": ["S26", "S30", "S31", "S32", "S33"],
                     "source_row_id": cell_ids[0],
                     "target_row_id": target.row_id,
                     "source_row_ids": cell_ids,

@@ -47,9 +47,24 @@ class InputVariantTests(unittest.TestCase):
             self.assertEqual(result["input_variant"]["inventory"]["observed"], {"total": 813, "native": 812, "alternate": 1})
             states = result["rule_execution_states"]
             self.assertEqual(states["RECORD61-STRUCTURE"]["state"], "succeeded")
+            self.assertEqual(states["RECORD61-STRUCTURE"]["disposition"], "manual")
+            self.assertEqual(
+                {item["role"] for item in states["RECORD61-STRUCTURE"]["evidence_locations"]},
+                {"report", "record_9706_1"},
+            )
             self.assertEqual(
                 {item["state"] for rule_id, item in states.items() if rule_id != "RECORD61-STRUCTURE"},
                 {"unsupported"},
+            )
+            self.assertTrue(
+                all(
+                    item["disposition"] == "unsupported"
+                    and item["reason_code"] == error.code
+                    and {location["role"] for location in item["evidence_locations"]}
+                    == {"report", "record_9706_1"}
+                    for rule_id, item in states.items()
+                    if rule_id != "RECORD61-STRUCTURE"
+                )
             )
             self.assertTrue((output / "result.json").is_file())
             self.assertEqual(json.loads((output / "result.json").read_text())["input_variant"]["reason_code"], error.code)

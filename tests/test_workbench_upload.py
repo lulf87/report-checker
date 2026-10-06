@@ -95,6 +95,11 @@ class UploadWorkbenchTests(unittest.TestCase):
         self.assertRegex(self.module_source, r"method\s*:\s*[\"']POST[\"']")
         self.assertIn("recordFile.required = needsRecord", self.module_source)
 
+    def test_warning_status_has_distinct_run_badge(self) -> None:
+        self.assertIn(".status-label.warning", self.html)
+        self.assertIn('overall === "warning"', self.module_source)
+        self.assertIn('? "warning"', self.module_source)
+
     def test_module_script_has_valid_javascript_syntax(self) -> None:
         node = shutil.which("node")
         if node is None:
