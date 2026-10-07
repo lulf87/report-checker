@@ -363,7 +363,7 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                 }
             if len(parts) == 6 and parts[4] and parts[5] == "findings":
                 return HTTPStatus.OK, {
-                    "items": self.server.store.list_findings(parts[4]),
+                    "items": self.server.store.list_findings_compact(parts[4]),
                     "next_cursor": None,
                 }
             if len(parts) == 6 and parts[4] and parts[5] == "reviews":

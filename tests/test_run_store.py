@@ -451,6 +451,13 @@ class RunStoreTests(unittest.TestCase):
         self.assertEqual(finding["evidence"][0]["run_id"], run["id"])
         self.assertEqual(finding["evidence"][0]["rule_execution_id"], finding["rule_execution_id"])
         self.assertEqual(finding["evidence"][0]["document_sha256"], "a" * 64)
+        compact = store.list_findings_compact(run["id"])[0]
+        self.assertNotIn("input_snapshot", compact)
+        self.assertEqual(
+            compact["evidence"],
+            [{"id": finding["evidence"][0]["id"], "role": "report", "pdf_page": 1,
+              "bbox": [0, 0, 10, 10], "semantic_role": None}],
+        )
         reviewed = store.append_review_action(
             finding["id"],
             "confirm_candidate",

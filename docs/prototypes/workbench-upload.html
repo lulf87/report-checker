@@ -102,7 +102,7 @@
     .results-workspace > .findings-card, .results-workspace > .comparison-card { margin-top: 0; min-width: 0; }
     .results-workspace:has(.comparison-card.visible) > .findings-card { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
     .results-workspace:has(.comparison-card.visible) .findings { max-height: calc(100vh - 196px); overflow: auto; padding-right: 2px; }
-    .comparison-card { display: none; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; }
+    .comparison-card { display: none; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; scroll-margin-top: 16px; }
     .comparison-card.visible { display: grid; min-height: 760px; }
     .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0; padding: 14px 16px 7px; }
     .comparison-head h2 { margin: 0; font-size: 18px; }
@@ -528,6 +528,10 @@
       const reportDocument = sourceDocument("report");
       const recordDocument = meta.recordRole ? sourceDocument(meta.recordRole) : null;
       comparisonCard.classList.add("visible");
+      // The comparison stage sits below a potentially long Finding list. Bring
+      // it into view as soon as a Finding is selected so the PDF evidence is
+      // visible without requiring a manual page-length scroll.
+      requestAnimationFrame(() => comparisonCard.scrollIntoView({ behavior: "smooth", block: "start" }));
       comparisonModeLabel.textContent = meta.label;
       const status = String(finding.status || "manual");
       const badge = comparisonBrief.querySelector(".finding-status");

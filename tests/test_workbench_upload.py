@@ -135,6 +135,7 @@ class UploadWorkbenchTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.html if required.startswith(('id=', 'data-pane')) else self.module_source)
+        self.assertIn("comparisonCard.scrollIntoView", self.module_source)
 
     def test_comparison_view_is_split_into_findings_and_pdf_stage(self) -> None:
         for required in (

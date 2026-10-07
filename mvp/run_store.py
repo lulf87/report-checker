@@ -1602,6 +1602,68 @@ class RunStore:
                 findings.append(finding)
             return findings
 
+    def list_findings_compact(self, run_id: str) -> list[dict[str, Any]]:
+        """Return the UI Finding list without repeated audit snapshots.
+
+        ``findings.input_snapshot_json`` and the equivalent evidence snapshot
+        are intentionally retained for audit and export APIs.  Sending those
+        full page-geometry snapshots with every Finding makes a large Record
+        run needlessly expensive for the workbench (over 190 MB for 1,102
+        Findings).  The upload UI only needs the Finding summary and evidence
+        locations, so keep this transport DTO small and deterministic.
+        """
+
+        run = self.get_run(run_id)
+        if run["lifecycle_status"] != "succeeded":
+            return []
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT id, run_id, display_sequence, rule_id, rule_execution_id,
+                          machine_status, title, summary, details_json,
+                          review_status, review_resolution, resolved_status, created_at
+                   FROM findings
+                   WHERE run_id = ?
+                   ORDER BY display_sequence""",
+                (run_id,),
+            ).fetchall()
+            evidence_by_finding: dict[str, list[dict[str, Any]]] = {}
+            evidence_rows = self._connection.execute(
+                """SELECT finding_id, id, role, pdf_page, bbox_json, semantic_role
+                   FROM evidence
+                   WHERE run_id = ?
+                   ORDER BY finding_id, rowid""",
+                (run_id,),
+            ).fetchall()
+            for evidence in evidence_rows:
+                evidence_by_finding.setdefault(evidence["finding_id"], []).append(
+                    {
+                        "id": evidence["id"],
+                        "role": evidence["role"],
+                        "pdf_page": evidence["pdf_page"],
+                        "bbox": _parse_json(evidence["bbox_json"]),
+                        "semantic_role": evidence["semantic_role"],
+                    }
+                )
+            return [
+                {
+                    "id": row["id"],
+                    "run_id": row["run_id"],
+                    "display_sequence": row["display_sequence"],
+                    "rule_id": row["rule_id"],
+                    "rule_execution_id": row["rule_execution_id"],
+                    "machine_status": row["machine_status"],
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "details": _parse_json(row["details_json"]),
+                    "review_status": row["review_status"],
+                    "review_resolution": row["review_resolution"],
+                    "resolved_status": row["resolved_status"],
+                    "created_at": row["created_at"],
+                    "evidence": evidence_by_finding.get(row["id"], []),
+                }
+                for row in rows
+            ]
+
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._connection.execute(
