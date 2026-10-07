@@ -2239,6 +2239,36 @@ def _numeric_manual_comparison(
     target_ordinal: int = 1,
     target_count: int = 1,
 ) -> dict[str, Any]:
+    # Some handwritten Record values are legible to Apple Vision but not to
+    # Tesseract (or vice versa).  For the two 8.6.4 resistance rows we can
+    # resolve that disagreement safely when exactly one OCR candidate converts
+    # to the Report result.  This handles the real 100 mΩ -> 0.10 Ω case while
+    # still keeping ambiguous candidates in manual review.
+    if block == "8.6" and len(cells) == 1:
+        cell = cells[0]
+        channels = cell.get("recognition_channels") or {}
+        candidate_values = _ocr_numeric_values(
+            [
+                *list((channels.get("apple_vision") or {}).get("candidates", [])),
+                *list((channels.get("tesseract") or {}).get("candidates", [])),
+            ]
+        )
+        guided_matches: dict[str, ComparisonResult] = {}
+        for candidate in sorted(candidate_values):
+            comparison = compare_numeric_observation(
+                candidate,
+                cell.get("unit"),
+                target.result_raw,
+                target.unit_context,
+            )
+            if comparison.decision == "match":
+                guided_matches[candidate] = comparison
+        if len(guided_matches) == 1:
+            candidate, comparison = next(iter(guided_matches.items()))
+            result = comparison.to_dict()
+            result["record_candidate"] = candidate
+            result["recognition_method"] = "report_guided_ocr"
+            return result
     if any(cell.get("semantic", {}).get("measurement_position_unresolved") for cell in cells):
         return {
             "decision": "manual",

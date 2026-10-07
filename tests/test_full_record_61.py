@@ -367,6 +367,25 @@ class Record61NumericDecisionTests(unittest.TestCase):
             "report_polarity_has_no_uniquely_attributed_record_evidence",
         )
 
+    def test_report_guided_86_ocr_resolves_100_milliohm_value(self) -> None:
+        cell = {
+            "accepted_value": None,
+            "unit": "mΩ",
+            "recognition_channels": {
+                "apple_vision": {"candidates": [{"text": "100", "confidence": 1.0}]},
+                "tesseract": {"candidates": [{"text": "70"}]},
+            },
+        }
+        comparison = _numeric_manual_comparison(
+            "8.6",
+            self._target("0.10", "Ω"),
+            [cell],
+        )
+        self.assertEqual(comparison["decision"], "match")
+        self.assertEqual(comparison["reason_code"], "numeric_value_matched")
+        self.assertEqual(comparison["record_candidate"], "100")
+        self.assertEqual(comparison["recognition_method"], "report_guided_ocr")
+
     def test_two_percentages_in_one_cell_are_mapped_by_occurrence(self) -> None:
         candidates = {
             "apple_vision": [{"text": "0.720A → 36%"}, {"text": "0.503A → 33%"}],
