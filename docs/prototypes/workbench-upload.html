@@ -109,7 +109,9 @@
     .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin: 0 16px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
     .brief-copy { min-width: 0; }
     .brief-title { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-    .brief-detail { max-height: 78px; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-line; }
+    .brief-detail { display: flex; max-height: 104px; flex-direction: column; gap: 3px; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .brief-evidence-link { width: fit-content; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-size: 11px; text-align: left; text-decoration: underline; cursor: pointer; }
+    .brief-evidence-link:hover { color: var(--ink); }
     .pdf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; min-height: 0; height: 100%; margin: 0 16px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }
     .pdf-grid.single-pane { grid-template-columns: 1fr; }
     .pdf-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #dbe2e7; }
@@ -527,24 +529,36 @@
       renderFilters();
     }
 
-    function findingDetailText(finding) {
-      const base = finding.summary || finding.details?.comparison?.reason_code || "—";
+    function renderFindingBrief(finding, reportLocations) {
+      const detail = comparisonBrief.querySelector(".brief-detail");
+      detail.replaceChildren();
+      const summary = document.createElement("div");
+      summary.textContent = finding.summary || finding.details?.comparison?.reason_code || "—";
+      detail.append(summary);
       const comparisons = finding.details?.comparisons;
-      if (!Array.isArray(comparisons)) return base;
+      if (!Array.isArray(comparisons)) return;
       const manual = comparisons.filter(item => item?.status === "manual");
-      if (!manual.length) return base;
+      if (!manual.length) return;
       const reasonText = {
         acceptance_criterion_not_resolved: "接受标准是文字描述或峰值条件，未能转换为可自动计算的限值",
         unit_prefix_conversion_required_but_disabled: "需要进行单位前缀换算，当前保留人工确认",
       };
-      const lines = manual.slice(0, 3).map(item => {
+      manual.slice(0, 3).forEach(item => {
         const page = item.pdf_page ? `PDF第${item.pdf_page}页` : "PDF页码未知";
         const sequence = item.sequence ? `序号${item.sequence}` : "序号未知";
         const value = item.result ? `结果 ${item.result}` : "结果未识别";
         const reason = reasonText[item.reason] || item.reason || "自动判定条件不足";
-        return `人工复核：${page} · ${sequence} · ${value}；${reason}`;
+        const locationIndex = reportLocations.findIndex(location => location.pdf_page === Number(item.pdf_page));
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "brief-evidence-link";
+        link.textContent = `人工复核：${page} · ${sequence} · ${value}；${reason}`;
+        link.disabled = locationIndex < 0;
+        link.addEventListener("click", () => {
+          if (locationIndex >= 0) reportPane.goToEvidence(locationIndex);
+        });
+        detail.append(link);
       });
-      return `${base}\n${lines.join("\n")}`;
     }
 
     async function showFindingComparison(finding) {
@@ -553,6 +567,8 @@
       const meta = MODE_META[activeMode] || MODE_META.self;
       const reportDocument = sourceDocument("report");
       const recordDocument = meta.recordRole ? sourceDocument(meta.recordRole) : null;
+      const reportLocations = evidenceLocations(finding, "report");
+      const recordLocations = meta.recordRole ? evidenceLocations(finding, meta.recordRole) : [];
       comparisonCard.classList.add("visible");
       // The comparison stage sits below a potentially long Finding list. Bring
       // it into view as soon as a Finding is selected so the PDF evidence is
@@ -564,15 +580,13 @@
       badge.className = `finding-status ${status}`;
       badge.textContent = STATUS_LABELS[status] || status;
       comparisonBrief.querySelector(".brief-title").textContent = finding.title || finding.rule_id || "核对结果";
-      comparisonBrief.querySelector(".brief-detail").textContent = findingDetailText(finding);
+      renderFindingBrief(finding, reportLocations);
       comparisonBrief.querySelector(".finding-id").textContent = finding.id || "—";
       if (!reportDocument) {
         clearPane(reportPane, "缺少 Report 文档信息。");
         clearPane(recordPane, "等待 Record 文档。");
         return;
       }
-      const reportLocations = evidenceLocations(finding, "report");
-      const recordLocations = meta.recordRole ? evidenceLocations(finding, meta.recordRole) : [];
       comparisonCard.querySelector(".pdf-grid").classList.toggle("single-pane", !meta.recordRole);
       recordPane.root.classList.toggle("is-hidden", !meta.recordRole);
       recordPane.root.setAttribute("aria-hidden", String(!meta.recordRole));
