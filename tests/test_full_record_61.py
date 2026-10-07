@@ -694,6 +694,35 @@ class Record61NumericDecisionTests(unittest.TestCase):
             ],
         )
 
+    def test_many_to_one_accepts_short_children_only_with_a_long_anchor(self) -> None:
+        source_rows = [
+            {
+                "row_id": "source:parent",
+                "clause": "7.2.4",
+                "requirement": "附件应标记制造商的名称以及联系信息",
+                "status": "不适用",
+            },
+            {"row_id": "source:child-a", "clause": "7.2.4", "requirement": "型号", "status": "不适用"},
+            {"row_id": "source:child-b", "clause": "7.2.4", "requirement": "批号", "status": "不适用"},
+        ]
+        row = self._target("——")
+        combined = ReportRow(
+            **{
+                **row.to_dict(),
+                "row_id": "report:combined-short-children",
+                "clause_raw": "7.2.4",
+                "requirement_raw": "附件应标记制造商的名称以及联系信息；型号；批号。",
+            }
+        )
+        edges = _mapping_edges(source_rows, [combined])
+        self.assertEqual(sum(item[2] for item in edges), 3)
+        self.assertTrue(
+            all(
+                item[3] == "clause_range_and_unique_many_record_rows_to_one_report_row"
+                for item in edges
+            )
+        )
+
     def test_duplicate_group_members_remain_manual_instead_of_being_forced(self) -> None:
         text = "应标记型号或类型参考号"
         sources = [

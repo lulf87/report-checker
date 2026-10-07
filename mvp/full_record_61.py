@@ -862,6 +862,60 @@ def _mapping_edges(
 
     source_texts = [_locator_text(str(row.get("requirement") or "")) for row in source_rows]
     report_texts = [_locator_text(row.requirement_raw) for row in report_rows]
+
+    # Prefer a complete, contiguous parent-to-children group over a tempting
+    # parent-only substring match. The group must have one clause, resolved
+    # statuses, unique ordered containment, and a long anchor; otherwise the
+    # ordinary exact matcher runs and unresolved rows remain manual.
+    grouped_candidates: dict[int, list[list[int]]] = defaultdict(list)
+    for report in sorted(remaining_report):
+        for start in sorted(remaining_source):
+            for end in range(start + 2, min(len(source_rows), start + 16) + 1):
+                members = list(range(start, end))
+                clauses = {
+                    _clause_token(str(source_rows[index].get("clause") or ""))
+                    for index in members
+                }
+                if len(clauses) != 1 or "" in clauses:
+                    break
+                if not _clause_compatible(
+                    str(source_rows[start].get("clause") or ""),
+                    report_rows[report].clause_raw,
+                ):
+                    continue
+                if any(source_rows[index].get("status") is None for index in members):
+                    continue
+                if len({source_rows[index].get("status") for index in members}) > 1:
+                    continue
+                components = [source_texts[index] for index in members]
+                if max(map(len, components), default=0) < 16:
+                    continue
+                if _ordered_unique_containment(
+                    components,
+                    report_texts[report],
+                    minimum_component_length=2,
+                ):
+                    grouped_candidates[report].append(members)
+    groups: dict[int, list[int]] = {}
+    for report, candidates in grouped_candidates.items():
+        maximal = [
+            members
+            for members in candidates
+            if not any(set(members) < set(other) for other in candidates)
+        ]
+        if len(maximal) == 1:
+            groups[report] = maximal[0]
+    source_group_counts = Counter(source for members in groups.values() for source in members)
+    for report, members in sorted(groups.items()):
+        if any(source_group_counts[source] != 1 for source in members):
+            continue
+        edges.extend(
+            (source, report, True, "clause_range_and_unique_many_record_rows_to_one_report_row")
+            for source in members
+        )
+        remaining_source -= set(members)
+        remaining_report.discard(report)
+
     anchors: set[tuple[int, int]] = set()
 
     text_pairs = _unique_candidate_pairs(
@@ -942,9 +996,12 @@ def _mapping_edges(
             len(clauses) == 1
             and "" not in clauses
             and len(resolved_statuses) <= 1
+            and max(map(len, (source_texts[source] for source in members)), default=0) >= 18
+            and all(source_rows[source].get("status") is not None for source in members)
             and _ordered_unique_containment(
                 [source_texts[source] for source in members],
                 report_texts[report],
+                minimum_component_length=2,
             )
         ):
             many_to_one_candidates[report] = members
