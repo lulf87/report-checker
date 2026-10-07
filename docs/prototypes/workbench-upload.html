@@ -115,14 +115,18 @@
     .pdf-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #dbe2e7; }
     .pdf-pane.is-hidden { display: none; }
     .pdf-pane + .pdf-pane { border-left: 1px solid var(--line); }
-    .pdf-toolbar { display: grid; grid-template-columns: minmax(95px, auto) minmax(115px, 1fr) auto auto; gap: 6px; align-items: center; min-height: 42px; padding: 5px 7px; border-bottom: 1px solid var(--line); background: #fff; }
-    .document-name { min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-    .evidence-picker { width: 100%; min-width: 0; min-height: 30px; padding: 3px 24px 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: #3e4e5a; background: #fff; font-size: 12px; }
+    .pdf-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name pages" "picker zoom"; gap: 5px 6px; align-items: center; min-height: 76px; padding: 5px 7px; border-bottom: 1px solid var(--line); background: #fff; }
+    .document-name { grid-area: name; min-width: 0; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .evidence-picker { grid-area: picker; width: 100%; min-width: 0; min-height: 30px; padding: 3px 24px 3px 6px; border: 1px solid var(--line); border-radius: 4px; color: #3e4e5a; background: #fff; font-size: 12px; }
     .evidence-picker:disabled { color: #8b979f; background: var(--soft); }
     .page-controls, .zoom-controls { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .page-controls { grid-area: pages; }
+    .zoom-controls { grid-area: zoom; }
+    .fit-page { min-width: 42px; padding-inline: 6px; font-size: 11px; }
     .page-input { width: 44px; min-height: 30px; padding: 3px; text-align: center; }
     .page-total, .zoom-label { min-width: 32px; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
-    .pdf-viewport { position: relative; min-width: 0; min-height: 0; overflow: auto; padding: 16px; background: linear-gradient(90deg, rgb(255 255 255 / 15%) 1px, transparent 1px), linear-gradient(rgb(255 255 255 / 15%) 1px, transparent 1px), #dbe2e7; background-size: 20px 20px; scrollbar-gutter: stable; }
+    .pdf-viewport { position: relative; min-width: 0; min-height: 0; overflow: auto; padding: 16px; overscroll-behavior: contain; cursor: grab; touch-action: none; background: linear-gradient(90deg, rgb(255 255 255 / 15%) 1px, transparent 1px), linear-gradient(rgb(255 255 255 / 15%) 1px, transparent 1px), #dbe2e7; background-size: 20px 20px; scrollbar-gutter: stable; }
+    .pdf-viewport.is-dragging { cursor: grabbing; user-select: none; }
     .pdf-page-shell { position: relative; width: max-content; margin: 0 auto; background: #fff; box-shadow: 0 5px 20px rgb(30 45 55 / 25%); }
     .pdf-canvas { display: block; background: #fff; }
     .highlight-layer { position: absolute; inset: 0; pointer-events: none; }
@@ -259,6 +263,7 @@
               <button class="secondary tool-button next-page" type="button" title="下一页" aria-label="Report 下一页">›</button>
             </div>
             <div class="zoom-controls" aria-label="Report 缩放">
+              <button class="secondary tool-button fit-page" type="button" title="适应窗格宽度" aria-label="适应 Report 窗格宽度">适应</button>
               <button class="secondary tool-button zoom-out" type="button" title="缩小" aria-label="缩小 Report">−</button>
               <span class="zoom-label">100%</span>
               <button class="secondary tool-button zoom-in" type="button" title="放大" aria-label="放大 Report">＋</button>
@@ -277,6 +282,7 @@
               <button class="secondary tool-button next-page" type="button" title="下一页" aria-label="Record 下一页">›</button>
             </div>
             <div class="zoom-controls" aria-label="Record 缩放">
+              <button class="secondary tool-button fit-page" type="button" title="适应窗格宽度" aria-label="适应 Record 窗格宽度">适应</button>
               <button class="secondary tool-button zoom-out" type="button" title="缩小" aria-label="缩小 Record">−</button>
               <span class="zoom-label">100%</span>
               <button class="secondary tool-button zoom-in" type="button" title="放大" aria-label="放大 Record">＋</button>
@@ -589,6 +595,7 @@
         this.pageTotal = root.querySelector(".page-total");
         this.zoomOut = root.querySelector(".zoom-out");
         this.zoomIn = root.querySelector(".zoom-in");
+        this.fitPageButton = root.querySelector(".fit-page");
         this.zoomLabel = root.querySelector(".zoom-label");
         this.viewportElement = root.querySelector(".pdf-viewport");
         this.pageShell = root.querySelector(".pdf-page-shell");
@@ -604,6 +611,7 @@
         this.renderToken = 0;
         this.documentToken = 0;
         this.renderTask = null;
+        this.dragState = null;
         this.bindEvents();
       }
       bindEvents() {
@@ -612,7 +620,37 @@
         this.pageInput.addEventListener("change", () => this.goToPage(Number(this.pageInput.value)));
         this.zoomOut.addEventListener("click", () => this.setZoom(this.zoom - .15));
         this.zoomIn.addEventListener("click", () => this.setZoom(this.zoom + .15));
+        this.fitPageButton.addEventListener("click", () => this.setZoom(1));
         this.evidencePicker.addEventListener("change", () => this.goToEvidence(Number(this.evidencePicker.value)));
+        this.viewportElement.addEventListener("pointerdown", event => {
+          if (event.button !== 0 || event.target.closest("button, input, select, option")) return;
+          this.dragState = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            scrollLeft: this.viewportElement.scrollLeft,
+            scrollTop: this.viewportElement.scrollTop
+          };
+          this.viewportElement.classList.add("is-dragging");
+          this.viewportElement.setPointerCapture(event.pointerId);
+          event.preventDefault();
+        });
+        this.viewportElement.addEventListener("pointermove", event => {
+          if (!this.dragState || event.pointerId !== this.dragState.pointerId) return;
+          this.viewportElement.scrollLeft = this.dragState.scrollLeft - (event.clientX - this.dragState.startX);
+          this.viewportElement.scrollTop = this.dragState.scrollTop - (event.clientY - this.dragState.startY);
+          event.preventDefault();
+        });
+        const stopDragging = event => {
+          if (!this.dragState || (event.pointerId !== undefined && event.pointerId !== this.dragState.pointerId)) return;
+          const pointerId = this.dragState.pointerId;
+          this.dragState = null;
+          this.viewportElement.classList.remove("is-dragging");
+          if (this.viewportElement.hasPointerCapture?.(pointerId)) this.viewportElement.releasePointerCapture(pointerId);
+        };
+        this.viewportElement.addEventListener("pointerup", stopDragging);
+        this.viewportElement.addEventListener("pointercancel", stopDragging);
+        this.viewportElement.addEventListener("lostpointercapture", stopDragging);
         if (typeof ResizeObserver !== "undefined") {
           new ResizeObserver(() => { if (this.pdfDocument) this.renderPage({ preserveScroll: true }); }).observe(this.viewportElement);
         }
@@ -670,16 +708,21 @@
         this.pageInput.value = String(this.pageNumber); this.updateControls();
         return this.renderPage({ focusHighlight });
       }
-      setZoom(nextZoom) { this.zoom = Math.max(.55, Math.min(2.5, Math.round(nextZoom * 100) / 100)); this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`; this.renderPage({ preserveScroll: true }); }
+      setZoom(nextZoom) {
+        this.zoom = Math.max(.4, Math.min(2.5, Math.round(nextZoom * 100) / 100));
+        this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
+        this.renderPage({ preserveScroll: true });
+      }
       updateControls() {
         const count = this.pdfDocument?.numPages || 0;
         this.previousButton.disabled = !count || this.pageNumber <= 1; this.nextButton.disabled = !count || this.pageNumber >= count;
-        this.pageInput.disabled = !count; this.zoomOut.disabled = !count || this.zoom <= .55; this.zoomIn.disabled = !count || this.zoom >= 2.5;
+        this.pageInput.disabled = !count; this.fitPageButton.disabled = !count; this.zoomOut.disabled = !count || this.zoom <= .4; this.zoomIn.disabled = !count || this.zoom >= 2.5;
+        this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
       }
       addHighlights(pdfPage, viewport) {
         this.highlightLayer.replaceChildren();
         const pageView = pdfPage.view;
-        this.evidenceLocations.filter(location => location.pdf_page === this.pageNumber).forEach((location, index) => {
+        this.evidenceLocations.map((location, index) => ({ location, index })).filter(item => item.location.pdf_page === this.pageNumber).forEach(({ location, index }) => {
           const [left, top, right, bottom] = location.bbox;
           const transformed = viewport.convertToViewportRectangle([left, pageView[3] - bottom, right, pageView[3] - top]);
           const highlight = document.createElement("div"); highlight.className = `evidence-highlight${index === this.selectedEvidenceIndex ? "" : " secondary"}`;
@@ -691,6 +734,12 @@
       async renderPage({ focusHighlight = false, preserveScroll = false } = {}) {
         if (!this.pdfDocument) return;
         const token = ++this.renderToken; this.renderTask?.cancel();
+        const scrollRatioX = preserveScroll && this.viewportElement.scrollWidth > this.viewportElement.clientWidth
+          ? this.viewportElement.scrollLeft / (this.viewportElement.scrollWidth - this.viewportElement.clientWidth)
+          : 0;
+        const scrollRatioY = preserveScroll && this.viewportElement.scrollHeight > this.viewportElement.clientHeight
+          ? this.viewportElement.scrollTop / (this.viewportElement.scrollHeight - this.viewportElement.clientHeight)
+          : 0;
         this.setMessage("正在绘制页面…");
         try {
           const pdfPage = await this.pdfDocument.getPage(this.pageNumber); if (token !== this.renderToken) return;
@@ -718,7 +767,12 @@
               this.viewportElement.scrollTo({ top: Math.max(0, top), left: Math.max(0, left), behavior: "smooth" });
             }
           }
-          else if (preserveScroll) this.viewportElement.scrollTo({ top: this.viewportElement.scrollTop, left: this.viewportElement.scrollLeft });
+          else if (preserveScroll) {
+            this.viewportElement.scrollTo({
+              top: scrollRatioY * Math.max(0, this.viewportElement.scrollHeight - this.viewportElement.clientHeight),
+              left: scrollRatioX * Math.max(0, this.viewportElement.scrollWidth - this.viewportElement.clientWidth)
+            });
+          }
         } catch (error) { if (error?.name !== "RenderingCancelledException" && token === this.renderToken) this.setMessage(`页面绘制失败：${error?.message || error}`); }
       }
     }

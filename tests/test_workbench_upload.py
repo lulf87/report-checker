@@ -131,6 +131,9 @@ class UploadWorkbenchTests(unittest.TestCase):
             'evidence-highlight',
             'goToPage',
             'setZoom',
+            'fit-page',
+            'pointerdown',
+            'pointermove',
             'showFindingComparison',
         ):
             with self.subTest(required=required):
