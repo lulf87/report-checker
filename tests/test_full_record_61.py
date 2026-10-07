@@ -16,6 +16,7 @@ from mvp.full_record_61 import (
     _effective_report_result,
     _mapping_edges,
     _numeric_manual_comparison,
+    _requirements_highly_similar,
     _target_source_cells,
     run_record_61_full,
 )
@@ -341,6 +342,23 @@ class Record61NumericDecisionTests(unittest.TestCase):
         self.assertEqual(_accepted_dual_channel_value(agreed), "509")
         self.assertIsNone(_accepted_dual_channel_value(disputed))
 
+    def test_high_similarity_mapping_preserves_measurement_and_obligation_semantics(self) -> None:
+        self.assertTrue(
+            _requirements_highly_similar(
+                "距离图39的范围应设置图38的挡板，温度为ºC。",
+                "距离图39的范围应设置图38的挡板，温度为℃。",
+            )
+        )
+        for source, report in (
+            ("电流不超过10mA，距离50mm。", "电流不超过100mA，距离50mm。"),
+            ("电流≤10mA，距离50mm。", "电流≥10mA，距离50mm。"),
+            ("电流<=10mA，距离50mm。", "电流<10mA，距离50mm。"),
+            ("电流不超过10mA。", "电流超过10mA。"),
+            ("频率为10GHz。", "频率为10MHz。"),
+            ("该项目不适用，距离50mm。", "该项目不，距离50mm。"),
+        ):
+            self.assertFalse(_requirements_highly_similar(source, report))
+
     def test_unit_conversion_mismatch_interval_and_polarity_paths(self) -> None:
         self.assertEqual(
             _numeric_manual_comparison(
@@ -564,6 +582,41 @@ class Record61NumericDecisionTests(unittest.TestCase):
             ],
         )
 
+    def test_unique_high_similarity_requirement_handles_layout_noise(self) -> None:
+        source = {
+            "row_id": "source:layout-noise",
+            "clause": "11.3",
+            "requirement": (
+                "防火外壳应符合以下要求：底部应无开孔，或对于图39中规定的范围，"
+                "应设置图38中说明的挡板，或由金属材料制成，开孔符合表25的规定。"
+            ),
+            "status": "符合",
+        }
+        target = self._target("符合要求")
+        target = ReportRow(
+            **{
+                **target.to_dict(),
+                "row_id": "report:layout-noise",
+                "clause_raw": "11.3",
+                "requirement_raw": (
+                    "b) 防火外壳应符合以下要求 底部应无开孔，或者对于图 39 中规定的范围，"
+                    "应设置图 38 中说明的挡板，或由金属材料制成，开孔符合表 25 规定。"
+                ),
+            }
+        )
+        edges = _mapping_edges([source], [target])
+        self.assertEqual(
+            [(item[0]["row_id"], item[1].row_id, item[2], item[3]) for item in edges],
+            [
+                (
+                    "source:layout-noise",
+                    "report:layout-noise",
+                    True,
+                    "clause_range_and_high_similarity_requirement_text",
+                )
+            ],
+        )
+
     def test_uniquely_contained_rows_support_bounded_many_to_one_and_one_to_many(self) -> None:
         def target(row_id: str, requirement: str) -> ReportRow:
             row = self._target("符合要求")
@@ -653,6 +706,27 @@ class Record61NumericDecisionTests(unittest.TestCase):
         )
         edges = _mapping_edges(sources, [report])
         self.assertEqual(sum(item[2] for item in edges), 0)
+
+    def test_fuzzy_mapping_cannot_cross_an_exact_anchor(self) -> None:
+        anchor = "锚点要求应完整保留，并且只在对应位置进行核对。"
+        fuzzy_source = "防护外壳应符合以下要求，底部应无开孔或设置挡板。"
+        fuzzy_report = "防护外壳应符合以下要求，底部应无开孔或者设置挡板。"
+        sources = [
+            {"row_id": "source:anchor", "clause": "8.1", "requirement": anchor, "status": "符合"},
+            {"row_id": "source:fuzzy", "clause": "8.1", "requirement": fuzzy_source, "status": "符合"},
+        ]
+        reports = [
+            self._target("符合要求"),
+            self._target("符合要求"),
+        ]
+        reports[0] = ReportRow(**{**reports[0].to_dict(), "row_id": "report:fuzzy", "requirement_raw": fuzzy_report})
+        reports[1] = ReportRow(**{**reports[1].to_dict(), "row_id": "report:anchor", "requirement_raw": anchor})
+        edges = _mapping_edges(sources, reports)
+        self.assertEqual(
+            [(source["row_id"] if source else None, target.row_id if target else None, automatic)
+             for source, target, automatic, _ in edges],
+            [("source:anchor", "report:anchor", True), ("source:fuzzy", None, False), (None, "report:fuzzy", False)],
+        )
         self.assertEqual(len(edges), 3)
 
     def test_parent_placeholder_aggregates_children_for_non_applicable_record(self) -> None:

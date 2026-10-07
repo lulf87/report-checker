@@ -9,8 +9,10 @@ manual-review candidates until a value can be attributed to one cell and
 independently recognised by two local channels.
 """
 
+import difflib
 import re
 import tempfile
+import unicodedata
 from collections import Counter, defaultdict
 from decimal import Decimal
 from pathlib import Path
@@ -683,12 +685,16 @@ def _clause_compatible(source_clause: str, report_clause: str) -> bool:
 
 def _locator_text(value: str) -> str:
     normalized = (
-        value.replace("（", "(")
+        value.replace("ºC", "°C")
+        .replace("℃", "°C")
+        .replace("（", "(")
         .replace("）", ")")
         .replace("％", "%")
         .replace("µ", "μ")
         .replace("Ω", "Ω")
+        .replace("釆", "采")
     )
+    normalized = unicodedata.normalize("NFKC", normalized)
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fffμΩ%℃°]+", "", normalized).lower()
 
 
@@ -702,6 +708,48 @@ def _requirements_uniquely_correspond(source_text: str, report_text: str) -> boo
     if min(len(source), len(report)) < 12:
         return False
     return source in report or report in source
+
+
+def _requirements_highly_similar(source_text: str, report_text: str) -> bool:
+    """Accept only a sufficiently long, near-identical requirement with noise.
+
+    This is deliberately narrower than containment.  It is used after exact
+    and explicit-clause matching, and only in a mutually unique candidate set,
+    so a parent row cannot consume a similar child row or a repeated sentence.
+    """
+
+    source = _locator_text(source_text)
+    report = _locator_text(report_text)
+    if min(len(source), len(report)) < 18:
+        return False
+    # A near-identical sentence with a different limit, unit, comparator, or
+    # negation is a different requirement.  Preserve those differences for
+    # manual mapping even when the visible text is otherwise very similar.
+    if _requirement_semantic_signature(source_text) != _requirement_semantic_signature(
+        report_text
+    ):
+        return False
+    return difflib.SequenceMatcher(None, source, report).ratio() >= 0.94
+
+
+def _requirement_semantic_signature(value: str) -> tuple[tuple[str, ...], ...]:
+    normalized = value.replace("ºC", "°C").replace("℃", "°C")
+    normalized = unicodedata.normalize("NFKC", normalized).replace("µ", "μ").replace("Ω", "Ω")
+    numbers = tuple(re.findall(r"\d+(?:\.\d+)?", normalized))
+    units = tuple(
+        re.findall(
+            r"(?:μA|uA|mA|kA|A|mΩ|Ω|μV|mV|V|kPa|MPa|mW|W|mHz|kHz|MHz|GHz|mm|cm|°C|%)",
+            normalized,
+        )
+    )
+    comparators = tuple(
+        re.findall(
+            r"不超过|不大于|不少于|不得|不应|不能|不可|除非|至少|至多|<=|>=|≤|≥|<|>",
+            normalized,
+        )
+    )
+    negations = tuple(re.findall(r"不适用|禁止|没有|未|不|无", normalized))
+    return numbers, units, comparators, negations
 
 
 _LEADING_CLAUSE_EXPRESSION_RE = re.compile(
@@ -812,6 +860,10 @@ def _mapping_edges(
     remaining_report = set(range(len(report_rows)))
     edges: list[tuple[int | None, int | None, bool, str]] = []
 
+    source_texts = [_locator_text(str(row.get("requirement") or "")) for row in source_rows]
+    report_texts = [_locator_text(row.requirement_raw) for row in report_rows]
+    anchors: set[tuple[int, int]] = set()
+
     text_pairs = _unique_candidate_pairs(
         remaining_source,
         remaining_report,
@@ -824,6 +876,7 @@ def _mapping_edges(
         (source, report, True, "clause_range_and_unique_requirement_text")
         for source, report in text_pairs
     )
+    anchors.update(text_pairs)
     remaining_source -= {source for source, _ in text_pairs}
     remaining_report -= {report for _, report in text_pairs}
 
@@ -839,11 +892,38 @@ def _mapping_edges(
         (source, report, True, "clause_range_and_unique_explicit_clause")
         for source, report in clause_pairs
     )
+    anchors.update(clause_pairs)
     remaining_source -= {source for source, _ in clause_pairs}
     remaining_report -= {report for _, report in clause_pairs}
 
-    source_texts = [_locator_text(str(row.get("requirement") or "")) for row in source_rows]
-    report_texts = [_locator_text(row.requirement_raw) for row in report_rows]
+    fuzzy_pairs = _unique_candidate_pairs(
+        remaining_source,
+        remaining_report,
+        lambda source, report: _clause_compatible(
+            str(source_rows[source].get("clause") or ""),
+            report_rows[report].clause_raw,
+        )
+        and _requirements_highly_similar(
+            str(source_rows[source].get("requirement") or ""),
+            report_rows[report].requirement_raw,
+        ),
+        # A fuzzy edge may not cross an already anchored exact edge.  This
+        # prevents a reordered row from being silently paired by text alone.
+    )
+    fuzzy_pairs = {
+        (source, report)
+        for source, report in fuzzy_pairs
+        if all(
+            (source - anchor_source) * (report - anchor_report) >= 0
+            for anchor_source, anchor_report in anchors
+        )
+    }
+    edges.extend(
+        (source, report, True, "clause_range_and_high_similarity_requirement_text")
+        for source, report in fuzzy_pairs
+    )
+    remaining_source -= {source for source, _ in fuzzy_pairs}
+    remaining_report -= {report for _, report in fuzzy_pairs}
 
     many_to_one_candidates: dict[int, list[int]] = {}
     for report in sorted(remaining_report):
