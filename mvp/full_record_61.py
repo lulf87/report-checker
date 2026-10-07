@@ -10,6 +10,7 @@ independently recognised by two local channels.
 """
 
 import re
+import tempfile
 from collections import Counter, defaultdict
 from decimal import Decimal
 from pathlib import Path
@@ -29,6 +30,7 @@ from mvp.checker import (
     local_text_ocr,
     render_cell_for_ocr,
     sha256_file,
+    expected_report_conclusion,
 )
 from mvp.capabilities import MODE_CATALOG
 from mvp.input_variants import Record61StatusInventoryError
@@ -1028,19 +1030,20 @@ def _conclusion_check(
         expected = None
     else:
         expected = expected_report_conclusion_from_record_statuses(statuses, mode="9706.1")
-    observed = sorted({compact(row.conclusion_raw) for row in report_rows if compact(row.conclusion_raw)})
+    report_results = [row.result_raw for row in report_rows]
+    observed = expected_report_conclusion(report_results)
     if expected is None:
         decision = "manual"
         reason = "record_sequence_status_unresolved"
-    elif not observed:
+    elif observed == "<检验结果缺失>":
         decision = "manual"
-        reason = "report_sequence_conclusion_missing"
-    elif observed == [expected]:
+        reason = "report_sequence_result_missing"
+    elif observed == expected:
         decision = "match"
-        reason = "sequence_conclusion_matched"
+        reason = "sequence_result_matched"
     else:
         decision = "mismatch"
-        reason = "sequence_conclusion_mismatch"
+        reason = "sequence_result_mismatch"
     return {"decision": decision, "reason_code": reason, "expected": expected, "observed": observed}
 
 
@@ -1356,8 +1359,8 @@ def _status_ledger(
         target_id = f"report:sequence-conclusion:s{sequence:03d}"
         conclusion_source_ids.append(source_id)
         conclusion_target_ids.append(target_id)
-        conclusion_rows = [row for row in context_targets if compact(row.conclusion_raw)]
-        report_evidence_row = conclusion_rows[0] if conclusion_rows else context_targets[0]
+        result_rows = [row for row in context_targets if compact(row.result_raw)]
+        report_evidence_row = result_rows[0] if result_rows else context_targets[0]
         if conclusion["decision"] == "manual":
             record_evidence_row = next(
                 (row for row in sources if row.get("status") is None),
@@ -1376,7 +1379,7 @@ def _status_ledger(
             {
                 "entry_id": entry_id,
                 "id": entry_id,
-                    "rule_id": "RECORD61-SEQUENCE-CONCLUSION",
+                "rule_id": "RECORD61-SEQUENCE-CONCLUSION",
                 "scope_ids": ["S25", "S33"],
                 "source_row_id": source_id,
                 "target_row_id": target_id,
@@ -1385,11 +1388,11 @@ def _status_ledger(
                 "disposition": conclusion_disposition,
                 "reason_code": conclusion["reason_code"],
                 "record_location": _record_location(record_evidence_row),
-                "report_location": _report_location(report_evidence_row, prefer_conclusion=True),
+                "report_location": _report_location(report_evidence_row),
                 "record_evidence": [_record_location(row) for row in sources],
                 "report_evidence": [
-                    _report_location(row, prefer_conclusion=True)
-                    for row in (conclusion_rows or [report_evidence_row])
+                    _report_location(row)
+                    for row in (result_rows or [report_evidence_row])
                 ],
                 "record": {
                     "sequence": sequence,
@@ -1398,6 +1401,7 @@ def _status_ledger(
                 },
                 "report": {
                     "sequence": sequence,
+                    "result": report_evidence_row.result_raw,
                     "conclusion": report_evidence_row.conclusion_raw,
                     "participating_report_row_ids": [row.row_id for row in context_targets],
                 },
@@ -1783,6 +1787,7 @@ def _append_86_cells(
     document: fitz.Document,
     page_identity: Mapping[int, tuple[int | None, int]],
     result: dict[str, list[dict[str, Any]]],
+    output_dir: Path | None = None,
 ) -> None:
     matches: list[tuple[fitz.Page, int, fitz.table.Table, list[list[Any]]]] = []
     for page in document:
@@ -1797,7 +1802,35 @@ def _append_86_cells(
     page, table_index, table, extracted = matches[0]
     value_column = _header_column(extracted, "计算阻抗")
     label_column = _header_column(extracted, "阻抗测量部位")
-    for row_index, position in ((2, "plug_pe"), (3, "inlet_pe")):
+    row_indexes = (2, 3)
+    temporary_dir = tempfile.TemporaryDirectory(prefix="record61-86-label-") if output_dir is None else None
+    label_root = Path(output_dir) / "record61-ocr" if output_dir is not None else Path(temporary_dir.name)
+    positions: dict[int, str | None] = {}
+    for row_index in row_indexes:
+        label_cell = table.rows[row_index].cells[0] if table.rows[row_index].cells else None
+        if label_cell is None:
+            positions[row_index] = None
+            continue
+        image_path = label_root / f"record61_86_position_{row_index}.png"
+        render_cell_for_ocr(page, fitz.Rect(label_cell), image_path)
+        texts = [str(item.get("text") or "") for item in local_text_ocr(image_path).get("lines", [])]
+        joined = compact(" ".join(texts)).lower()
+        has_inlet = bool(re.search(r"inlet|unlet|iulet|inet|wetp|zwetp", joined))
+        has_plug = bool(re.search(r"plug|plea|ple|peg|aeg", joined))
+        positions[row_index] = "inlet_pe" if has_inlet and not has_plug else "plug_pe" if has_plug and not has_inlet else None
+    recognized = {value for value in positions.values() if value}
+    if recognized == {"inlet_pe"} and list(positions.values()).count("inlet_pe") == 1:
+        for row_index in row_indexes:
+            if positions[row_index] is None:
+                positions[row_index] = "plug_pe"
+    elif recognized == {"plug_pe"} and list(positions.values()).count("plug_pe") == 1:
+        for row_index in row_indexes:
+            if positions[row_index] is None:
+                positions[row_index] = "inlet_pe"
+    if {value for value in positions.values()} != {"inlet_pe", "plug_pe"}:
+        positions = {row_index: None for row_index in row_indexes}
+    for row_index in row_indexes:
+        position = positions[row_index]
         result["8.6"].append(
             _measurement_cell(
                 page,
@@ -1808,10 +1841,15 @@ def _append_86_cells(
                 block="8.6",
                 page_identity=page_identity,
                 unit="mΩ",
-                semantic={"measurement_position": position},
+                semantic={
+                    "measurement_position": position or "unresolved",
+                    "measurement_position_unresolved": position is None,
+                },
                 label_bbox=table.rows[row_index].cells[label_column],
             )
         )
+    if temporary_dir is not None:
+        temporary_dir.cleanup()
 
 
 def _append_166_cells(
@@ -2001,10 +2039,10 @@ def _append_87_cells(
                     )
 
 
-def _numeric_record_candidates(document: fitz.Document) -> dict[str, list[dict[str, Any]]]:
+def _numeric_record_candidates(document: fitz.Document, output_dir: Path | None = None) -> dict[str, list[dict[str, Any]]]:
     page_identity = _page_identity_map(document)
     result = _body_numeric_cells(document, page_identity)
-    _append_86_cells(document, page_identity, result)
+    _append_86_cells(document, page_identity, result, output_dir)
     _append_87_cells(document, page_identity, result)
     _append_166_cells(document, page_identity, result)
     return {key: value for key, value in result.items()}
@@ -2175,6 +2213,8 @@ def _target_source_cells(
         requirement = compact(row.requirement_raw)
         position = "inlet_pe" if "器具输入插座" in requirement else "plug_pe"
         selected = [cell for cell in cells if cell["semantic"].get("measurement_position") == position]
+        if not selected:
+            selected = [cell for cell in cells if cell["semantic"].get("measurement_position_unresolved")]
         return selected
     if block == "8.7":
         return _select_87_cells(target, cells)
@@ -2199,6 +2239,13 @@ def _numeric_manual_comparison(
     target_ordinal: int = 1,
     target_count: int = 1,
 ) -> dict[str, Any]:
+    if any(cell.get("semantic", {}).get("measurement_position_unresolved") for cell in cells):
+        return {
+            "decision": "manual",
+            "reason_code": "record_measurement_position_unresolved",
+            "report_value": target.result_raw,
+            "record_values": [cell.get("accepted_value") for cell in cells],
+        }
     accepted = [cell.get("accepted_value") for cell in cells]
     if block == "4.11" and len(cells) == 1:
         occurrence_values = cells[0].get("accepted_values")
@@ -2359,7 +2406,7 @@ def _numeric_ledger(
     report_number: tuple[int, int] | None,
     output_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[CoverageEntry], dict[str, Any], list[str]]:
-    candidates = _numeric_record_candidates(document)
+    candidates = _numeric_record_candidates(document, output_dir)
     targets = _numeric_report_targets(report_rows)
     counts = {block: len(rows) for block, rows in targets.items()}
     sample_number = report_number[1] if report_number else None

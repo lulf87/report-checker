@@ -379,9 +379,9 @@ RULE_CATALOG: dict[str, dict[str, Any]] = {
         "modes": ("report_record_9706_1",),
     },
     "RECORD61-SEQUENCE-CONCLUSION": {
-        "label": "9706.1 序号结论",
-        "title": "9706.1 Report 序号与单项结论",
-        "version": "1.0.0",
+        "label": "9706.1 序号结果",
+        "title": "9706.1 Record 序号与检验结果",
+        "version": "1.1.0",
         "source": "mode_specific",
         "required_component_ids": ("pdf_parser", "report_template_bundle", "record61_template_bundle"),
         "family": "record_9706_1",

@@ -66,11 +66,11 @@
 | S25 | 状态框选中列、空白、注销线和异体状态框正确识别 | confirmed | `RECORD61-BODY-STATUS` / partial；需扩展状态语义 |
 | S26 | 每个 Record 状态行映射到 Report 项目、条款、标准要求、建议/条件、检验结果 | confirmed | `RECORD61-SCOPE` / partial；需扩展字段级映射 |
 | S27 | Record“符合、不符合、不适用”等状态与 Report 结果一致 | confirmed | `RECORD61-BODY-STATUS` / validated |
-| S28 | Report 序号 1–117 的每个单项结论与 Record 状态聚合结果一致 | confirmed | `RECORD61-SEQUENCE-CONCLUSION` / validated |
+| S28 | Report 序号 1–117 的每个检验结果与 Record 状态聚合结果一致 | confirmed | `RECORD61-SEQUENCE-CONCLUSION` / validated |
 | S29 | Report 序号 118 / 第 17 章按当前模板规则处置为 `not_applicable` | confirmed | `RECORD61-SEQUENCE-CONCLUSION` / validated |
 | S30 | 当前 5 个数值块之外，当前已知模板中的全部可识别数值和百分比单元格 | confirmed | `RECORD61-BODY-NUMERIC`、`RECORD61-BODY-PERCENT` / partial；需扩展发现范围 |
 | S31 | 数值单位换算、上下限、区间、精度、极性、最大值和聚合方式 | confirmed | `RECORD61-BODY-NUMERIC` / partial；需扩展判定细节 |
-| S32 | Record 与 Report 的项目、条款、要求、建议、条件、单位、结果文本逐字段一致 | confirmed | `RECORD61-SCOPE` / partial；需扩展字段级比对 |
+| S32 | Record 与 Report 的项目、条款、要求、建议、条件、单位、检验结果文本逐字段一致 | confirmed | `RECORD61-SCOPE` / partial；需扩展字段级比对 |
 | S33 | Record/Report 缺失行、额外行、无法唯一映射行或模板版本变化 | confirmed | `RECORD61-SCOPE` / partial；需扩展异常分类 |
 | S34 | Record 中“不符合”生成独立不符合警示 | confirmed | `RECORD61-NONCONFORMING-ALERT` / validated |
 | S35 | 日期、检测仪器、检测人员、复核人员、签字、备注等元数据 | confirmed | `RECORD61-METADATA` / validated |

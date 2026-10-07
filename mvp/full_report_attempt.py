@@ -46,6 +46,35 @@ def _header_map(row: list[Any]) -> dict[str, int]:
     return mapping
 
 
+def _align_table_row(table: fitz.table.Table, row_index: int, row: list[Any]) -> list[Any]:
+    header_cells = list(table.rows[0].cells) if table.rows else []
+    if not header_cells or len(row) == len(header_cells):
+        return list(row)
+    row_cells = [cell for cell in table.rows[row_index].cells if cell is not None]
+    if len(row_cells) != len(row):
+        return list(row) + [""] * max(0, len(header_cells) - len(row))
+    header_starts = [float(fitz.Rect(cell).x0) for cell in header_cells]
+    aligned: list[Any] = [""] * len(header_cells)
+    for value, cell in zip(row, row_cells):
+        start = float(fitz.Rect(cell).x0)
+        column = min(range(len(header_starts)), key=lambda index: abs(start - header_starts[index]))
+        aligned[column] = value
+    return aligned
+
+
+def _table_cell(table: fitz.table.Table, row_index: int, column: int) -> Any:
+    if not table.rows or not (0 <= column < len(table.rows[0].cells)):
+        return None
+    header = table.rows[0].cells[column]
+    if header is None:
+        return None
+    target_x = float(fitz.Rect(header).x0)
+    for cell in table.rows[row_index].cells:
+        if cell is not None and abs(float(fitz.Rect(cell).x0) - target_x) <= 1.5:
+            return cell
+    return None
+
+
 def _is_formal_report_table(table: fitz.table.Table) -> bool:
     rows = table.extract()
     if not rows:
@@ -390,7 +419,8 @@ def scan_report_numeric_measurements(document: fitz.Document) -> dict[str, Any]:
                 active_standard_columns = standard_columns
                 active_standard_context = [""] * len(standard_columns)
 
-            for row_index, row in enumerate(rows[1:], start=1):
+            for row_index, raw_row in enumerate(rows[1:], start=1):
+                row = _align_table_row(table, row_index, raw_row)
                 sequence_text = _compact(row[mapping["序号"]]) if mapping["序号"] < len(row) else ""
                 sequence_match = re.fullmatch(r"(续)?(\d+)", sequence_text)
                 if sequence_match:
@@ -444,7 +474,7 @@ def scan_report_numeric_measurements(document: fitz.Document) -> dict[str, Any]:
                     continue
 
                 decision = evaluate_numeric_measurement(requirement, result_text)
-                cell = table.rows[row_index].cells[result_index]
+                cell = _table_cell(table, row_index, result_index)
                 comparisons.append(
                     {
                         "pdf_page": page.number + 1,

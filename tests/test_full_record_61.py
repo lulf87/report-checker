@@ -12,6 +12,7 @@ from mvp.full_record_61 import (
     _accepted_dual_channel_value,
     _accepted_dual_channel_values,
     _clause_compatible,
+    _conclusion_check,
     _effective_report_result,
     _mapping_edges,
     _numeric_manual_comparison,
@@ -193,7 +194,7 @@ class FullRecord61Tests(unittest.TestCase):
         )
         self.assertGreater(entry["record_location"]["bbox"][2], 547.0)
 
-    def test_sequence_conclusions_are_independent_and_use_conclusion_cells(self) -> None:
+    def test_sequence_results_are_independent_and_use_result_cells(self) -> None:
         for sample, result in self.results.items():
             conclusions = [
                 entry
@@ -207,6 +208,28 @@ class FullRecord61Tests(unittest.TestCase):
                     {f"record61:sequence-conclusion:s{sequence:03d}" for sequence in range(1, 118)},
                 )
                 self.assertTrue(all(entry["report_evidence"] for entry in conclusions))
+                self.assertTrue(all("result" in entry["report"] for entry in conclusions))
+
+    def test_sequence_result_check_does_not_reuse_report_single_conclusion(self) -> None:
+        row = ReportRow(
+            row_id="report:test:s077",
+            sequence=77,
+            row_ordinal=1,
+            pdf_page=53,
+            project_raw="",
+            clause_raw="9.7",
+            requirement_raw="",
+            result_raw="符合要求",
+            conclusion_raw="/",
+            unit_context=None,
+            condition_tokens=(),
+            requirement_rect=None,
+            result_rect=(1.0, 1.0, 2.0, 2.0),
+            conclusion_rect=(2.0, 2.0, 3.0, 3.0),
+        )
+        comparison = _conclusion_check([{"status": "符合"}], [row])
+        self.assertEqual(comparison["decision"], "match")
+        self.assertEqual(comparison["observed"], "符合")
 
     def test_numeric_sources_are_physical_cells_and_fixed_blocks_are_label_aligned(self) -> None:
         for sample, result in self.results.items():
@@ -228,6 +251,12 @@ class FullRecord61Tests(unittest.TestCase):
                     if entry["record"]["block_type"] == "8.6"
                 }
                 self.assertEqual(positions, {"plug_pe", "inlet_pe"})
+                positions_by_row = {
+                    entry["record"]["source_cells"][0]["row_index"]: entry["record"]["source_cells"][0]["semantic"].get("measurement_position")
+                    for entry in entries
+                    if entry["record"]["block_type"] == "8.6"
+                }
+                self.assertEqual(positions_by_row, {2: "plug_pe", 3: "inlet_pe"})
 
     def test_known_864_false_positive_is_removed_and_known_2948_differences_remain(self) -> None:
         mismatches_by_sample = {

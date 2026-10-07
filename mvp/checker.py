@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 try:
     import pymupdf as fitz
@@ -384,6 +384,45 @@ def header_map(row: list[Any]) -> dict[str, int]:
     return mapping
 
 
+def align_report_table_row(table: fitz.table.Table, row_index: int, row: Sequence[Any]) -> list[Any]:
+    """Restore logical columns for rows shortened by merged Report cells."""
+
+    header_cells = list(table.rows[0].cells) if table.rows else []
+    column_count = len(header_cells)
+    values = list(row)
+    if not column_count or len(values) == column_count:
+        return values
+    row_cells = list(table.rows[row_index].cells) if row_index < len(table.rows) else []
+    usable_cells = [cell for cell in row_cells if cell is not None]
+    if len(usable_cells) != len(values):
+        return values + [""] * max(0, column_count - len(values))
+    header_starts = [float(fitz.Rect(cell).x0) for cell in header_cells if cell is not None]
+    if len(header_starts) != column_count:
+        return values + [""] * max(0, column_count - len(values))
+    aligned: list[Any] = [""] * column_count
+    for value, cell in zip(values, usable_cells):
+        start = float(fitz.Rect(cell).x0)
+        column = min(range(column_count), key=lambda index: abs(start - header_starts[index]))
+        aligned[column] = value
+    return aligned
+
+
+def report_table_cell(table: fitz.table.Table, row_index: int, column: int) -> Any:
+    """Return the physical cell for a logical Report column, if present."""
+
+    if not table.rows or not (0 <= column < len(table.rows[0].cells)):
+        return None
+    header_cell = table.rows[0].cells[column]
+    if header_cell is None or not (0 <= row_index < len(table.rows)):
+        return None
+    target_x = float(fitz.Rect(header_cell).x0)
+    candidates = [cell for cell in table.rows[row_index].cells if cell is not None]
+    for cell in candidates:
+        if abs(float(fitz.Rect(cell).x0) - target_x) <= 1.5:
+            return cell
+    return None
+
+
 def is_formal_report_table(table: fitz.table.Table) -> bool:
     rows = table.extract()
     if not rows:
@@ -412,7 +451,8 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
         mapping = header_map(rows[0])
         explicit: list[tuple[int, str, int]] = []
         current_on_page = active_sequence
-        for row_index, row in enumerate(rows[1:], start=1):
+        for row_index, raw_row in enumerate(rows[1:], start=1):
+            row = align_report_table_row(selected, row_index, raw_row)
             sequence_text = compact(row[mapping["序号"]]) if mapping["序号"] < len(row) else ""
             match = re.fullmatch(r"(续)?(\d+)", sequence_text)
             if row_index == 1 and not match and active_sequence is not None:
@@ -472,8 +512,8 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
             if conclusion:
                 item["conclusions"].append(conclusion)
             if result or conclusion:
-                result_cell = selected.rows[row_index].cells[mapping["检验结果"]]
-                conclusion_cell = selected.rows[row_index].cells[mapping["单项结论"]]
+                result_cell = report_table_cell(selected, row_index, mapping["检验结果"])
+                conclusion_cell = report_table_cell(selected, row_index, mapping["单项结论"])
                 item["row_locations"].append(
                     {
                         "pdf_page": page.number + 1,
@@ -554,7 +594,8 @@ def find_report_item_value_cell(
                 continue
             rows = table.extract()
             mapping = header_map(rows[0])
-            for row_index, row in enumerate(rows[1:], start=1):
+            for row_index, raw_row in enumerate(rows[1:], start=1):
+                row = align_report_table_row(table, row_index, raw_row)
                 sequence_text = compact(row[mapping["序号"]])
                 sequence_match = re.fullmatch(r"(续)?(\d+)", sequence_text)
                 if sequence_match:
@@ -564,7 +605,7 @@ def find_report_item_value_cell(
                 value = display_text(row[mapping[column]])
                 if not value or (expected_value is not None and compact(value) != compact(expected_value)):
                     continue
-                cell = table.rows[row_index].cells[mapping[column]]
+                cell = report_table_cell(table, row_index, mapping[column])
                 if cell is not None:
                     return page.number + 1, value, fitz.Rect(cell)
     raise RuntimeError(f"report item {sequence} column {column} was not located")

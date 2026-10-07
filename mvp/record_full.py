@@ -11,7 +11,7 @@ try:
 except ImportError:
     import fitz
 
-from mvp.checker import compact, display_text, header_map, is_formal_report_table
+from mvp.checker import align_report_table_row, compact, display_text, header_map, is_formal_report_table, report_table_cell
 
 
 RectTuple = tuple[float, float, float, float]
@@ -251,7 +251,8 @@ def scan_report_rows(
                 if not extracted:
                     continue
                 mapping = header_map(extracted[0])
-                for row_index, row in enumerate(extracted[1:], start=1):
+                for row_index, raw_row in enumerate(extracted[1:], start=1):
+                    row = align_report_table_row(table, row_index, raw_row)
                     sequence_text = (
                         compact(row[mapping["序号"]])
                         if mapping["序号"] < len(row)
@@ -314,7 +315,7 @@ def scan_report_rows(
 
                     def cell_rect(column: str) -> RectTuple | None:
                         index = mapping[column]
-                        return _rect_tuple(table_row.cells[index]) if index < len(table_row.cells) else None
+                        return _rect_tuple(report_table_cell(table, row_index, index))
 
                     rows_out.append(
                         ReportRow(
