@@ -131,6 +131,77 @@ def _page_inks(page: fitz.Page) -> list[dict[str, Any]]:
     return values
 
 
+def _point_in_rect(point: Sequence[float], rect: fitz.Rect) -> bool:
+    """Return whether a polyline point lies inside a printed checkbox."""
+
+    return rect.x0 <= float(point[0]) <= rect.x1 and rect.y0 <= float(point[1]) <= rect.y1
+
+
+def _segment_intersects_rect(
+    start: Sequence[float],
+    end: Sequence[float],
+    rect: fitz.Rect,
+) -> bool:
+    """Return whether a line segment crosses a rectangle.
+
+    Ink annotations contain many sampled points, but a short annotation can
+    still have only its endpoints available.  Liang-Barsky clipping handles
+    both cases without depending on rasterisation or annotation width.
+    """
+
+    x0, y0 = float(start[0]), float(start[1])
+    x1, y1 = float(end[0]), float(end[1])
+    dx, dy = x1 - x0, y1 - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in (
+        (-dx, x0 - rect.x0),
+        (dx, rect.x1 - x0),
+        (-dy, y0 - rect.y0),
+        (dy, rect.y1 - y0),
+    ):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return False
+            continue
+        ratio = q / p
+        if p < 0:
+            if ratio > t1:
+                return False
+            t0 = max(t0, ratio)
+        else:
+            if ratio < t0:
+                return False
+            t1 = min(t1, ratio)
+    return t0 <= t1
+
+
+def _ink_touches_box(ink: Mapping[str, Any], box: fitz.Rect) -> bool:
+    """Return whether an Ink annotation actually reaches a status checkbox."""
+
+    points = list(ink.get("_points") or [])
+    if points:
+        if any(_point_in_rect(point, box) for point in points):
+            return True
+        if any(
+            _segment_intersects_rect(start, end, box)
+            for start, end in zip(points, points[1:])
+        ):
+            return True
+        return False
+    # Synthetic callers and a few flattened annotations have no vertices.
+    # Their bounding box is the only available geometry.
+    return fitz.Rect(ink["bbox"]).intersects(box)
+
+
+def _expanded_rect(rect: fitz.Rect, margin: float) -> fitz.Rect:
+    expanded = fitz.Rect(rect)
+    expanded.x0 -= margin
+    expanded.y0 -= margin
+    expanded.x1 += margin
+    expanded.y1 += margin
+    return expanded
+
+
 def _native_status_box_groups(page: fitz.Page) -> list[dict[str, Any]]:
     boxes: list[tuple[str, fitz.Rect]] = []
     for block in page.get_text("rawdict").get("blocks", []):
@@ -213,6 +284,31 @@ def _clause_in_explicit_range(source_clause: str, report_clause: str) -> bool:
     return lower <= source[-1] <= upper
 
 
+def _clause_expression_contains(source_expression: str, candidate_clause: str) -> bool:
+    """Return whether an explicit source clause/range contains a Report anchor."""
+
+    source = _clause_token(source_expression)
+    candidate = _clause_token(candidate_clause)
+    if not source or not candidate:
+        return False
+    if source == candidate or source.startswith(f"{candidate}."):
+        return True
+    match = _CLAUSE_RANGE_RE.fullmatch(source)
+    if not match:
+        return False
+    start = _clause_parts(match.group("start"))
+    end = _clause_parts(match.group("end"))
+    value = _clause_parts(candidate)
+    if start is None or end is None or value is None:
+        return False
+    if len(start) != len(end) or len(value) != len(start):
+        return False
+    if start[:-1] != end[:-1] or value[:-1] != start[:-1]:
+        return False
+    lower, upper = sorted((start[-1], end[-1]))
+    return lower <= value[-1] <= upper
+
+
 def _plausible_clause(value: str) -> str:
     text = display_text(value)
     if len(text) > 32:
@@ -270,44 +366,111 @@ def _status_from_ink(
     page_inks: Sequence[Mapping[str, Any]],
     *,
     glyph_encoding: str = "native_square_triplet",
+    assigned_inks: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     centers = [(box.x0 + box.x1) / 2 for box in boxes]
-    owned = [
-        ink
-        for ink in page_inks
-        if status_cell.y0 <= float(ink["centroid_y"]) <= status_cell.y1
-        and status_cell.x0 - 5 <= float(ink["centroid_x"]) <= status_cell.x1 + 5
-    ]
+    if assigned_inks is None:
+        owned = [
+            ink
+            for ink in page_inks
+            if status_cell.y0 <= float(ink["centroid_y"]) <= status_cell.y1
+            and status_cell.x0 - 5 <= float(ink["centroid_x"]) <= status_cell.x1 + 5
+        ]
+    else:
+        # The extraction layer has already assigned cross-row strokes to the
+        # checkbox they touch.  Do not apply the centroid filter a second
+        # time: that was the source of the page-17 row-boundary false positive.
+        owned = list(assigned_inks)
     selected_columns: list[int] = []
     public_inks: list[dict[str, Any]] = []
-    large_strike = False
+    # A cancellation mark in this template has two distinct visual forms:
+    # the printed status cell is crossed by two long, almost horizontal
+    # strokes, or a single long diagonal stroke runs through the complete
+    # status band.  A handwritten tick can also be diagonal and can be much
+    # larger than the 10pt checkbox, so width alone is not evidence of a
+    # cancellation.
+    horizontal_line_count = 0
+    large_cross_band = False
+    near_checkbox_mark = False
     for ink in owned:
         bbox = fitz.Rect(ink["bbox"])
         column = min(range(3), key=lambda index: abs(float(ink["centroid_x"]) - centers[index]))
         selected_columns.append(column)
-        # Normal handwritten ticks often extend into an adjacent printed box.
-        # Only a stroke spanning most of the complete status band, or a long
-        # near-horizontal deletion line, is treated as a crossed-out row.
-        is_large = bbox.width >= 82 or (bbox.height <= 4 and bbox.width >= 58)
-        large_strike = large_strike or is_large
+        points = list(ink.get("_points") or [])
+        dx = abs(float(points[-1][0]) - float(points[0][0])) if len(points) >= 2 else 0.0
+        dy = abs(float(points[-1][1]) - float(points[0][1])) if len(points) >= 2 else 0.0
+        near_horizontal = (
+            bbox.height <= 4.0
+            and bbox.width >= max(58.0, float(status_cell.width) * 0.55)
+            and dx >= bbox.width * 0.70
+            and dy <= 2.5
+        )
+        horizontal_line_count += int(near_horizontal)
+        # A diagonal slash that crosses the full cell is a cancellation.  A
+        # normal tick may be 80–90pt wide, but it does not reach both cell
+        # edges and is therefore left for nearest-checkbox resolution.
+        crosses_band = (
+            bbox.width >= float(status_cell.width)
+            or (
+                bbox.x0 <= status_cell.x0 + 2.0
+                and bbox.x1 >= status_cell.x1 - 2.0
+                and bbox.height >= 12.0
+            )
+        )
+        large_cross_band = large_cross_band or crosses_band
+        near_checkbox_mark = near_checkbox_mark or bool(ink.get("_near_checkbox"))
         public_inks.append(
             {
                 "bbox": _rect(bbox),
                 "centroid": [round(float(ink["centroid_x"]), 3), round(float(ink["centroid_y"]), 3)],
                 "point_count": int(ink["point_count"]),
                 "nearest_column": column,
-                "large_cross_column_strike": is_large,
+                "near_horizontal_cancellation_line": near_horizontal,
+                "full_band_cancellation_stroke": crosses_band,
+                "near_checkbox": bool(ink.get("_near_checkbox")),
             }
         )
 
     distinct_columns = sorted(set(selected_columns))
+    # A handwritten note can cross the status band and its individual ink
+    # annotations may be nearest to two adjacent checkboxes.  When the
+    # original nearest-column result is already unambiguous, preserve it.  If
+    # it was ambiguous, require a substantial stroke to intersect a printed
+    # checkbox before treating that column as selected.  This removes text and
+    # neighbouring-row strokes while retaining a genuinely large mark in two
+    # different boxes as ambiguous.
+    box_intersection_columns: set[int] = set()
+    for ink in owned:
+        bbox = fitz.Rect(ink["bbox"])
+        width = float(bbox.width)
+        height = float(bbox.height)
+        if max(width, height) < 3.0 or min(width, height) < 1.5:
+            continue
+        for column, box in enumerate(boxes):
+            if (
+                bbox.x1 >= box.x0
+                and bbox.x0 <= box.x1
+                and bbox.y1 >= box.y0
+                and bbox.y0 <= box.y1
+            ):
+                box_intersection_columns.add(column)
+    if len(distinct_columns) > 1 and len(box_intersection_columns) == 1:
+        distinct_columns = sorted(box_intersection_columns)
     if not owned:
         status = None
         reason = "status_box_blank"
         status_class = "blank"
-    elif large_strike:
+    elif near_checkbox_mark:
+        # The mark is close to a checkbox but does not actually enter it.  It
+        # is evidence of an imprecise original record, not a confirmed status.
         status = None
-        reason = "void_or_crossed_out"
+        reason = "status_mark_near_checkbox_unresolved"
+        status_class = "near_checkbox"
+    elif horizontal_line_count >= 2 or large_cross_band:
+        # A double horizontal line or a slash spanning the full status pane is
+        # the Record template's “not applicable” convention.
+        status = "不适用"
+        reason = "void_or_crossed_out_slash"
         status_class = "void_or_crossed_out"
     elif len(distinct_columns) != 1:
         status = None
@@ -326,8 +489,65 @@ def _status_from_ink(
             "alternate" if glyph_encoding != "native_square_triplet" else "native"
         ),
         "selected_columns": distinct_columns,
+        "box_intersection_columns": sorted(box_intersection_columns),
         "inks": public_inks,
     }
+
+
+def _assign_inks_to_status_groups(
+    groups: Sequence[Mapping[str, Any]],
+    status_cells: Sequence[fitz.Rect],
+    page_inks: Sequence[Mapping[str, Any]],
+) -> list[list[Mapping[str, Any]]]:
+    """Assign each page Ink to the status row whose checkbox it reaches.
+
+    A handwritten slash can cross a horizontal table boundary.  Assigning by
+    annotation centroid therefore lets the preceding row absorb a mark that
+    actually crosses the next row's checkbox.  Geometry wins when a stroke
+    reaches exactly one row; centroid is retained only as a fallback when the
+    stroke does not touch a checkbox or touches several rows.
+    """
+
+    assigned: list[list[Mapping[str, Any]]] = [[] for _ in groups]
+    fallback_inks: list[Mapping[str, Any]] = []
+    for ink in page_inks:
+        touched_groups = [
+            group_index
+            for group_index, group in enumerate(groups)
+            if any(_ink_touches_box(ink, box) for box in group["boxes"])
+        ]
+        if len(touched_groups) == 1:
+            assigned[touched_groups[0]].append(ink)
+            continue
+
+        fallback_inks.append(ink)
+
+    for ink in fallback_inks:
+
+        near_groups = [
+            group_index
+            for group_index, group in enumerate(groups)
+            if any(
+                not _ink_touches_box(ink, box)
+                and _ink_touches_box(ink, _expanded_rect(box, 6.0))
+                for box in group["boxes"]
+            )
+        ]
+        if len(near_groups) == 1 and not assigned[near_groups[0]]:
+            assigned[near_groups[0]].append({**ink, "_near_checkbox": True})
+            continue
+
+        centroid_x = float(ink["centroid_x"])
+        centroid_y = float(ink["centroid_y"])
+        fallback_groups = [
+            group_index
+            for group_index, status_cell in enumerate(status_cells)
+            if status_cell.y0 <= centroid_y <= status_cell.y1
+            and status_cell.x0 - 5 <= centroid_x <= status_cell.x1 + 5
+        ]
+        if len(fallback_groups) == 1:
+            assigned[fallback_groups[0]].append(ink)
+    return assigned
 
 
 def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -352,9 +572,15 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
             [int(table.row_count), int(table.col_count)] for table, _ in tables
         ]
         inks = _page_inks(page)
+        status_cells = [
+            _row_status_cell(page, group, tables)[2]
+            for group in groups
+        ]
+        assigned_inks = _assign_inks_to_status_groups(groups, status_cells, inks)
 
         for page_ordinal, group in enumerate(groups, start=1):
-            extracted, row_index, status_cell = _row_status_cell(page, group, tables)
+            extracted, row_index, _ = _row_status_cell(page, group, tables)
+            status_cell = status_cells[page_ordinal - 1]
             for prior_index in range(row_index, -1, -1):
                 row = extracted[prior_index]
                 candidate = _plausible_clause(display_text(row[0]) if row else "")
@@ -373,6 +599,7 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
                 group["boxes"],
                 inks,
                 glyph_encoding=group["glyph_encoding"],
+                assigned_inks=assigned_inks[page_ordinal - 1],
             )
             row_id = f"record61:status:p{pdf_page:03d}:r{page_ordinal:02d}"
             item = {
@@ -391,7 +618,10 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
                 "status_reason_code": ink_result["reason_code"],
                 "status_class": ink_result["status_class"],
                 "status_disposition": (
-                    "matched" if ink_result["status_class"] == "selected" else "manual"
+                    "matched"
+                    if ink_result["status_class"] in {"selected", "void_or_crossed_out"}
+                    and ink_result["status"] is not None
+                    else "manual"
                 ),
                 "status_glyph_variant": ink_result["glyph_variant"],
                 "selected_columns": ink_result["selected_columns"],
@@ -439,12 +669,13 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
         "status_class_counts": dict(status_class_counts),
         "alternate_glyph_rows": alternate_rows,
         "page_row_counts": page_counts,
-        "ink_assignment": "polyline_point_centroid_to_nearest_printed_box_x",
+        "ink_assignment": "polyline_checkbox_intersection_then_centroid_fallback",
         "unresolved_policy": "blank_multi_column_or_large_cross_column_strike_is_manual",
         "status_semantics": {
             "selected": "single ink column assigned to 符合/不符合/不适用",
             "blank": "no owned ink in the three status boxes; manual",
-            "void_or_crossed_out": "long cancellation stroke across the status band; manual",
+            "void_or_crossed_out": "double horizontal or full-pane slash; interpreted as 不适用",
+            "near_checkbox": "ink approaches a checkbox but does not enter it; manual",
             "ambiguous": "ink occupies multiple status columns; manual",
             "glyph_variants": ["native_square_triplet", "alternate_first_square_triplet"],
         },
@@ -695,6 +926,7 @@ def _locator_text(value: str) -> str:
         .replace("釆", "采")
     )
     normalized = unicodedata.normalize("NFKC", normalized)
+    normalized = re.sub(r"[lI](?=\d)", "1", normalized)
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fffμΩ%℃°]+", "", normalized).lower()
 
 
@@ -742,12 +974,27 @@ def _requirement_semantic_signature(value: str) -> tuple[tuple[str, ...], ...]:
             normalized,
         )
     )
-    comparators = tuple(
-        re.findall(
-            r"不超过|不大于|不少于|不得|不应|不能|不可|除非|至少|至多|<=|>=|≤|≥|<|>",
-            normalized,
-        )
+    comparator_matches = re.findall(
+        r"不超过|不大于|小于等于|不少于|不小于|大于等于|不得|不应|不能|不可|除非|至少|至多|<=|>=|≤|≥|小于|大于|<|>",
+        normalized,
     )
+    comparator_map = {
+        "不超过": "<=",
+        "不大于": "<=",
+        "小于等于": "<=",
+        "≤": "<=",
+        "<=": "<=",
+        "不少于": ">=",
+        "不小于": ">=",
+        "大于等于": ">=",
+        "≥": ">=",
+        ">=": ">=",
+        "小于": "<",
+        "<": "<",
+        "大于": ">",
+        ">": ">",
+    }
+    comparators = tuple(comparator_map.get(value, value) for value in comparator_matches)
     negations = tuple(re.findall(r"不适用|禁止|没有|未|不|无", normalized))
     return numbers, units, comparators, negations
 
@@ -812,6 +1059,41 @@ def _ordered_unique_containment(
     ):
         return False
     return sum(len(text) for text in component_texts) / len(container_text) >= minimum_coverage
+
+
+def _source_matches_report_anchor(source_clause: str, report_anchor: str) -> bool:
+    """Match a Record leaf clause to the most specific Report heading."""
+
+    source = _clause_token(source_clause)
+    anchor = _clause_token(report_anchor)
+    if not source or not anchor:
+        return False
+    return _clause_expression_contains(source, anchor)
+
+
+def _report_anchor_segment(
+    report_rows: Sequence[ReportRow],
+    anchor_index: int,
+    source_clause: str,
+) -> list[int]:
+    """Return the physical Report rows belonging to one explicit heading.
+
+    Report tables often put a heading and its following continuation lines in
+    separate physical rows.  Stop at the next explicit heading that is not an
+    ancestor of the Record clause being mapped; this keeps 11.2.2.1 separate
+    from its sibling 11.2.2.2 and keeps 8.8.4.1 separate from 8.8.4.2.
+    """
+
+    anchor = _leading_subclause(report_rows[anchor_index].requirement_raw)
+    if not anchor:
+        return [anchor_index]
+    result = [anchor_index]
+    for index in range(anchor_index + 1, len(report_rows)):
+        lead = _leading_subclause(report_rows[index].requirement_raw)
+        if lead and not _source_matches_report_anchor(source_clause, lead):
+            break
+        result.append(index)
+    return result
 
 
 def _assign_record_rows_to_sequences(
@@ -885,8 +1167,6 @@ def _mapping_edges(
                     continue
                 if any(source_rows[index].get("status") is None for index in members):
                     continue
-                if len({source_rows[index].get("status") for index in members}) > 1:
-                    continue
                 components = [source_texts[index] for index in members]
                 if max(map(len, components), default=0) < 16:
                     continue
@@ -894,6 +1174,11 @@ def _mapping_edges(
                     components,
                     report_texts[report],
                     minimum_component_length=2,
+                    # A parent row plus its first child commonly includes a
+                    # heading in the Report cell, so the source text covers
+                    # less than 80% even though both rows are unequivocally
+                    # contained in that merged requirement.
+                    minimum_coverage=0.5,
                 ):
                     grouped_candidates[report].append(members)
     groups: dict[int, list[int]] = {}
@@ -1057,6 +1342,179 @@ def _mapping_edges(
         remaining_source.discard(source)
         remaining_report -= set(members)
 
+    # The formal Report frequently gives a single explicit subclause heading
+    # while the Record repeats that heading over several physical rows.  Text
+    # containment cannot resolve those rows when the Report has shortened or
+    # merged the wording (for example 8.9.2 a/b/c, 9.2.3.2 and 13.2.7).  Use
+    # the most specific explicit Report heading as a bounded structural
+    # anchor.  This is deliberately a fallback after exact and fuzzy matches;
+    # it never reassigns a row that already has a unique text counterpart.
+    explicit_anchors = [
+        (index, _leading_subclause(row.requirement_raw))
+        for index, row in enumerate(report_rows)
+        if _leading_subclause(row.requirement_raw)
+    ]
+    fallback_groups: dict[tuple[int, str], list[int]] = defaultdict(list)
+    for source in sorted(remaining_source):
+        source_clause = str(source_rows[source].get("clause") or "")
+        candidates = [
+            (len(_clause_token(anchor)), index, anchor)
+            for index, anchor in explicit_anchors
+            if _source_matches_report_anchor(source_clause, anchor)
+            and _clause_compatible(source_clause, report_rows[index].clause_raw)
+        ]
+        if not candidates:
+            continue
+        longest = max(length for length, _, _ in candidates)
+        winners = [(index, anchor) for length, index, anchor in candidates if length == longest]
+        if len(winners) != 1:
+            continue
+        anchor_index, anchor = winners[0]
+        fallback_groups[(anchor_index, _clause_token(source_clause))].append(source)
+
+    fallback_target_groups: dict[str, set[str]] = defaultdict(set)
+    for (anchor_index, source_clause), members in sorted(fallback_groups.items()):
+        segment = _report_anchor_segment(report_rows, anchor_index, source_clause)
+        segment_set = set(segment)
+        selected_targets: dict[int, int] = {}
+        for source in members:
+            source_text = source_texts[source]
+            exact = [
+                target
+                for target in segment
+                if source_text and source_text in report_texts[target]
+            ]
+            if len(exact) == 1:
+                selected = exact[0]
+            else:
+                free = [target for target in segment if target in remaining_report]
+                source_marker = _leading_requirement_marker(
+                    str(source_rows[source].get("requirement") or "")
+                )
+                marker_free = [
+                    target
+                    for target in free
+                    if source_marker
+                    and _leading_requirement_marker(report_rows[target].requirement_raw)
+                    == source_marker
+                ]
+                if len(marker_free) == 1:
+                    selected = marker_free[0]
+                elif len(free) == 1:
+                    selected = free[0]
+                else:
+                    # A single Report cell represents the remaining source
+                    # rows when no continuation cell is available.
+                    selected = anchor_index
+            selected_targets[source] = selected
+            remaining_source.discard(source)
+            remaining_report.discard(selected)
+            group_key = f"g{anchor_index:03d}:t{selected:03d}"
+            fallback_target_groups[group_key].add(source_rows[source]["row_id"])
+            edges.append(
+                (
+                    source,
+                    selected,
+                    True,
+                    f"clause_range_and_explicit_subclause_group:{group_key}",
+                )
+            )
+
+        # Mark an already paired source edge that points at the same bounded
+        # Report target as part of the same aggregate.  Without this, a
+        # merged cell with statuses [不适用, 符合, 不适用] would be compared
+        # three times against the Report's single “符合要求” result.
+        selected_target_ids = {
+            report_rows[target].row_id for target in selected_targets.values()
+        }
+        group_key_by_target = {
+            report_rows[target].row_id: f"g{anchor_index:03d}:t{target:03d}"
+            for target in set(selected_targets.values())
+        }
+        for edge_index, (source, target, automatic, method) in enumerate(edges):
+            if not automatic or source is None or target is None:
+                continue
+            if report_rows[target].row_id not in selected_target_ids:
+                continue
+            if not _source_matches_report_anchor(
+                str(source_rows[source].get("clause") or ""),
+                _leading_subclause(report_rows[anchor_index].requirement_raw),
+            ):
+                continue
+            group_key = group_key_by_target[report_rows[target].row_id]
+            edges[edge_index] = (
+                source,
+                target,
+                automatic,
+                f"clause_range_and_explicit_subclause_group:{group_key}",
+            )
+
+    # Conversely, a Report heading may have a placeholder continuation row
+    # that has no separate Record line.  Once the surrounding source clause is
+    # already anchored, attach that placeholder to the nearest resolved source
+    # row as a one-to-many structural edge.  This prevents template headings
+    # such as 8.5.1.3/15.5.2 from becoming spurious manual findings while
+    # leaving real measured Report values and unrelated rows untouched.
+    source_edge_targets: dict[int, list[int]] = defaultdict(list)
+    for source, target, automatic, _ in edges:
+        if automatic and source is not None and target is not None:
+            source_edge_targets[source].append(target)
+    for target in sorted(list(remaining_report)):
+        target_row = report_rows[target]
+        if compact(target_row.result_raw) not in {
+            "",
+            "——",
+            "/",
+            "符合要求",
+            "不符合要求",
+        }:
+            continue
+        if target_row.unit_context or re.search(
+            r"单位\s*[:：]|阻抗|实测|测量值", target_row.requirement_raw
+        ):
+            # Numeric measurement rows use a placeholder when the value is in
+            # a separate physical cell.  They belong to the numeric ledger,
+            # not to the status-row structural mapper.
+            continue
+        anchor = ""
+        for prior in range(target, -1, -1):
+            anchor = _leading_subclause(report_rows[prior].requirement_raw)
+            if anchor:
+                break
+        candidates: list[tuple[int, int, int]] = []
+        for source in range(len(source_rows)):
+            if source not in source_edge_targets:
+                continue
+            source_clause = str(source_rows[source].get("clause") or "")
+            structural = bool(anchor and _source_matches_report_anchor(source_clause, anchor))
+            textual = bool(
+                _requirements_uniquely_correspond(
+                    str(source_rows[source].get("requirement") or ""),
+                    target_row.requirement_raw,
+                )
+                or _requirements_highly_similar(
+                    str(source_rows[source].get("requirement") or ""),
+                    target_row.requirement_raw,
+                )
+            )
+            if not structural and not textual:
+                continue
+            distance = min(abs(target - existing) for existing in source_edge_targets[source])
+            blank_penalty = int(source_rows[source].get("status") is None)
+            candidates.append((blank_penalty, distance, source))
+        if not candidates:
+            continue
+        _, _, source = min(candidates)
+        edges.append(
+            (
+                source,
+                target,
+                True,
+                "clause_range_and_unique_one_record_row_to_many_report_rows",
+            )
+        )
+        remaining_report.discard(target)
+
     edges.extend(
         (source, None, False, "record_requirement_not_uniquely_mapped")
         for source in sorted(remaining_source)
@@ -1158,7 +1616,19 @@ def _conclusion_check(
     source_rows: Sequence[Mapping[str, Any]],
     report_rows: Sequence[ReportRow],
 ) -> dict[str, Any]:
-    statuses = [row.get("status") for row in source_rows]
+    statuses = [
+        "不适用"
+        if row.get("status_reason_code") == "void_or_crossed_out_slash"
+        else row.get("status")
+        for row in source_rows
+    ]
+    if any(row.get("status_reason_code") == "status_box_blank" for row in source_rows):
+        return {
+            "decision": "mismatch",
+            "reason_code": "record_status_blank",
+            "expected": None,
+            "observed": expected_report_conclusion([row.result_raw for row in report_rows]),
+        }
     if "不符合" in statuses:
         # An explicit nonconforming source row already determines the group
         # conclusion, even if a different row still needs manual recognition.
@@ -1171,7 +1641,14 @@ def _conclusion_check(
     observed = expected_report_conclusion(report_results)
     if expected is None:
         decision = "manual"
-        reason = "record_sequence_status_unresolved"
+        reason = (
+            "record_status_near_checkbox_unresolved"
+            if any(
+                row.get("status_reason_code") == "status_mark_near_checkbox_unresolved"
+                for row in source_rows
+            )
+            else "record_sequence_status_unresolved"
+        )
     elif observed == "<检验结果缺失>":
         decision = "manual"
         reason = "report_sequence_result_missing"
@@ -1274,11 +1751,48 @@ def _effective_report_group_result(
     return None, row_ids, "split_report_rows_unresolved"
 
 
+def _numeric_mapping_covered(
+    source: Mapping[str, Any] | None,
+    target: ReportRow | None,
+    *,
+    automatic: bool,
+    numeric_clause: str | None,
+) -> bool:
+    """Identify structural rows already covered by a numeric block ledger.
+
+    The validated numeric blocks have their own physical-cell ledger.  Their
+    Report measurement rows do not have a one-to-one status-row counterpart;
+    repeating those rows in the text mapper creates manual findings for table
+    headers, placeholders, and section-level Record rows.  Suppress only a
+    one-sided, unresolved edge in a sequence whose clauses belong to the same
+    numeric block.  A paired row, an unknown Record status, a non-placeholder
+    Report result, or an explicitly nonconforming status remains in the normal
+    status comparison path.
+    """
+
+    if automatic or not numeric_clause:
+        return False
+    if source is not None:
+        source_clause = _clause_token(str(source.get("clause") or ""))
+        if not source_clause or not _clause_compatible(source_clause, numeric_clause):
+            return False
+        if source.get("status") not in {"符合", "不适用"}:
+            return False
+    if target is not None:
+        if compact(target.result_raw) not in {"", "——", "/"}:
+            return False
+        target_clause = _clause_token(target.clause_raw)
+        if target_clause and not _clause_compatible(target_clause, numeric_clause):
+            return False
+    return source is None or target is None
+
+
 def _status_ledger(
     record_rows: list[dict[str, Any]],
     report_rows: Sequence[ReportRow],
     *,
     excluded_target_row_ids: set[str] | None = None,
+    numeric_sequence_clauses: Mapping[int, str] | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -1288,6 +1802,7 @@ def _status_ledger(
 ]:
     source_by_sequence = _assign_record_rows_to_sequences(record_rows, report_rows)
     excluded_target_row_ids = excluded_target_row_ids or set()
+    numeric_sequence_clauses = numeric_sequence_clauses or {}
     all_report_by_sequence: dict[int, list[ReportRow]] = defaultdict(list)
     report_by_sequence: dict[int, list[ReportRow]] = defaultdict(list)
     for row in report_rows:
@@ -1311,6 +1826,23 @@ def _status_ledger(
                 f"target={len(context_targets)}"
             )
         edges = _mapping_edges(sources, targets)
+        merged_groups: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"sources": [], "targets": []}
+        )
+        for source, target, automatic, method in edges:
+            if not automatic or source is None or target is None:
+                continue
+            if method.startswith("clause_range_and_explicit_subclause_group:"):
+                group_key = method.split(":", 1)[1]
+            elif method == "clause_range_and_unique_many_record_rows_to_one_report_row":
+                group_key = f"many:{target.row_id}"
+            else:
+                continue
+            merged_groups[group_key]["sources"].append(source)
+            if target.row_id not in {
+                row.row_id for row in merged_groups[group_key]["targets"]
+            }:
+                merged_groups[group_key]["targets"].append(target)
         one_to_many_targets: dict[str, list[ReportRow]] = defaultdict(list)
         for source, target, automatic, method in edges:
             if (
@@ -1329,7 +1861,23 @@ def _status_ledger(
             source_context = source if source is not None else sources[0]
             target_context = target if target is not None else (targets or context_targets)[0]
             comparison: dict[str, Any]
-            if not automatic:
+            if _numeric_mapping_covered(
+                source,
+                target,
+                automatic=automatic,
+                numeric_clause=numeric_sequence_clauses.get(sequence),
+            ):
+                disposition = "not_applicable"
+                reason_code = "numeric_block_row_mapping_covered_by_numeric_ledger"
+                comparison = {
+                    "decision": "not_applicable",
+                    "reason_code": reason_code,
+                    "covered_numeric_clause": numeric_sequence_clauses.get(sequence),
+                    "record_status": source.get("status") if source is not None else None,
+                    "report_result": target.result_raw if target is not None else None,
+                    "mapping_method": method,
+                }
+            elif not automatic:
                 disposition = "manual"
                 reason_code = _mapping_reason_code(
                     source,
@@ -1349,13 +1897,83 @@ def _status_ledger(
             elif source is None or target is None:
                 raise ValueError("automatic status mapping cannot be one-sided")
             elif source["status"] is None:
-                disposition = "manual"
                 reason_code = source["status_reason_code"]
+                if reason_code == "status_box_blank":
+                    disposition = "mismatch"
+                    comparison = {
+                        "decision": "mismatch",
+                        "reason_code": "record_status_blank",
+                        "record_status": None,
+                        "report_result": target.result_raw,
+                    }
+                    reason_code = "record_status_blank"
+                elif reason_code == "void_or_crossed_out_slash" and compact(target.result_raw) in {"/", "——"}:
+                    disposition = "matched"
+                    comparison = compare_record61_status_result("不适用", target.result_raw).to_dict()
+                    reason_code = "status_result_matched"
+                else:
+                    # A near-checkbox mark, an ambiguous mark, or an
+                    # unrecognised crossed-out cell remains manual.
+                    disposition = "manual"
+                    comparison = {
+                        "decision": "manual",
+                        "reason_code": reason_code,
+                        "record_status": None,
+                        "report_result": target.result_raw,
+                    }
+            elif method.startswith("clause_range_and_explicit_subclause_group:") or method == (
+                "clause_range_and_unique_many_record_rows_to_one_report_row"
+            ):
+                group_key = (
+                    method.split(":", 1)[1]
+                    if method.startswith("clause_range_and_explicit_subclause_group:")
+                    else f"many:{target.row_id}"
+                )
+                group = merged_groups[group_key]
+                group_expected = expected_report_conclusion_from_record_statuses(
+                    [row.get("status") for row in group["sources"]],
+                    mode="9706.1",
+                )
+                group_observed = expected_report_conclusion(
+                    [row.result_raw for row in group["targets"]]
+                )
+                expected_result = {
+                    "符合": "<actual-or-conforming>",
+                    "不符合": "不符合要求",
+                    "/": "——",
+                }.get(group_expected)
+                observed_result = {
+                    "符合": "符合要求",
+                    "不符合": "不符合要求",
+                    "/": "/",
+                }.get(group_observed)
+                if group_expected is None:
+                    disposition = "manual"
+                    reason_code = "merged_record_status_group_unresolved"
+                    decision = "manual"
+                elif group_observed == group_expected:
+                    disposition = "matched"
+                    reason_code = "merged_record_status_group_matched"
+                    decision = "match"
+                else:
+                    disposition = "mismatch"
+                    reason_code = "merged_record_status_group_mismatch"
+                    decision = "mismatch"
                 comparison = {
-                    "decision": "manual",
+                    "decision": decision,
                     "reason_code": reason_code,
-                    "record_status": None,
+                    "expected": expected_result,
+                    "observed": observed_result,
+                    "record_status": source["status"],
                     "report_result": target.result_raw,
+                    "report_result_effective": observed_result,
+                    "result_aggregation": "merged_record_status_group",
+                    "contributing_source_row_ids": [
+                        row["row_id"] for row in group["sources"]
+                    ],
+                    "contributing_target_row_ids": [
+                        row.row_id for row in group["targets"]
+                    ],
                 }
             else:
                 if method == "clause_range_and_unique_one_record_row_to_many_report_rows":
@@ -1454,7 +2072,10 @@ def _status_ledger(
                         "automatic": automatic,
                         "method": method,
                         "resolution": (
-                            "matched"
+                            "numeric_ledger_covered"
+                            if disposition == "not_applicable"
+                            and reason_code == "numeric_block_row_mapping_covered_by_numeric_ledger"
+                            else "matched"
                             if automatic
                             else "record_row_missing"
                             if source is None
@@ -3068,6 +3689,48 @@ def _identity_ledger(
     return ledger, coverage_entries, source_ids, target_ids
 
 
+def _exclude_record_cover_identity_scope(
+    ledger: list[dict[str, Any]],
+    coverage: list[CoverageEntry],
+) -> tuple[list[dict[str, Any]], list[CoverageEntry]]:
+    """Keep Record-cover identity rows traceable without reviewing them.
+
+    The active 2948 scope intentionally excludes the five Record-cover fields
+    (the user's Q1–Q5).  They remain in the conserved ledger as explicit
+    ``excluded`` entries so the source/target inventory is not silently
+    dropped, but they cannot contribute manual/error findings or pending-review
+    counts.
+    """
+
+    reason_code = "record_cover_identity_excluded_by_user_scope"
+    excluded: list[dict[str, Any]] = []
+    for entry in ledger:
+        item = dict(entry)
+        item["disposition"] = "excluded"
+        item["reason_code"] = reason_code
+        comparison = dict(item.get("comparison") or {})
+        comparison.update(
+            {
+                "decision": "not_applicable",
+                "reason_code": reason_code,
+                "scope": "record_cover_q1_q5_excluded",
+            }
+        )
+        item["comparison"] = comparison
+        excluded.append(item)
+    excluded_coverage = [
+        CoverageEntry(
+            entry.source_row_id,
+            entry.target_row_id,
+            "excluded",
+            reason_code,
+            (),
+        )
+        for entry in coverage
+    ]
+    return excluded, excluded_coverage
+
+
 def _scope_118_entry(
     record_document: fitz.Document,
     report_row: ReportRow,
@@ -3333,12 +3996,28 @@ def run_record_61_full(
     with fitz.open(record_path) as record_document, fitz.open(report_path) as report_document:
         record_status_rows, extraction = extract_record_61_status_rows(record_document)
         known_numeric_target_ids = _numeric_report_target_row_ids(report_body_rows)
+        numeric_sequence_clauses: dict[int, str] = {}
+        numeric_sequence_conflicts: set[int] = set()
+        for block, targets in _numeric_report_targets(report_body_rows).items():
+            for target_info in targets:
+                sequence = int(target_info["row"].sequence)
+                existing = numeric_sequence_clauses.get(sequence)
+                if existing is None:
+                    numeric_sequence_clauses[sequence] = block
+                elif existing != block:
+                    numeric_sequence_conflicts.add(sequence)
+        for sequence in numeric_sequence_conflicts:
+            numeric_sequence_clauses.pop(sequence, None)
         numeric_discovery_targets = _numeric_discovery_targets(report_body_rows, known_numeric_target_ids)
         numeric_discovery_ledger, numeric_discovery_coverage, numeric_discovery_source_ids = _numeric_discovery_ledger(
             numeric_discovery_targets, record_status_rows
         )
         identity_ledger, identity_coverage, identity_source_ids, identity_target_ids = _identity_ledger(
             record_document, report_document, derived_output_dir
+        )
+        identity_ledger, identity_coverage = _exclude_record_cover_identity_scope(
+            identity_ledger,
+            identity_coverage,
         )
         (
             status_ledger,
@@ -3350,6 +4029,7 @@ def run_record_61_full(
             record_status_rows,
             report_body_rows,
             excluded_target_row_ids=known_numeric_target_ids | {row.row_id for row in numeric_discovery_targets},
+            numeric_sequence_clauses=numeric_sequence_clauses,
         )
         report_number = extract_report_number(report_document[0].get_text("text"))
         numeric_ledger, numeric_coverage, numeric_summary, numeric_source_ids = _numeric_ledger(
@@ -3470,7 +4150,7 @@ def run_record_61_full(
         },
         "scope": {
             "included": [
-                "Record page-1 identity fields",
+                "Record page-1 identity fields (retained as excluded; Q1–Q5 not reviewed)",
                 "Record physical pages 6-96 / all 851 status rows",
                 "Record/Report page, table-header and template-structure validation",
                 "Report sequences 1-117 with bidirectional row coverage",

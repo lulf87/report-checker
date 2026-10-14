@@ -94,6 +94,36 @@ def _json_images(result: object) -> Iterable[str]:
                     yield item["image"]
 
 
+def _material_pdf_path(raw_path: str, material_root: Path) -> Path | None:
+    """Resolve a declared material PDF after a project directory move.
+
+    Older result JSON files store absolute paths.  When the project is moved
+    (for example from ``Documents`` into an iCloud archive), those paths no
+    longer exist even though the same file is still present below the current
+    ``素材`` directory.  Only a candidate that resolves under the current
+    material root and is an existing PDF is accepted.
+    """
+    raw = Path(raw_path).expanduser()
+    candidates: list[Path] = [raw]
+    parts = raw.parts
+    try:
+        marker = parts.index(material_root.name)
+    except ValueError:
+        marker = -1
+    if marker >= 0:
+        candidates.append(material_root.joinpath(*parts[marker + 1 :]))
+
+    for candidate in candidates:
+        resolved = _resolved(candidate)
+        if (
+            resolved.is_file()
+            and resolved.suffix.lower() == ".pdf"
+            and _under(resolved, material_root)
+        ):
+            return resolved
+    return None
+
+
 def build_allowlist(project_root: Path = PROJECT_ROOT, mode: str = "upload") -> dict[str, Path]:
     """Build the exact URL-to-file mapping for ``upload`` or ``real`` mode."""
     project_root = _resolved(Path(project_root))
@@ -141,12 +171,10 @@ def build_allowlist(project_root: Path = PROJECT_ROOT, mode: str = "upload") -> 
                 continue
             _add(mapping, f"/{run_rel}/{image_rel}", run_root / image_rel, root=run_root)
         for raw_path in _json_paths(result):
-            material_path = Path(raw_path).expanduser()
-            if not material_path.is_absolute():
+            material_path = _material_pdf_path(raw_path, material_root)
+            if material_path is None:
                 continue
-            if not _under(material_path, material_root) or material_path.suffix.lower() != ".pdf":
-                continue
-            material_rel = material_path.resolve().relative_to(material_root).as_posix()
+            material_rel = material_path.relative_to(_resolved(material_root)).as_posix()
             _add(mapping, f"/素材/{material_rel}", material_path, root=material_root)
     return mapping
 

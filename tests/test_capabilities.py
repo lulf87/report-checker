@@ -40,6 +40,14 @@ class CapabilityCatalogTests(unittest.TestCase):
             "PTR_NOT_VALIDATED",
         )
         self.assertEqual(MODE_CATALOG["report_ptr"]["rule_ids"], ("PTR-P01",))
+        self.assertEqual(
+            {slot["role"]: slot["field"] for slot in MODE_CATALOG["report_ptr"]["input_contract"]["slots"]},
+            {"report": "report_document_id", "ptr": "ptr_document_id"},
+        )
+        self.assertEqual(
+            MODE_CATALOG["report_ptr"]["result_contract"]["schema_version"],
+            "ptr-report-result-0.1",
+        )
         self.assertFalse(MODE_CATALOG["report_ptr_report"]["enabled"])
         self.assertEqual(
             MODE_CATALOG["report_ptr_report"]["disabled_reason_code"],

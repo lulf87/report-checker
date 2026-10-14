@@ -222,7 +222,12 @@ def _fail_running_run(store: RunStore, run_id: str, code: str, message: str) -> 
             pass
 
 
-def _verify_input_snapshot(run: dict[str, Any], report: Path, record: Path | None) -> None:
+def _verify_input_snapshot(
+    run: dict[str, Any],
+    report: Path,
+    record: Path | None,
+    ptr: Path | None = None,
+) -> None:
     snapshot = run.get("input_snapshot") or {}
     if not snapshot or any(item.get("unresolved") for item in snapshot.values() if isinstance(item, dict)):
         return
@@ -232,6 +237,8 @@ def _verify_input_snapshot(run: dict[str, Any], report: Path, record: Path | Non
             paths["record_9706_1"] = record
         if "record_9706_202" in snapshot:
             paths["record_9706_202"] = record
+    if ptr is not None:
+        paths["ptr"] = ptr
     for role, item in snapshot.items():
         if role not in paths or not isinstance(item, dict):
             raise RunStoreError("RUN_INPUT_SNAPSHOT_INVALID", "Run 输入快照缺少可执行文件引用")
@@ -260,6 +267,7 @@ def execute_persisted_run(
     report_path: str | Path,
     output_dir: str | Path,
     record_path: str | Path | None = None,
+    ptr_path: str | Path | None = None,
     timeout_seconds: int = 3600,
     python_executable: str | None = None,
 ) -> dict[str, Any]:
@@ -279,6 +287,7 @@ def execute_persisted_run(
     report = Path(report_path).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     record = Path(record_path).expanduser().resolve() if record_path is not None else None
+    ptr = Path(ptr_path).expanduser().resolve() if ptr_path is not None else None
     if output.exists():
         error = CoordinatorError(f"Refusing to overwrite existing Run output: {output}")
         store.transition_run(run_id, "running")
@@ -292,7 +301,7 @@ def execute_persisted_run(
         _fail_running_run(store, run_id, "WORK_DIRECTORY_ALREADY_EXISTS", str(error))
         raise error
     try:
-        _verify_input_snapshot(run, report, record)
+        _verify_input_snapshot(run, report, record, ptr)
     except RunStoreError as error:
         # A queued Run needs one explicit lifecycle transition before the
         # stable input failure can be recorded.
@@ -304,6 +313,7 @@ def execute_persisted_run(
         mode=run["mode"],
         report_path=report,
         record_path=record,
+        ptr_path=ptr,
         output_dir=work_output,
         preflight_plan_hash=run["preflight_plan_hash"],
         rule_bundle_id=run["rule_bundle_id"],

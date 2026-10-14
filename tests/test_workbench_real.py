@@ -16,6 +16,18 @@ ROOT = Path(__file__).resolve().parents[1]
 HTML_PATH = ROOT / "docs" / "prototypes" / "workbench-real.html"
 
 
+def _resolve_material_path(raw_path: str) -> Path:
+    """Resolve result paths after the project directory has moved."""
+    path = Path(raw_path).expanduser()
+    if path.is_file():
+        return path
+    try:
+        marker = path.parts.index("素材")
+    except ValueError:
+        return path
+    return ROOT / "素材" / Path(*path.parts[marker + 1 :])
+
+
 def _module_source(html: str) -> str:
     match = re.search(
         r"<script\b[^>]*\btype=[\"']module[\"'][^>]*>(.*?)</script\s*>",
@@ -112,7 +124,7 @@ class RealWorkbenchTests(unittest.TestCase):
                         {"role", "path", "sha256", "size"},
                     )
                     self.assertEqual([item["role"] for item in result["files"]], ["report"])
-                    source_path = Path(result["files"][0]["path"])
+                    source_path = _resolve_material_path(result["files"][0]["path"])
                     self.assertTrue(source_path.is_file(), source_path)
                     self.assertEqual(source_path.suffix.lower(), ".pdf")
                     self.assertTrue(all(item["unchanged"] for item in result["source_integrity"]))
@@ -195,7 +207,7 @@ class RealWorkbenchTests(unittest.TestCase):
                 )
                 self.assertEqual(set(result.get("source_files", {})), {"report", "record"})
                 for source in result["source_files"].values():
-                    source_path = Path(source["path"])
+                    source_path = _resolve_material_path(source["path"])
                     self.assertTrue(source_path.is_file(), source_path)
                     self.assertEqual(source_path.suffix.lower(), ".pdf")
 
@@ -305,8 +317,8 @@ class RealWorkbenchTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(result_2795["status_counts"]["error"], 21)
-        self.assertEqual(result_2795["ledger_status_counts"]["error"], 44)
+        self.assertEqual(result_2795["status_counts"]["error"], 5)
+        self.assertEqual(result_2795["ledger_status_counts"]["error"], 28)
 
         result_1347 = json.loads(
             (HTML_PATH.parent / entries["1347-record61"]["resultPath"]).resolve().read_text(
@@ -428,6 +440,23 @@ class RealWorkbenchTests(unittest.TestCase):
             r"fetch\([\s\S]{0,1800}method\s*:\s*[\"']POST[\"']",
             "upload/run writes must use explicit POST requests",
         )
+
+    def test_api_uploaded_pdf_keeps_original_filename_in_viewer(self) -> None:
+        self.assertIn(
+            "const label = basename(sourceFile) || fallbackLabel;",
+            self.module_source,
+        )
+        self.assertNotIn(
+            "const label = basename(sourceFile?.path) || fallbackLabel;",
+            self.module_source,
+        )
+
+    def test_report_self_ui_expands_aggregated_r07_and_explains_manual_review(self) -> None:
+        self.assertIn("function displayFindings()", self.module_source)
+        self.assertIn('finding?.id === "REPORT-R07"', self.module_source)
+        self.assertIn('id: `${finding.id}-ITEM-${sequence}`', self.module_source)
+        self.assertIn("function manualReviewText(finding)", self.module_source)
+        self.assertIn("复核要点：", self.html)
 
     def test_upload_mode_contract_maps_roles_and_keeps_ptr_disabled(self) -> None:
         source = self.module_source

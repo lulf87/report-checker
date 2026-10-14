@@ -370,6 +370,10 @@ def _compare_strict_status(
         return ComparisonResult("mismatch", "report_result_missing", expected, None)
     if expected == "<actual-or-conforming>":
         matched = observed == "符合要求" or is_actual_report_result(observed)
+    elif expected == "——" and observed == "/":
+        # A Report slash is the fixed-template rendering of the same
+        # not-applicable state that is sometimes printed as a long dash.
+        matched = True
     else:
         matched = observed == expected
     return ComparisonResult(

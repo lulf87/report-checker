@@ -265,6 +265,7 @@ class FullRecord61Tests(unittest.TestCase):
                 entry["entry_id"]
                 for entry in result["ledger"]
                 if entry["disposition"] == "mismatch"
+                and entry["reason_code"] != "record_status_blank"
             }
             for sample, result in self.results.items()
         }
@@ -277,6 +278,84 @@ class FullRecord61Tests(unittest.TestCase):
                 "RECORD61-BODY-S052-E038",
                 "RECORD61-BODY-S061-E008",
             },
+        )
+        for sample, result in self.results.items():
+            with self.subTest(sample=sample):
+                identity = [
+                    entry for entry in result["ledger"] if entry["rule_id"] == "RECORD61-IDENTITY"
+                ]
+                self.assertEqual(len(identity), 5)
+                self.assertTrue(all(entry["disposition"] == "excluded" for entry in identity))
+                self.assertTrue(
+                    all(
+                        entry["reason_code"] == "record_cover_identity_excluded_by_user_scope"
+                        for entry in identity
+                    )
+                )
+
+    def test_2948_cross_row_status_mark_binds_to_the_next_checkbox_row(self) -> None:
+        entry = next(
+            item
+            for item in self.results["2948"]["ledger"]
+            if item["entry_id"] == "RECORD61-BODY-S041-E004"
+        )
+        self.assertEqual(entry["record"]["status"], "不适用")
+        self.assertEqual(entry["record"]["selected_columns"], [2])
+        self.assertEqual(entry["disposition"], "matched")
+        self.assertEqual(entry["reason_code"], "status_result_matched")
+        conclusion = next(
+            item
+            for item in self.results["2948"]["ledger"]
+            if item["entry_id"] == "RECORD61-CONCLUSION-S041"
+        )
+        self.assertEqual(conclusion["disposition"], "matched")
+        self.assertNotEqual(conclusion["reason_code"], "record_status_blank")
+
+    def test_unresolved_blank_status_is_manual_at_row_and_sequence_levels(self) -> None:
+        row = {
+            "status": None,
+            "status_reason_code": "status_box_blank",
+        }
+        report = ReportRow(
+            row_id="report:test:s001",
+            sequence=1,
+            row_ordinal=1,
+            pdf_page=1,
+            project_raw="",
+            clause_raw="1",
+            requirement_raw="",
+            result_raw="符合要求",
+            conclusion_raw="",
+            unit_context=None,
+            condition_tokens=(),
+            requirement_rect=None,
+            result_rect=(1.0, 1.0, 2.0, 2.0),
+            conclusion_rect=None,
+        )
+        comparison = _conclusion_check([row], [report])
+        self.assertEqual(comparison["decision"], "mismatch")
+        self.assertEqual(comparison["reason_code"], "record_status_blank")
+
+    def test_2948_status_semantics_for_void_blank_and_near_checkbox_marks(self) -> None:
+        ledger = {item["entry_id"]: item for item in self.results["2948"]["ledger"]}
+        void = ledger["RECORD61-BODY-S022-E001"]
+        self.assertEqual(void["record"]["status"], "不适用")
+        self.assertEqual(void["reason_code"], "status_result_matched")
+        self.assertEqual(void["report"]["result"], "/")
+
+        blank = ledger["RECORD61-BODY-S075-E004"]
+        self.assertEqual(blank["disposition"], "mismatch")
+        self.assertEqual(blank["reason_code"], "record_status_blank")
+
+        self.assertEqual(ledger["RECORD61-CONCLUSION-S091"]["disposition"], "matched")
+        self.assertEqual(ledger["RECORD61-CONCLUSION-S093"]["disposition"], "matched")
+
+        near = ledger["RECORD61-BODY-S103-E001"]
+        self.assertEqual(near["disposition"], "manual")
+        self.assertEqual(near["reason_code"], "status_mark_near_checkbox_unresolved")
+        self.assertEqual(
+            ledger["RECORD61-CONCLUSION-S103"]["reason_code"],
+            "record_status_near_checkbox_unresolved",
         )
 
     def test_nonpassing_rows_have_real_two_sided_locations_and_no_report_rules(self) -> None:

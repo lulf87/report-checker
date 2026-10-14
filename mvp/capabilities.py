@@ -11,6 +11,12 @@ import hashlib
 import json
 from typing import Any
 
+from mvp.ptr_report_contract import (
+    PTR_P01_RULE_VERSION,
+    mode_input_contract_payload,
+    mode_result_contract_payload,
+)
+
 
 DOCUMENT_ROLES = (
     "report",
@@ -101,6 +107,9 @@ MODE_CATALOG: dict[str, dict[str, Any]] = {
         "runner": None,
         "disabled_reason_code": "PTR_NOT_VALIDATED",
         "disabled_message": "PTR 检查尚未启用",
+        "input_contract": mode_input_contract_payload("report_ptr"),
+        "result_contract": mode_result_contract_payload("report_ptr"),
+        "result_contract_schema_version": "ptr-report-result-0.1",
     },
     "report_ptr_report": {
         "label": "PTR + Report 组合比对",
@@ -113,6 +122,9 @@ MODE_CATALOG: dict[str, dict[str, Any]] = {
         "runner": None,
         "disabled_reason_code": "PTR_NOT_VALIDATED",
         "disabled_message": "PTR + Report 组合模式尚未启用；PTR 证据链未完成验证",
+        "input_contract": mode_input_contract_payload("report_ptr_report"),
+        "result_contract": mode_result_contract_payload("report_ptr_report"),
+        "result_contract_schema_version": "ptr-report-result-0.1",
     },
     "report_diff": {
         "label": "Report 差异模式",
@@ -573,7 +585,7 @@ RULE_CATALOG: dict[str, dict[str, Any]] = {
     "PTR-P01": {
         "label": "PTR 声明范围与正文覆盖",
         "title": "PTR 声明范围与正文覆盖",
-        "version": None,
+        "version": PTR_P01_RULE_VERSION,
         "source": "mode_specific",
         "required_component_ids": (),
         "family": "ptr",
@@ -587,7 +599,7 @@ RULE_CATALOG: dict[str, dict[str, Any]] = {
 
 
 def _mode_payload(mode_id: str, mode: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(mode)
+    payload = deepcopy(mode)
     payload["id"] = mode_id
     for field in ("required_roles", "forbidden_roles", "rule_ids"):
         payload[field] = list(payload[field])

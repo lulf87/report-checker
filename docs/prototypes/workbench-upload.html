@@ -197,9 +197,9 @@
             <span class="hint">必选。文件在本机状态服务完成 PDF 预检后才会创建 Document。</span>
           </div>
           <div class="field" id="record-field" hidden>
-            <label for="record-file">Record PDF</label>
+            <label id="record-file-label" for="record-file">Record PDF</label>
             <input id="record-file" data-role="record-file" type="file" accept="application/pdf,.pdf">
-            <span class="hint">9706.1 与 9706.202 模式必选，角色按所选模式提交。</span>
+            <span class="hint" id="record-file-hint">9706.1 与 9706.202 模式必选，角色按所选模式提交。</span>
           </div>
         </div>
         <div class="actions">
@@ -304,9 +304,9 @@
 
     const MODE_META = Object.freeze({
       self: { apiMode: "report_self", label: "Report 自检", recordRole: null, note: "Report 自检只需要上传 Report。" },
-      ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", disabled: true, note: "PTR 检查尚未启用（PTR_NOT_VALIDATED）。" },
-      record61: { apiMode: "report_record_9706_1", label: "Report + GB 9706.1 Record", recordRole: "record_9706_1", note: "需要同时上传 Report 与 9706.1 Record。" },
-      record202: { apiMode: "report_record_9706_202", label: "Report + GB 9706.202 Record", recordRole: "record_9706_202", note: "需要同时上传 Report 与 9706.202 Record。" }
+      ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", inputField: "ptr_document_id", documentLabel: "PTR", disabled: true, note: "PTR 检查尚未启用（PTR_NOT_VALIDATED）。" },
+      record61: { apiMode: "report_record_9706_1", label: "Report + GB 9706.1 Record", recordRole: "record_9706_1", inputField: "record_document_id", documentLabel: "Record", note: "需要同时上传 Report 与 9706.1 Record。" },
+      record202: { apiMode: "report_record_9706_202", label: "Report + GB 9706.202 Record", recordRole: "record_9706_202", inputField: "record_document_id", documentLabel: "Record", note: "需要同时上传 Report 与 9706.202 Record。" }
     });
     const STATUS_LABELS = Object.freeze({ pass: "一致", warning: "警示", manual: "待复核", error: "问题" });
 
@@ -317,6 +317,8 @@
     const reportFile = document.getElementById("report-file");
     const recordField = document.getElementById("record-field");
     const recordFile = document.getElementById("record-file");
+    const recordFileLabel = document.getElementById("record-file-label");
+    const recordFileHint = document.getElementById("record-file-hint");
     const modeNote = document.getElementById("mode-note");
     const submitButton = document.getElementById("submit-upload");
     const formMessage = document.getElementById("form-message");
@@ -369,6 +371,11 @@
       const needsRecord = Boolean(mode.recordRole);
       recordField.hidden = !needsRecord;
       recordFile.required = needsRecord;
+      const documentLabel = mode.documentLabel || "Record";
+      recordFileLabel.textContent = `${documentLabel} PDF`;
+      recordFileHint.textContent = mode.recordRole === "ptr"
+        ? "PTR 模式使用 ptr_document_id 角色槽；能力启用后才允许创建 Run。"
+        : "9706.1 与 9706.202 模式必选，角色按所选模式提交。";
       modeNote.textContent = mode.note;
       if (!needsRecord) recordFile.value = "";
       if (mode.disabled) {
@@ -905,7 +912,7 @@
         if (record) {
           setMessage("正在上传 Record…");
           recordDoc = await uploadDocument(caseData.id, mode.recordRole, record);
-          inputs.record_document_id = recordDoc.id;
+          inputs[mode.inputField || "record_document_id"] = recordDoc.id;
         }
         setMessage("正在预检规则计划…");
         const preflight = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs:preflight`, {

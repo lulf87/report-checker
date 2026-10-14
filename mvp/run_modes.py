@@ -43,6 +43,7 @@ def run_mode(
     report_path: str | Path,
     output_dir: str | Path,
     record_path: str | Path | None = None,
+    ptr_path: str | Path | None = None,
 ) -> dict[str, Any]:
     decision = validate_mode(mode, operation="runner")
     if not decision["enabled"]:
@@ -62,11 +63,30 @@ def run_mode(
             str(capability.get("disabled_message", "该模式尚未启用")),
         )
     if mode == "report_self":
-        if record_path is not None:
+        if record_path is not None or ptr_path is not None:
             raise ValueError("report_self accepts only a Report input")
         return run_report_self(report_path=report_path, output_dir=output_dir)
+    required_roles = tuple(capability["required_roles"])
+    if "ptr" in required_roles:
+        if ptr_path is None:
+            raise ValueError(f"{mode} requires its PTR input")
+        if record_path is not None:
+            raise ValueError(f"{mode} accepts PTR, not a Record input")
+        # The capability is intentionally disabled today. Keep the explicit
+        # branch so a future runner cannot accidentally consume a Record path
+        # under the PTR contract.
+        runner = capability.get("runner")
+        if not runner:
+            raise ModeDisabledError(
+                mode,
+                str(capability.get("disabled_reason_code")),
+                str(capability.get("disabled_message", "该模式尚未启用")),
+            )
+        raise ValueError(f"{mode} runner contract is not registered")
     if record_path is None:
         raise ValueError(f"{mode} requires its Record input")
+    if ptr_path is not None:
+        raise ValueError(f"{mode} accepts a Record input, not PTR")
     return run_full_records(
         mode=mode,
         report_path=report_path,
@@ -80,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", required=True, choices=tuple(MODE_CAPABILITIES))
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--record", type=Path)
+    parser.add_argument("--ptr", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     return parser
 
@@ -91,6 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.mode,
             report_path=args.report,
             record_path=args.record,
+            ptr_path=args.ptr,
             output_dir=args.output,
         )
     except ModeDisabledError as exc:

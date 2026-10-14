@@ -16,9 +16,15 @@ from typing import Any, Sequence
 from urllib.parse import parse_qs, quote, urlsplit
 from uuid import uuid4
 
-from mvp.capabilities import MODE_CATALOG, RULE_BUNDLE_ID, preflight_plan_hash, rule_bundle_sha256, validate_mode
+from mvp.capabilities import MODE_CATALOG, RULE_BUNDLE_ID, RULE_CATALOG, preflight_plan_hash, rule_bundle_sha256, validate_mode
 from mvp.capability_server import CapabilityRequestHandler
 from mvp.document_store import DocumentStore, MAX_FILE_BYTES
+from mvp.ptr_report_contract import (
+    PTR_REPORT_MODES,
+    copy_ptr_report_contract,
+    input_document_descriptors,
+    mode_input_contract_payload,
+)
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
 from mvp.run_store import RunStore, RunStoreError
 
@@ -95,14 +101,18 @@ class RunStateHTTPServer(ThreadingHTTPServer):
             inputs = run["inputs"]
             report_path = self.documents.source_path(inputs["report_document_id"])
             record_path = None
-            if run["mode"] != "report_self":
-                record_key = "record_document_id"
-                record_path = self.documents.source_path(inputs[record_key])
+            ptr_path = None
+            required_roles = MODE_CATALOG[run["mode"]]["required_roles"]
+            if "ptr" in required_roles:
+                ptr_path = self.documents.source_path(inputs["ptr_document_id"])
+            elif "record_9706_1" in required_roles or "record_9706_202" in required_roles:
+                record_path = self.documents.source_path(inputs["record_document_id"])
             execute_persisted_run(
                 self.store,
                 run_id,
                 report_path=report_path,
                 record_path=record_path,
+                ptr_path=ptr_path,
                 output_dir=self.output_root / run_id,
             )
         except (CoordinatorError, RunStoreError, OSError) as error:
@@ -399,7 +409,12 @@ class RunStateRequestHandler(CapabilityRequestHandler):
         normalized = self.server.store._normalize_inputs(mode, inputs)
         capability = MODE_CATALOG[mode]
         input_snapshot = {}
-        if capability["enabled"]:
+        # Keep the disabled PTR preflight useful: when real Documents are
+        # present, expose their hashes and page geometry; when a legacy test
+        # fixture uses unresolved IDs, preserve the same role-labelled shape
+        # without turning a disabled capability into a content error.
+        should_validate_inputs = bool(capability["enabled"] or mode in PTR_REPORT_MODES)
+        if should_validate_inputs:
             try:
                 input_snapshot = self.server.documents.validate_inputs(
                     case_id=case_id,
@@ -408,9 +423,51 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                 )
             except RunStoreError as error:
                 if not self.server.allow_unresolved_inputs or error.code != "DOCUMENT_NOT_FOUND":
-                    raise
-                input_snapshot = self._unresolved_snapshot(mode, normalized)
+                    if mode in PTR_REPORT_MODES and not capability["enabled"] and error.code == "DOCUMENT_NOT_FOUND":
+                        input_snapshot = self._unresolved_snapshot(mode, normalized)
+                    else:
+                        raise
+                else:
+                    input_snapshot = self._unresolved_snapshot(mode, normalized)
         enabled = bool(capability["enabled"])
+        mode_contract = None
+        if mode in PTR_REPORT_MODES:
+            input_contract = mode_input_contract_payload(mode)
+            input_documents = input_document_descriptors(mode, normalized, input_snapshot)
+            mode_contract = copy_ptr_report_contract(mode)
+            result_contract = mode_contract["result_contract"]
+        else:
+            input_contract = {
+                "schema_version": "run-input-contract-1.0",
+                "roles": list(capability["required_roles"]),
+                "slots": [
+                    {
+                        "role": role,
+                        "field": INPUT_ROLE_KEYS[role],
+                        "required": True,
+                        "multiplicity": "one",
+                        "immutable_after_run_creation": True,
+                    }
+                    for role in capability["required_roles"]
+                ],
+                "forbidden_roles": list(capability["forbidden_roles"]),
+                "pairing": "exactly_one_per_required_role",
+            }
+            input_documents = [
+                {
+                    "role": role,
+                    "input_field": INPUT_ROLE_KEYS[role],
+                    "document_id": (input_snapshot.get(role) or {}).get("document_id", normalized[INPUT_ROLE_KEYS[role]]),
+                    "blob_sha256": (input_snapshot.get(role) or {}).get("blob_sha256"),
+                    "page_count": (input_snapshot.get(role) or {}).get("page_count"),
+                    "page_geometry": (input_snapshot.get(role) or {}).get("page_geometry", []),
+                    "template_status": "unknown",
+                    "unresolved": bool((input_snapshot.get(role) or {}).get("unresolved")),
+                    "reason_code": "DOCUMENT_NOT_RESOLVED" if (input_snapshot.get(role) or {}).get("unresolved") else None,
+                }
+                for role in capability["required_roles"]
+            ]
+            result_contract = None
         result: dict[str, Any] = {
             "case_id": case_id,
             "mode": mode,
@@ -420,8 +477,10 @@ class RunStateRequestHandler(CapabilityRequestHandler):
             "planned_rules": [
                 {
                     "rule_id": rule_id,
-                    "rule_version": "1.0.0" if rule_id != "PTR-P01" else None,
-                    "source": "report_baseline" if rule_id.startswith("REPORT-") else "mode_specific",
+                    "rule_version": RULE_CATALOG.get(rule_id, {}).get("version"),
+                    "source": RULE_CATALOG.get(rule_id, {}).get(
+                        "source", "report_baseline" if rule_id.startswith("REPORT-") else "mode_specific"
+                    ),
                     "disposition": "ready" if enabled else "blocked",
                     "reason_code": None if enabled else capability.get("disabled_reason_code"),
                 }
@@ -434,9 +493,18 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                 "unsupported": 0,
                 "blocked": 0 if enabled else len(capability["rule_ids"]),
             },
-            "inputs": normalized,
+            # ``inputs`` is the role-labelled preflight response described by
+            # the API contract. Keep the request-shaped ID mapping under an
+            # explicit compatibility key so callers never have to infer a
+            # PTR/Report side from filenames.
+            "inputs": input_documents,
+            "input_ids": normalized,
+            "input_contract": input_contract,
+            "input_documents": input_documents,
+            "mode_contract": mode_contract,
             "input_snapshot": input_snapshot,
-            "blocking_issues": [] if enabled else ["PTR_NOT_VALIDATED"],
+            "result_contract": result_contract,
+            "blocking_issues": [] if enabled else [capability.get("disabled_reason_code") or "MODE_DISABLED"],
         }
         result["plan_hash"] = preflight_plan_hash(mode, normalized, input_snapshot)
         return result

@@ -34,7 +34,7 @@ class Record202ExpandedScopeTests(unittest.TestCase):
         self.assertEqual(coverage["categories"]["metadata"], len(RECORD202_METADATA_FIELDS))
         self.assertGreater(coverage["categories"]["numeric_target"], 0)
 
-    def test_mapping_objects_keep_actual_fields_and_strict_project_decision(self) -> None:
+    def test_mapping_objects_keep_actual_fields_and_project_alias_decision(self) -> None:
         mappings = [entry for entry in self.result["scope_ledger"] if entry["scope_category"] == "mapping"]
         self.assertEqual(len(mappings), 175)
         for entry in mappings:
@@ -50,8 +50,16 @@ class Record202ExpandedScopeTests(unittest.TestCase):
             for entry in mappings
             if entry["field_comparisons"]["project"]["reason_code"] == "project_difference"
         ]
-        self.assertTrue(differences)
-        self.assertTrue(all(entry["disposition"] == "mismatch" for entry in differences))
+        self.assertFalse(differences)
+        aliases = [
+            entry
+            for entry in mappings
+            if entry["field_comparisons"]["project"]["reason_code"] == "project_alias_match"
+        ]
+        self.assertEqual(len(aliases), 16)
+        self.assertTrue(
+            all(entry["field_comparisons"]["project"]["decision"] == "match" for entry in aliases)
+        )
 
     def test_numeric_targets_preserve_result_and_acceptance_text(self) -> None:
         targets = [entry for entry in self.result["scope_ledger"] if entry["scope_category"] == "numeric_target"]

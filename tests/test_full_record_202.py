@@ -93,9 +93,9 @@ class FullRecord202Tests(unittest.TestCase):
 
     def test_status_clustering_reduces_manual_rows_on_all_frozen_samples(self) -> None:
         expected_decisions = {
-            "1539": {"match": 151, "manual": 8, "mismatch": 16},
-            "2795": {"match": 144, "manual": 11, "mismatch": 20},
-            "2948": {"match": 145, "manual": 13, "mismatch": 17},
+            "1539": {"match": 165, "manual": 10},
+            "2795": {"match": 158, "manual": 13, "mismatch": 4},
+            "2948": {"match": 159, "manual": 15, "mismatch": 1},
         }
         manual_total = 0
         for sample, result in self.results.items():
@@ -123,7 +123,7 @@ class FullRecord202Tests(unittest.TestCase):
                         for key in ink
                     )
                 )
-        self.assertEqual(manual_total, 32)
+        self.assertEqual(manual_total, 38)
 
     def test_five_frozen_open_triangles_are_resolved_without_global_relaxation(self) -> None:
         expected = {
@@ -212,7 +212,7 @@ class FullRecord202Tests(unittest.TestCase):
             all(row["reason_code"] != "TABLE3_OUT_OF_SCOPE" for row in unresolved_status_rows)
         )
 
-    def test_frozen_requirement_identity_and_project_name_diagnostic(self) -> None:
+    def test_frozen_requirement_identity_and_project_name_alias(self) -> None:
         for sample, result in self.results.items():
             body = [row for row in result["ledger"] if row["entry_type"] == "body"]
             with self.subTest(sample=sample):
@@ -220,9 +220,35 @@ class FullRecord202Tests(unittest.TestCase):
                 project_differences = [
                     row for row in body if not row["mapping"]["project_name_match"]
                 ]
-                self.assertTrue(project_differences)
-                self.assertTrue(all(row["decision"] == "mismatch" for row in project_differences))
-                self.assertTrue(all(row["comparison"]["project"]["reason_code"] == "project_name_difference" for row in project_differences))
+                self.assertFalse(project_differences)
+                project_aliases = [
+                    row
+                    for row in body
+                    if row["comparison"]["project"]["reason_code"] == "project_name_alias_match"
+                ]
+                self.assertEqual(len(project_aliases), 16)
+                self.assertTrue(
+                    all(row["comparison"]["project"]["decision"] == "match" for row in project_aliases)
+                )
+
+    def test_item_14_project_name_alias_preserves_both_source_values(self) -> None:
+        comparison = _compare_one(
+            {
+                "project": "电压、电流或能量的限制",
+                "inks": [{"classified_symbol": "△"}],
+            },
+            [
+                {
+                    "project": "电压、电流和能量的限制",
+                    "result": "——",
+                    "requirement": "",
+                }
+            ],
+        )
+        self.assertEqual(comparison["decision"], "match")
+        self.assertEqual(comparison["project"]["reason_code"], "project_name_alias_match")
+        self.assertEqual(comparison["project"]["record_project"], "电压、电流或能量的限制")
+        self.assertEqual(comparison["project"]["report_projects"], ["电压、电流和能量的限制"])
 
         item1 = [
             row["record"]

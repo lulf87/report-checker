@@ -76,7 +76,7 @@ R02、R03、R04、R05、R06 的照片核对按样品对象适用性执行。备�
 - Record 24 页报告编号逐页核对；加上正文后，每份样本为 199 个 Record 覆盖对象和 177 个 Report 覆盖对象。
 - `√`、`×`、`△`、`/` 状态符号与 Report 结果严格映射；`×` 另外产生不符合警示。
 - 四种状态符号先由 `RECORD202-SYMBOLS` 核验；Record/Report 页码、表头和模板结构由 `RECORD202-STRUCTURE` 单独记录。
-- 每个正文单元严格比较 Record 与 Report 的项目名称；不一致进入 `mismatch`，证据不足进入 `manual`。
+- 每个正文单元比较 Record 与 Report 的项目名称；已冻结的“电压、电流或/和能量的限制”项目别名按等价处理并保留双方原文，其他名称差异进入 `mismatch`，证据不足进入 `manual`。
 - 唯一可机器读取的数值、单位换算、百分比抄录和百分比区间比较。
 - 表 2 中“见表 3”的状态行继续参加比对；表 3 文档、页面及从表 3 原始测量值重新计算结果不在本模式范围。
 
@@ -152,7 +152,7 @@ Run 生命周期已固定为 `queued → running → succeeded / failed / cancel
   --mode report_record_9706_1 \
   --report "/absolute/path/to/report.pdf" \
   --record "/absolute/path/to/gb9706.1-record.pdf" \
-  --output "output/full-records-complete-20260930/<sample>/report-record-9706-1"
+  --output "output/full-records-current-20261011/<sample>/report-record-9706-1"
 ```
 
 运行一份 GB 9706.202 Record：
@@ -162,7 +162,7 @@ Run 生命周期已固定为 `queued → running → succeeded / failed / cancel
   --mode report_record_9706_202 \
   --report "/absolute/path/to/report.pdf" \
   --record "/absolute/path/to/gb9706.202-record.pdf" \
-  --output "output/full-records-complete-20260930/<sample>/report-record-9706-202"
+  --output "output/full-records-current-20261011/<sample>/report-record-9706-202"
 ```
 
 每个单样本目录生成：
@@ -185,7 +185,7 @@ output/report-self-unified-20260930-v3/
 当前六份正式运行位于：
 
 ```text
-output/full-records-complete-20260930/
+output/full-records-current-20261011/
 ```
 
 样本组合为：
@@ -197,40 +197,40 @@ output/full-records-complete-20260930/
 
 ```bash
 .venv/bin/python -m mvp.full_records_overview \
-  --root output/full-records-complete-20260930
+  --root output/full-records-current-20261011
 ```
 
 总览产物为：
 
 ```text
-output/full-records-complete-20260930/index.html
-output/full-records-complete-20260930/summary.md
-output/full-records-complete-20260930/summary.json
+output/full-records-current-20261011/index.html
+output/full-records-current-20261011/summary.md
+output/full-records-current-20261011/summary.json
 ```
 
 当前正式结果快照如下。表内一致、不一致、待复核和不适用均为 Ledger 数量；Coverage 为 `eligible / accounted`。
 
 | 样本 | 模式 | 一致 | 不一致 | 待复核 | 不适用 | Record Coverage | Report Coverage |
 |---|---|---:|---:|---:|---:|---:|---:|
-| SAMPLE-A | GB 9706.1 | 847 | 0 | 250 | 1 | 1034 / 1034 | 978 / 978 |
-| SAMPLE-B | GB 9706.1 | 825 | 0 | 277 | 1 | 1045 / 1045 | 978 / 978 |
-| SAMPLE-D | GB 9706.1 | 800 | 3 | 300 | 1 | 1262 / 1262 | 980 / 980 |
-| SAMPLE-B | GB 9706.202 | 175 | 16 | 8 | 0 | 199 / 199 | 177 / 177 |
-| SAMPLE-C | GB 9706.202 | 144 | 44 | 11 | 0 | 199 / 199 | 177 / 177 |
-| SAMPLE-D | GB 9706.202 | 169 | 17 | 13 | 0 | 199 / 199 | 177 / 177 |
+| SAMPLE-A | GB 9706.1 | 889 | 0 | 183 | 1 | 1034 / 1034 | 978 / 978 |
+| SAMPLE-B | GB 9706.1 | 859 | 0 | 220 | 1 | 1045 / 1045 | 978 / 978 |
+| SAMPLE-D | GB 9706.1 | 942 | 3 | 72 | 37 | 1262 / 1262 | 980 / 980 |
+| SAMPLE-B | GB 9706.202 | 189 | 0 | 10 | 0 | 199 / 199 | 177 / 177 |
+| SAMPLE-C | GB 9706.202 | 158 | 28 | 13 | 0 | 199 / 199 | 177 / 177 |
+| SAMPLE-D | GB 9706.202 | 183 | 1 | 15 | 0 | 199 / 199 | 177 / 177 |
 
-当前真实工作台已经指向 `output/full-records-manual-reduction-20260930-v1/` 的六份正式结果，六份 Record Ledger 数量如下：
+当前真实工作台已经指向 `output/full-records-current-20261011/` 的六份复跑结果，六份 Record Ledger 数量如下：
 
 | 样本 | 模式 | 一致 | 不一致 | 待复核 | 不适用 |
 |---|---|---:|---:|---:|---:|
-| SAMPLE-A | GB 9706.1 | 847 | 0 | 250 | 1 |
-| SAMPLE-B | GB 9706.1 | 825 | 0 | 277 | 1 |
-| SAMPLE-D | GB 9706.1 | 800 | 3 | 300 | 1 |
-| SAMPLE-B | GB 9706.202 | 175 | 16 | 8 | 0 |
-| SAMPLE-C | GB 9706.202 | 144 | 44 | 11 | 0 |
-| SAMPLE-D | GB 9706.202 | 169 | 17 | 13 | 0 |
+| SAMPLE-A | GB 9706.1 | 889 | 0 | 183 | 1 |
+| SAMPLE-B | GB 9706.1 | 859 | 0 | 220 | 1 |
+| SAMPLE-D | GB 9706.1 | 942 | 3 | 72 | 37 |
+| SAMPLE-B | GB 9706.202 | 189 | 0 | 10 | 0 |
+| SAMPLE-C | GB 9706.202 | 158 | 28 | 13 | 0 |
+| SAMPLE-D | GB 9706.202 | 183 | 1 | 15 | 0 |
 
-当前结果按严格项目字段比较重新计算；项目名称差异会进入 `mismatch`，图例和结构核验作为独立 Finding 保留。完整运行总览位于 `output/full-records-manual-reduction-20260930-v1/index.html`。
+当前结果按项目字段比较重新计算；已冻结的“电压、电流或/和能量的限制”项目别名按等价处理并保留双方原文，其他项目名称差异进入 `mismatch`；图例和结构核验作为独立 Finding 保留。2948 的 GB 9706.1 当前正式结果已排除 Record 封面五项身份字段，Ledger 为一致 942 / 不一致 3 / 待复核 72 / N/A 37；旧的 241 条结果保存在 `output/backups/full-records-current-20261011-pre-unify-20261011/`，本轮修复前的临时结果保存在 `output/backups/cross-row-status-pre-fix-20261013/`。完整运行总览位于 `output/full-records-current-20261011/index.html`。
 
 六份运行的 Coverage 均守恒，但每份都仍含 `manual` 或 `mismatch`，因此“运行完整”不等于“样本自动通过”。
 
@@ -246,7 +246,7 @@ docs/prototypes/workbench-upload.html
 
 ```bash
 .venv/bin/python -m mvp.run_state_server --port 8767
-python3 -m mvp.static_server --mode upload --bind 127.0.0.1 --port 8765
+.venv/bin/python -m mvp.static_server --mode upload --bind 127.0.0.1 --port 8765
 ```
 
 访问 `http://127.0.0.1:8765/` 进入报告核对前端；也可以直接访问 `http://127.0.0.1:8765/workbench-upload.html`。历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html` 继续兼容。安全静态启动器固定监听 `127.0.0.1`，上传模式只允许 `docs/prototypes` 下的页面和依赖，不会暴露项目根目录中的素材、运行结果、SQLite 数据库或 Git 元数据。选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。
@@ -275,11 +275,13 @@ docs/prototypes/workbench-real.html
 
 该页面只读加载 10 份本地正式 `result.json`，依赖未随公开仓库发布的 PDF 素材和生成结果。公开仓库保留规则、服务和结果契约源码；真实工作台只在拥有对应本地数据的环境中运行。
 
-在项目根目录启动本机 HTTP 服务：
+必须在本项目根目录启动本机 HTTP 服务；8765 和 8767 不能继续复用其他副本启动的旧进程：
 
 ```bash
-python3 -m mvp.static_server --mode real --bind 127.0.0.1 --port 8765
+.venv/bin/python -m mvp.static_server --mode real --bind 127.0.0.1 --port 8765
 ```
+
+当前 2948 的正式 GB 9706.1 结果固定读取 `output/full-records-current-20261011/2948/report-record-9706-1/result.json`；变更结果前先保留旧快照，避免工作台在不同副本和旧标签之间切换。
 
 然后打开：
 

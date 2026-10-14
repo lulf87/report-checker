@@ -63,7 +63,7 @@ class Record61ScopeExpandedTests(unittest.TestCase):
             boxes,
             [{"centroid_x": 50, "centroid_y": 5, "bbox": [0, 3, 100, 7], "point_count": 2}],
         )
-        self.assertEqual((void["status"], void["status_class"]), (None, "void_or_crossed_out"))
+        self.assertEqual((void["status"], void["status_class"]), ("不适用", "void_or_crossed_out"))
         ambiguous = _status_from_ink(
             status_cell,
             boxes,

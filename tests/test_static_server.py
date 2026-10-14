@@ -1,3 +1,4 @@
+import json
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
@@ -36,12 +37,12 @@ class StaticServerAllowlistTests(unittest.TestCase):
             "/output/report-self-unified-20260930-v3/1539/result.json",
             "/output/report-self-unified-20260930-v3/2795/result.json",
             "/output/report-self-unified-20260930-v3/2948/result.json",
-            "/output/full-records-manual-reduction-20260930-v1/1347/report-record-9706-1/result.json",
-            "/output/full-records-manual-reduction-20260930-v1/1539/report-record-9706-1/result.json",
-            "/output/full-records-manual-reduction-20260930-v1/2948/report-record-9706-1/result.json",
-            "/output/full-records-manual-reduction-20260930-v1/1539/report-record-9706-202/result.json",
-            "/output/full-records-manual-reduction-20260930-v1/2795/report-record-9706-202/result.json",
-            "/output/full-records-manual-reduction-20260930-v1/2948/report-record-9706-202/result.json",
+            "/output/full-records-current-20261011/1347/report-record-9706-1/result.json",
+            "/output/full-records-current-20261011/1539/report-record-9706-1/result.json",
+            "/output/full-records-current-20261011/2948/report-record-9706-1/result.json",
+            "/output/full-records-current-20261011/1539/report-record-9706-202/result.json",
+            "/output/full-records-current-20261011/2795/report-record-9706-202/result.json",
+            "/output/full-records-current-20261011/2948/report-record-9706-202/result.json",
         }
         self.assertTrue(expected.issubset(allowlist))
         self.assertIn("/docs/prototypes/workbench-real.html", allowlist)
@@ -55,6 +56,36 @@ class StaticServerAllowlistTests(unittest.TestCase):
         self.assertTrue(any(key.startswith("/output/") and "/evidence/" in key for key in allowlist))
         self.assertFalse(any(key.startswith("/.git") for key in allowlist))
         self.assertFalse(any(key.startswith("/.aws") for key in allowlist))
+
+    def test_real_mode_relocates_stale_absolute_material_paths(self) -> None:
+        with TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            prototypes = project / "docs/prototypes"
+            prototypes.mkdir(parents=True)
+            (prototypes / "workbench-real.html").write_text(
+                '<script>const resultPath: "../../output/relocated/result.json";</script>',
+                encoding="utf-8",
+            )
+            material = project / "素材/report/2948/QW2025-2948 Draft.pdf"
+            material.parent.mkdir(parents=True)
+            material.write_bytes(b"%PDF-relocated")
+            result = project / "output/relocated/result.json"
+            result.parent.mkdir(parents=True)
+            result.write_text(
+                json.dumps(
+                    {
+                        "files": [
+                            {
+                                "path": "/Users/lulingfeng/Documents/工作/开发/报告核对工具2026.9.23/素材/report/2948/QW2025-2948 Draft.pdf"
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            allowlist = build_allowlist(project, "real")
+            self.assertEqual(allowlist["/素材/report/2948/QW2025-2948 Draft.pdf"], material.resolve())
 
     def test_loopback_host_parser_rejects_spoofed_host(self) -> None:
         for host in (None, "", "attacker.example", "127.0.0.1.evil", "127.0.0.1:bad", "localhost:", "10.0.0.1:8765"):

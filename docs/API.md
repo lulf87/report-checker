@@ -746,7 +746,7 @@ GET /api/v1/rules
     },
     {
       "id": "PTR-P01",
-      "version": null,
+      "version": "0.1.0-draft",
       "title": "PTR 声明范围与正文覆盖",
       "source": "mode_specific",
       "modes": ["report_ptr"],
@@ -1020,6 +1020,8 @@ X-CSRF-Token: <token>
 ```
 
 `disposition` 只允许 `ready | not_applicable | unsupported | blocked`；每个非 `ready` 项必须有稳定 reason code。`template_status` 只允许 `supported | unknown | unsupported`。`unsupported` 只能在用户已看见未覆盖范围、且同一计划至少有一条 `ready` 规则时创建 Run，并在正式 RuleExecution 中带原因结束。`blocked`、缺少必需组件、角色错误或 Blob 完整性问题使 `can_create_run=false`。`coverage.ready=0` 时也必须 `can_create_run=false`，`blocking_issues` 包含 `NO_EXECUTABLE_RULES`；创建端会重新计算并以 `422 NO_EXECUTABLE_RULES` 拒绝，不创建 queued Run。若规则在运行中才全部落为 `not_applicable/unsupported`、最终没有任何 Finding，Run 以 `failed + NO_EXECUTABLE_RULES + machine_overall_status=null` 结束，不发布空通过。PTR disabled 时 preflight 返回 `200`、`enabled=false`、`can_create_run=false` 和 `PTR_NOT_VALIDATED`，而真正创建仍返回 `409 MODE_DISABLED`。
+
+PTR preflight 还返回 `input_contract`、`input_documents` 和完整的 `mode_contract`。其中两个槽固定为 `report_document_id → report` 和 `ptr_document_id → ptr`，顺序固定、每槽只能有一个 Document，`record_document_id` 属于禁止角色；能解析到 Document 时列出其 Blob 哈希和页几何，禁用态或测试中的未解析 ID 则保留 `unresolved=true`，不能据此生成 Finding 或通过结论。Worker JobSpec、状态服务和草案结果沿用同一角色映射，避免把 PTR 路径误当成 Record。
 
 `required_components` 不是示例子集：它必须等于全部 `disposition=ready` 规则的 `required_component_ids` 精确去重并集，并额外包含导致规则 `blocked` 的缺失或降级组件。`plan_hash` 覆盖 mode、Document ID/哈希、规则 bundle、planned rules、disposition 和该完整集合的 component version/config hash；散列前按 component ID 规范排序，响应数组顺序不作为身份。创建 Run 必须带回该值；后端重新生成并逐项校验，任何集合、版本或哈希漂移均拒绝创建并要求刷新 preflight。preflight 不是内容通过结论，也不产生 Finding。
 

@@ -1508,6 +1508,51 @@ def _field_disposition(
     }
 
 
+# The approved GB 9706.202-2021 source pair uses two printed variants of the
+# same item-14 title: the Record says “或”, while the Report says “和”.  Keep
+# both source strings in evidence, but compare their frozen semantic alias so
+# the title variant does not turn all sixteen child rows into false errors.
+_PROJECT_NAME_ALIASES = {
+    "电压、电流或能量的限制": "电压、电流和能量的限制",
+    "电压、电流和能量的限制": "电压、电流和能量的限制",
+}
+
+
+def _canonical_project_name(value: Any) -> str:
+    normalized = compact(str(value))
+    return _PROJECT_NAME_ALIASES.get(normalized, normalized)
+
+
+def _project_field_disposition(
+    record_value: Any,
+    report_values: Sequence[Any],
+) -> dict[str, Any]:
+    comparison = _field_disposition(
+        record_value,
+        report_values,
+        field="project",
+        allow_one_to_many=True,
+    )
+    if comparison["decision"] != "mismatch":
+        return comparison
+    canonical_record = _canonical_project_name(comparison["record_value"])
+    canonical_reports = [
+        _canonical_project_name(value)
+        for value in comparison["report_values"]
+        if _canonical_project_name(value)
+    ]
+    if canonical_reports and len(set(canonical_reports)) == 1 and canonical_record == canonical_reports[0]:
+        return {
+            **comparison,
+            "decision": "match",
+            "disposition": "matched",
+            "reason_code": "project_alias_match",
+            "canonical_record_value": canonical_record,
+            "canonical_report_values": canonical_reports,
+        }
+    return comparison
+
+
 def _mapping_field_comparisons(
     record_row: Mapping[str, Any],
     report_group: Sequence[Mapping[str, Any]],
@@ -1523,8 +1568,8 @@ def _mapping_field_comparisons(
     # is an exact concatenation, otherwise manual rather than a fabricated pass.
     requirement_allow_many = len(report_requirements) > 1
     field_comparisons = {
-        "project": _field_disposition(
-            record_row.get("project", ""), report_projects, field="project", allow_one_to_many=False
+        "project": _project_field_disposition(
+            record_row.get("project", ""), report_projects
         ),
         "parent_clause": _field_disposition(
             record_row.get("parent_clause", ""), report_clauses, field="parent_clause", allow_one_to_many=False
@@ -1808,12 +1853,22 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
             "record_project": record_project,
             "report_projects": report_projects,
         }
-    elif report_projects == [record_project]:
+    elif {
+        _canonical_project_name(value) for value in report_projects
+    } == {_canonical_project_name(record_project)}:
         project_comparison = {
             "decision": "match",
-            "reason_code": "project_name_match",
+            "reason_code": (
+                "project_name_match"
+                if report_projects == [record_project]
+                else "project_name_alias_match"
+            ),
             "record_project": record_project,
             "report_projects": report_projects,
+            "canonical_record_project": _canonical_project_name(record_project),
+            "canonical_report_projects": sorted(
+                {_canonical_project_name(value) for value in report_projects}
+            ),
         }
     else:
         project_comparison = {
@@ -2093,7 +2148,8 @@ def compare_record_202_documents(
                 for row in report_group
             )
             project_name_match = bool(report_group) and all(
-                compact(row.get("project")) == compact(record_row.get("project"))
+                _canonical_project_name(row.get("project"))
+                == _canonical_project_name(record_row.get("project"))
                 for row in report_group
             )
             mapping_ok = (

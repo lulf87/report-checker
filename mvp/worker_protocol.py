@@ -24,6 +24,7 @@ class JobSpec:
     report_path: Path
     output_dir: Path
     record_path: Path | None = None
+    ptr_path: Path | None = None
     preflight_plan_hash: str | None = None
     rule_bundle_id: str | None = None
 
@@ -35,10 +36,17 @@ class JobSpec:
             raise WorkerProtocolError(f"{decision['code']}: {decision['message']}")
         if not self.report_path.is_absolute() or not self.output_dir.is_absolute():
             raise WorkerProtocolError("Worker JobSpec 的路径必须是绝对路径")
-        if self.mode != "report_self" and self.record_path is None:
+        required_roles = tuple(decision["capability"]["required_roles"])
+        needs_record = "record_9706_1" in required_roles or "record_9706_202" in required_roles
+        needs_ptr = "ptr" in required_roles
+        if needs_record and self.record_path is None:
             raise WorkerProtocolError("Record 模式必须提供 record_path")
-        if self.mode == "report_self" and self.record_path is not None:
-            raise WorkerProtocolError("Report 自检不能附带 record_path")
+        if not needs_record and self.record_path is not None:
+            raise WorkerProtocolError("当前模式不能附带 record_path")
+        if needs_ptr and self.ptr_path is None:
+            raise WorkerProtocolError("PTR 模式必须提供 ptr_path")
+        if not needs_ptr and self.ptr_path is not None:
+            raise WorkerProtocolError("当前模式不能附带 ptr_path")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +55,7 @@ class JobSpec:
             "mode": self.mode,
             "report_path": str(self.report_path),
             "record_path": str(self.record_path) if self.record_path is not None else None,
+            "ptr_path": str(self.ptr_path) if self.ptr_path is not None else None,
             "output_dir": str(self.output_dir),
             "preflight_plan_hash": self.preflight_plan_hash,
             "rule_bundle_id": self.rule_bundle_id,
@@ -61,11 +70,14 @@ class JobSpec:
             output_dir = Path(str(payload["output_dir"])).expanduser().resolve()
             record_raw = payload.get("record_path")
             record_path = Path(str(record_raw)).expanduser().resolve() if record_raw else None
+            ptr_raw = payload.get("ptr_path")
+            ptr_path = Path(str(ptr_raw)).expanduser().resolve() if ptr_raw else None
             return cls(
                 run_id=str(payload["run_id"]),
                 mode=str(payload["mode"]),
                 report_path=report_path,
                 record_path=record_path,
+                ptr_path=ptr_path,
                 output_dir=output_dir,
                 preflight_plan_hash=payload.get("preflight_plan_hash"),
                 rule_bundle_id=payload.get("rule_bundle_id"),

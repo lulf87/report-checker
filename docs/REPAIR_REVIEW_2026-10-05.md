@@ -27,6 +27,59 @@
 | VERIFIED | 范围与界面补丁局部回归 | `79 tests OK` |
 | VERIFIED | 最终全量测试 | `246 tests OK` |
 
+## 2026-10-10 GB 9706.202 项目名称别名修正
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | Record 的“电压、电流或能量的限制”和 Report 的“电压、电流和能量的限制”按已确认模板别名等价比较；两侧原文仍保留在 Finding 和 Scope Ledger 中 | `mvp/full_record_202.py`、`tests.test_full_record_202`、`tests.test_record202_scope_expanded` |
+| VERIFIED | 1539、2795、2948 三份 GB 9706.202 结果已重新生成；第 14 项 16 个子行均不再产生项目名称 mismatch | `output/full-records-manual-reduction-20260930-v1/`、`output/full-records-complete-20260930/` |
+| VERIFIED | 真实工作台和正式总览已刷新；2795 的错误 Finding 从 21 降为 5，错误 Ledger 从 44 降为 28 | `tests.test_workbench_real`、`output/full-records-manual-reduction-20260930-v1/summary.md` |
+| VERIFIED | 修复后全量回归 | `253 tests OK` |
+
+## 2026-10-11 Mac 真实样例双模式复跑
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | 1347、1539、2948 的 GB 9706.1 Record 复跑完成；总体分别为 `manual`、`manual`、`error`，Coverage 均守恒，输入 PDF SHA-256 前后不变 | `output/full-records-current-20261011/*/report-record-9706-1/result.json` |
+| VERIFIED | 1539、2795、2948 的 GB 9706.202 Record 复跑与当前结果一致；总体分别为 `manual`、`error`、`error`，项目别名修正后的 2795 Finding/Ledger 错误数为 5/28 | `output/full-records-current-20261011/*/report-record-9706-202/result.json` |
+| VERIFIED | 真实工作台清单切换到六份当前复跑结果；静态服务 allowlist、工作台契约和静态服务测试通过 | `docs/prototypes/workbench-real.html`、`tests.test_workbench_real`、`tests.test_static_server` |
+
+## 2026-10-11 素材全量扫描与可运行配对复跑
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | `素材/` 共扫描 50 个文件：31 个 PDF（13 份 Report、3 份 GB 9706.1 Record、3 份 GB 9706.202 Record、12 份 PTR）、10 个 expected JSON 和 9 个 `.DS_Store`；全部 PDF 的 SHA-256 已保存 | `output/full-records-all-20261011/inventory.md`、`素材-pdf-sha256.txt` |
+| VERIFIED | 六组 Report + Record 配对全部运行完成，六组 Coverage 均守恒，六组输入 PDF SHA-256 前后均 unchanged | `output/full-records-all-20261011/summary.md`、`inventory.json` |
+| VERIFIED | 全量测试恢复忽略的 2795 OCR 衍生夹具后通过：253 tests OK；`compileall`、`git diff --check` 通过 | `.venv/bin/python -m unittest discover -s tests` |
+| BLOCKED_BY_INPUT | 9 份 Report 没有 GB 9706.1/9706.202 Record，12 份 PTR 仍为 `PTR_NOT_VALIDATED`；不自行伪造配对 | `output/full-records-all-20261011/inventory.md` |
+
+## 2026-10-11 PTR ↔ Report 前置尝试
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | 12 组同号 PTR/Report 已执行 `report_ptr` CLI 前置尝试；全部返回 `MODE_DISABLED` / `PTR_NOT_VALIDATED`，未创建输出、未生成 Finding | `output/ptr-report-preflight-20261011/summary.md` |
+| VERIFIED | 12 份 Report 均可确定性解析 `QW<year>-<suffix>` 报告编号；PTR PDF 可打开并记录页数，但未凭文本或 OCR 推导 PTR 规则 | `output/ptr-report-preflight-20261011/summary.json` |
+| BLOCKED_BY_RULES | `PTR-P01` 现在只有 `0.1.0-draft` 合同版本，仍无可发布 runner；缺少声明范围、引用展开、父子条款映射、覆盖规则和 2–3 份结构差异 PTR 的逐条人工验收集 | `mvp/capabilities.py`、`docs/IMPLEMENTATION_PLAN.md` 阶段 6 |
+| INFO | 项目没有独立的 PK 号规则；现有“报告编号”解析只服务 Report/Record 身份核对，不推导 PTR 规则 | `mvp/checker.py`、`mvp/full_record_61.py` |
+
+## 2026-10-11 PTR-P01 禁用态骨架
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | 0596、1539、2795 生成 RequirementGraph 候选草案；保存 Report 声明范围候选、PTR 条款候选、引用候选、父子候选边、输入页几何和 SHA-256 | `output/ptr-p01-drafts-20261011/summary.md`、`docs/PTR_P01_RULE_DRAFT.md` |
+| VERIFIED | 草案 Finding 契约包含规则版本、reason code、scope、观察、比较字段和 Evidence 坐标，但 `publishable=false`、`findings=[]` | `mvp/ptr_p01.py`、`tests/test_ptr_p01.py`（6 tests OK） |
+| BLOCKED_BY_RULES | 未实现声明范围语义匹配、引用表格展开、缺项/范围外判定、正式 Worker 发布；未接入 capability，PTR 仍不可启用 | `mvp/capabilities.py`、`docs/PTR_P01_RULE_DRAFT.md` |
+
+## 2026-10-11 PTR ↔ Report 合同接线
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | 固定 `report_document_id → report`、`ptr_document_id → ptr` 一对一输入槽，明确禁止 Record 角色；能力目录、preflight、Run 输入、Worker JobSpec 和前端上传映射共用该合同 | `mvp/ptr_report_contract.py`、`mvp/capabilities.py`、`mvp/run_state_server.py`、`mvp/worker_protocol.py`、`docs/prototypes/workbench-upload.html` |
+| VERIFIED | preflight 对真实 0596 Report/PTR 返回 Report 37 页、PTR 39 页及各自 Blob SHA-256；规则计划为 `PTR-P01@0.1.0-draft`，最终以 `PTR_NOT_VALIDATED` 阻止创建 | 本机 8767 preflight 实测；`tests.test_run_state_server` |
+| VERIFIED | 禁用态草案结果增加 `contract`、`input_contract`、`result_contract`，Finding 模板补齐机器状态、观察、比较、证据 ID 和复核状态；Evidence 显式保存文档引用、0/1 起算页码、`pdf_points` 和原文锚点 | `mvp/ptr_p01.py`、`tests.test_ptr_p01.py`、`docs/PTR_P01_RULE_DRAFT.md` |
+| VERIFIED | 全量回归 262 项通过，`git diff --check` 和 Python 编译检查通过；8765/8767 已重启加载新合同 | `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` |
+| BLOCKED_BY_RULES | 仍未完成 PTR 语义执行、引用展开、缺项/范围外判定和多份结构差异 PTR 的人工验收，因此没有启用按钮或发布 Finding | `PTR_NOT_VALIDATED` |
+
 ## P0/P1 关闭项
 
 | 状态 | 项目 | 证据 |
@@ -65,3 +118,12 @@
 - `compileall` 与 `git diff --check`：通过。
 - SQLite backup API 独立副本：v7→v8，原计数 `20/21/20/236/192/3055/0` 保持不变，`quick_check=ok`、`foreign_key_check=[]`；故障副本回滚后版本仍为 v7、迁移记录为 0。
 - 网络绑定测试已通过正式审批在 loopback 临时端口运行；数据库迁移前后均保留了可恢复备份。真实工作台文件包含本机私有样例清单，继续由 `.gitignore` 排除；公开仓库提交的是上传工作台和规则/服务代码。
+
+## 2026-10-13 2948 GB 9706.1 跨行状态笔迹修复
+
+| 状态 | 项目 | 证据 |
+|---|---|---|
+| VERIFIED | 状态笔迹先按实际点/线段与复选框的交集归属到状态行；没有唯一复选框交集时才回退到质心归属，修复页 17 的 7.2.17 跨行斜线误归 | `mvp/full_record_61.py`、`tests.test_full_record_61.FullRecord61Tests.test_2948_cross_row_status_mark_binds_to_the_next_checkbox_row` |
+| VERIFIED | 空白、注销线或无法确定的 Record 状态改为 `manual`，不再直接制造 Report/Record mismatch；问题 130 `RECORD61-BODY-S041-E004` 与 `RECORD61-CONCLUSION-S041` 均恢复为 matched | `output/full-records-current-20261011/2948/report-record-9706-1/result.json` |
+| VERIFIED | 2948 GB 9706.1 当前 Ledger 从一致 902 / 不一致 3 / 待复核 111 / N/A 43 变为一致 942 / 不一致 3 / 待复核 72 / N/A 37；原结果保存在 `output/backups/cross-row-status-pre-fix-20261013/` | `output/full-records-current-20261011/summary.md`、备份目录 |
+| VERIFIED | 定向状态语义、问题 130 和空白状态人工复核测试通过；新复跑完成，剩余 3 个错误为原有 `status_result_mismatch`，未由本修复掩盖 | `tests.test_record61_scope_expanded`、`tests.test_full_record_61`、`output/runs/audit-2948-cross-row-fix-20261013/result.json` |
