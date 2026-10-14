@@ -10,6 +10,7 @@ independently recognised by two local channels.
 """
 
 import difflib
+import math
 import re
 import tempfile
 import unicodedata
@@ -65,6 +66,14 @@ EXPECTED_STATUS_ROWS = EXPECTED_NATIVE_BOX_TRIPLETS + EXPECTED_ALTERNATE_BOX_TRI
 
 STATUS_BY_COLUMN = {0: "符合", 1: "不符合", 2: "不适用"}
 BOX_GLYPHS = {"□", "\uf0a3"}
+
+# A near-box mark is still a defect in the source form.  This narrow,
+# geometry-only tolerance is an explicit assist mode for clean single-stroke
+# check marks; it never turns a blank cell into a status and never uses the
+# Report value to choose a Record column.
+NEAR_CHECKBOX_AUTO_MAX_DISTANCE_PT = 2.0
+NEAR_CHECKBOX_AUTO_MAX_BBOX_WIDTH_RATIO = 0.55
+NEAR_CHECKBOX_AUTO_MAX_BBOX_HEIGHT_PT = 50.0
 
 NUMERIC_TARGETS_BY_SAMPLE: dict[int, dict[str, int]] = {
     1347: {"4.11": 0, "8.6": 0, "8.7": 16, "9.6": 1, "16.6": 0},
@@ -191,6 +200,20 @@ def _ink_touches_box(ink: Mapping[str, Any], box: fitz.Rect) -> bool:
     # Synthetic callers and a few flattened annotations have no vertices.
     # Their bounding box is the only available geometry.
     return fitz.Rect(ink["bbox"]).intersects(box)
+
+
+def _ink_point_distance_to_box(ink: Mapping[str, Any], box: fitz.Rect) -> float | None:
+    """Return the closest raw Ink point distance to a checkbox rectangle."""
+
+    points = list(ink.get("_points") or [])
+    if not points:
+        return None
+    distances = []
+    for x, y in points:
+        dx = max(float(box.x0) - float(x), 0.0, float(x) - float(box.x1))
+        dy = max(float(box.y0) - float(y), 0.0, float(y) - float(box.y1))
+        distances.append(math.hypot(dx, dy))
+    return min(distances) if distances else None
 
 
 def _expanded_rect(rect: fitz.Rect, margin: float) -> fitz.Rect:
@@ -360,6 +383,59 @@ def _row_status_cell(
     return candidates[0]
 
 
+def _tolerated_near_checkbox(
+    status_cell: fitz.Rect,
+    boxes: Sequence[fitz.Rect],
+    owned: Sequence[Mapping[str, Any]],
+    selected_columns: Sequence[int],
+    *,
+    near_checkbox_mark: bool,
+    horizontal_line_count: int,
+    large_cross_band: bool,
+) -> tuple[int, float] | None:
+    """Resolve only a high-confidence single near-box check mark.
+
+    The tolerance is intentionally independent of Report values.  A later
+    comparison may still become a mismatch if the selected Record status and
+    Report disagree.  Ambiguous, multi-stroke, cross-row and long-band marks
+    remain manual.
+    """
+
+    if not near_checkbox_mark or len(owned) != 1 or len(selected_columns) != 1:
+        return None
+    if horizontal_line_count or large_cross_band:
+        return None
+    ink = owned[0]
+    points = list(ink.get("_points") or [])
+    if len(points) < 2:
+        return None
+    if any(_ink_touches_box(ink, box) for box in boxes):
+        return None
+    centroid_x = float(ink.get("centroid_x", 0.0))
+    centroid_y = float(ink.get("centroid_y", 0.0))
+    if not status_cell.contains(fitz.Point(centroid_x, centroid_y)):
+        return None
+
+    box = boxes[int(selected_columns[0])]
+    distance = _ink_point_distance_to_box(ink, box)
+    if distance is None or distance > NEAR_CHECKBOX_AUTO_MAX_DISTANCE_PT:
+        return None
+    bbox = fitz.Rect(ink["bbox"])
+    if bbox.width > status_cell.width * NEAR_CHECKBOX_AUTO_MAX_BBOX_WIDTH_RATIO:
+        return None
+    if bbox.height > NEAR_CHECKBOX_AUTO_MAX_BBOX_HEIGHT_PT:
+        return None
+
+    start, end = points[0], points[-1]
+    dx = abs(float(end[0]) - float(start[0]))
+    dy = abs(float(end[1]) - float(start[1]))
+    # A short diagonal check has meaningful movement in both axes.  This
+    # rejects leftover text strokes and horizontal table lines.
+    if dx < bbox.width * 0.60 or dy < max(2.0, bbox.height * 0.30):
+        return None
+    return int(selected_columns[0]), float(distance)
+
+
 def _status_from_ink(
     status_cell: fitz.Rect,
     boxes: Sequence[fitz.Rect],
@@ -456,13 +532,30 @@ def _status_from_ink(
                 box_intersection_columns.add(column)
     if len(distinct_columns) > 1 and len(box_intersection_columns) == 1:
         distinct_columns = sorted(box_intersection_columns)
+    tolerated = _tolerated_near_checkbox(
+        status_cell,
+        boxes,
+        owned,
+        distinct_columns,
+        near_checkbox_mark=near_checkbox_mark,
+        horizontal_line_count=horizontal_line_count,
+        large_cross_band=large_cross_band,
+    )
     if not owned:
         status = None
         reason = "status_box_blank"
         status_class = "blank"
+    elif tolerated is not None:
+        tolerated_column, distance = tolerated
+        status = STATUS_BY_COLUMN[tolerated_column]
+        reason = "near_checkbox_tolerated"
+        status_class = "selected"
+        public_inks[0]["near_checkbox_tolerated"] = True
+        public_inks[0]["near_checkbox_distance_pt"] = round(distance, 3)
     elif near_checkbox_mark:
         # The mark is close to a checkbox but does not actually enter it.  It
-        # is evidence of an imprecise original record, not a confirmed status.
+        # is evidence of an imprecise original record, not a confirmed status
+        # under the strict rule.
         status = None
         reason = "status_mark_near_checkbox_unresolved"
         status_class = "near_checkbox"
@@ -619,7 +712,8 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
                 "status_class": ink_result["status_class"],
                 "status_disposition": (
                     "matched"
-                    if ink_result["status_class"] in {"selected", "void_or_crossed_out"}
+                    if ink_result["status_class"]
+                    in {"selected", "void_or_crossed_out"}
                     and ink_result["status"] is not None
                     else "manual"
                 ),
@@ -673,9 +767,14 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
         "unresolved_policy": "blank_multi_column_or_large_cross_column_strike_is_manual",
         "status_semantics": {
             "selected": "single ink column assigned to 符合/不符合/不适用",
+            "selected_near_checkbox_tolerated": (
+                "compact unique diagonal stroke misses a single checkbox by at most "
+                f"{NEAR_CHECKBOX_AUTO_MAX_DISTANCE_PT:g}pt; auxiliary geometry tolerance"
+            ),
             "blank": "no owned ink in the three status boxes; manual",
             "void_or_crossed_out": "double horizontal or full-pane slash; interpreted as 不适用",
             "near_checkbox": "ink approaches a checkbox but does not enter it; manual",
+            "near_checkbox_tolerated": "single diagonal near-box mark within the narrow geometry tolerance; auto-resolved with evidence",
             "ambiguous": "ink occupies multiple status columns; manual",
             "glyph_variants": ["native_square_triplet", "alternate_first_square_triplet"],
         },
@@ -2044,6 +2143,8 @@ def _status_ledger(
             report_payload["mapping_role"] = (
                 "comparison_target" if target is not None else "sequence_context"
             )
+            if source is not None:
+                comparison["record_status_reason_code"] = source.get("status_reason_code")
             comparison["field_comparisons"] = _paired_field_comparisons(
                 record_payload,
                 report_payload,
@@ -3831,6 +3932,110 @@ def _related_body_entries(entry: Mapping[str, Any], ledger: Sequence[Mapping[str
     return [item for item in ledger if str(item.get("entry_id") or "").startswith(prefix)]
 
 
+def _sequence_sub_conclusions(
+    entry: Mapping[str, Any],
+    ledger: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Split the 9.6.2 sequence roll-up into its two subclauses."""
+
+    if str(entry.get("entry_id") or "") != "RECORD61-CONCLUSION-S075":
+        return []
+    body = _related_body_entries(entry, ledger)
+    report_conclusion = str(
+        (entry.get("report") or {}).get("conclusion")
+        or (entry.get("comparison") or {}).get("observed")
+        or ""
+    ).strip()
+    result: list[dict[str, Any]] = []
+    for clause in ("9.6.2.1", "9.6.2.2"):
+        rows = [
+            item
+            for item in body
+            if str((item.get("record") or {}).get("clause") or "") == clause
+        ]
+        if not rows:
+            continue
+        statuses = [str((item.get("record") or {}).get("status") or "") for item in rows]
+        blank_rows = [
+            item
+            for item in rows
+            if (item.get("record") or {}).get("status_reason_code") == "status_box_blank"
+        ]
+        if blank_rows:
+            sub_status = "error"
+            reason = "record_status_blank"
+            first = blank_rows[0].get("record") or {}
+            summary = (
+                f"{clause}：Record第{first.get('pdf_page')}页第{first.get('page_ordinal')}行状态框为空，"
+                "该子项单独报错；根因对应 Q574。"
+            )
+        elif any(status not in {"符合", "不适用", "不符合"} for status in statuses):
+            sub_status = "manual"
+            reason = "record_subclause_status_unresolved"
+            summary = f"{clause}：Record状态仍有无法确认的行，需要人工复核。"
+        else:
+            expected = expected_report_conclusion_from_record_statuses(statuses, mode="9706.1")
+            if report_conclusion and expected == report_conclusion:
+                sub_status = "pass"
+                reason = "subclause_conclusion_matched"
+                summary = f"{clause}：Record状态为{ '、'.join(statuses) }，子项结论为“{expected}”，与Report汇总结论一致。"
+            else:
+                sub_status = "error"
+                reason = "subclause_conclusion_mismatch"
+                summary = f"{clause}：Record子项结论为“{expected}”，Report汇总结论为“{report_conclusion or '未解析'}”。"
+        numeric_entries = [
+            item
+            for item in ledger
+            if str(item.get("entry_id") or "").startswith("RECORD61-NUMERIC-9_6-")
+            and (
+                clause in str(
+                    (item.get("report") or {}).get("requirement_raw")
+                    or (item.get("report") or {}).get("requirement")
+                    or ""
+                )
+                or clause == "9.6.2.1"
+            )
+        ]
+        numeric_ids = [str(item.get("entry_id")) for item in numeric_entries]
+        numeric_target_ids = [
+            str(item.get("target_row_id"))
+            for item in numeric_entries
+            if item.get("target_row_id")
+        ]
+        target_ids = [
+            str(item.get("target_row_id"))
+            for item in rows
+            if item.get("target_row_id")
+        ]
+        for target_id in numeric_target_ids:
+            if target_id not in target_ids:
+                target_ids.append(target_id)
+        summary_suffix = (
+            f"；对应数值仍需单独复核（{'、'.join(numeric_ids)}）"
+            if numeric_ids
+            else ""
+        )
+        if summary_suffix:
+            summary = summary.rstrip("。") + summary_suffix + "。"
+        result.append(
+            {
+                "clause": clause,
+                "status": sub_status,
+                "reason_code": reason,
+                "summary": summary,
+                "source_row_ids": [str((item.get("record") or {}).get("row_id")) for item in rows],
+                "target_row_ids": target_ids,
+                "record_statuses": statuses,
+                "report_results": [
+                    str((item.get("report") or {}).get("result") or "")
+                    for item in rows
+                ],
+                "numeric_finding_ids": numeric_ids,
+            }
+        )
+    return result
+
+
 def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[str, Any]]) -> str:
     """Build a reviewer-facing explanation while keeping ``reason_code`` stable.
 
@@ -3845,6 +4050,12 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
     comparison = entry.get("comparison") or {}
     record = entry.get("record") or {}
 
+    sub_conclusions = _sequence_sub_conclusions(entry, ledger)
+    if sub_conclusions:
+        return "序号75已拆分为两个子项：" + "；".join(
+            item["summary"].rstrip("。") for item in sub_conclusions
+        ) + "。"
+
     if reason == "status_result_matched":
         status = str(record.get("status") or comparison.get("observed") or "").strip()
         report_result = str(
@@ -3854,6 +4065,21 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
             or comparison.get("observed")
             or ""
         ).strip()
+        if record.get("status_reason_code") == "near_checkbox_tolerated":
+            distance = next(
+                (
+                    ink.get("near_checkbox_distance_pt")
+                    for ink in (record.get("inks") or [])
+                    if ink.get("near_checkbox_distance_pt") is not None
+                ),
+                None,
+            )
+            distance_text = f"，最近点距框约{distance}pt" if distance is not None else ""
+            return (
+                f"{_record_location_text(record)}的笔迹虽未进入“{status}”复选框，但符合唯一近框、单笔斜勾和"
+                f"{NEAR_CHECKBOX_AUTO_MAX_DISTANCE_PT:g}pt几何容差{distance_text}的辅助规则；"
+                f"Record按“{status}”处理，Report结果为“{report_result}”，已自动确认。"
+            )
         if status == "不适用" and report_result in {"/", "——", "—"}:
             return f"{_record_location_text(record)}的Record状态为“不适用”，Report为“{report_result}”；双横线或整格斜线按不适用处理，已确认一致。"
         if status and report_result:
@@ -3996,6 +4222,10 @@ def _findings(ledger: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         }[disposition]
         reason_code = str(entry.get("reason_code") or "")
         reason_detail = _finding_reason_detail(entry, ledger)
+        sub_conclusions = _sequence_sub_conclusions(entry, ledger)
+        comparison = dict(entry.get("comparison") or {})
+        if sub_conclusions:
+            comparison["sub_conclusions"] = sub_conclusions
         findings.append(
             {
                 "id": entry["entry_id"],
@@ -4016,7 +4246,8 @@ def _findings(ledger: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                     "disposition": disposition,
                     "reason_code": reason_code,
                     "reason_detail": reason_detail,
-                    "comparison": entry.get("comparison"),
+                    **({"sub_conclusions": sub_conclusions} if sub_conclusions else {}),
+                    "comparison": comparison,
                     "mapping": entry.get("mapping"),
                 },
                 "evidence_locations": _entry_evidence(entry),

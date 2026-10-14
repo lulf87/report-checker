@@ -76,6 +76,45 @@ class Record61ScopeExpandedTests(unittest.TestCase):
         self.assertEqual((ambiguous["status"], ambiguous["status_class"]), (None, "ambiguous"))
         self.assertEqual(ambiguous["glyph_variant"], "alternate")
 
+    def test_near_checkbox_tolerance_accepts_only_compact_diagonal_stroke(self) -> None:
+        status_cell = fitz.Rect(0, 0, 100, 20)
+        boxes = [fitz.Rect(5, 5, 15, 15), fitz.Rect(45, 5, 55, 15), fitz.Rect(85, 5, 95, 15)]
+        # This polyline stays just to the left/above the first box.  Its
+        # closest point is 2pt away, but its direction and unique assignment
+        # match the near-box marks in the source Record.
+        points = [(3.0, 16.0), (3.0, 5.0), (17.0, 3.0)]
+        tolerated = _status_from_ink(
+            status_cell,
+            boxes,
+            [
+                {
+                    "centroid_x": sum(point[0] for point in points) / len(points),
+                    "centroid_y": sum(point[1] for point in points) / len(points),
+                    "bbox": [3.0, 3.0, 17.0, 16.0],
+                    "point_count": len(points),
+                    "_points": points,
+                    "_near_checkbox": True,
+                }
+            ],
+        )
+        self.assertEqual(tolerated["status"], "符合")
+        self.assertEqual(tolerated["reason_code"], "near_checkbox_tolerated")
+        self.assertEqual(tolerated["status_class"], "selected")
+
+        too_far = [
+            {
+                "centroid_x": 7.0,
+                "centroid_y": 8.0,
+                "bbox": [1.0, 1.0, 17.0, 16.0],
+                "point_count": len(points),
+                "_points": [(1.0, 16.0), (1.0, 5.0), (17.0, 3.0)],
+                "_near_checkbox": True,
+            }
+        ]
+        unresolved = _status_from_ink(status_cell, boxes, too_far)
+        self.assertIsNone(unresolved["status"])
+        self.assertEqual(unresolved["reason_code"], "status_mark_near_checkbox_unresolved")
+
     def test_field_comparisons_keep_suggestion_condition_unit_and_result(self) -> None:
         record = {
             "project": "项目",

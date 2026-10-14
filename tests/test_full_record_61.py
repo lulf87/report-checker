@@ -347,12 +347,45 @@ class FullRecord61Tests(unittest.TestCase):
         self.assertEqual(blank["disposition"], "mismatch")
         self.assertEqual(blank["reason_code"], "record_status_blank")
 
+        # Sequence 75 contains independent 9.6.2.1 (numeric) and 9.6.2.2
+        # (status) subclauses.  The roll-up finding must expose both and point
+        # the blank error back to the row-level Q574 root cause.
+        sequence_75 = next(
+            item
+            for item in self.results["2948"]["findings"]
+            if item["id"] == "RECORD61-CONCLUSION-S075"
+        )
+        self.assertIn("9.6.2.1", sequence_75["summary"])
+        self.assertIn("9.6.2.2", sequence_75["summary"])
+        self.assertIn("Q574", sequence_75["summary"])
+
         self.assertEqual(ledger["RECORD61-CONCLUSION-S091"]["disposition"], "matched")
         self.assertEqual(ledger["RECORD61-CONCLUSION-S093"]["disposition"], "matched")
 
         near = ledger["RECORD61-BODY-S103-E001"]
         self.assertEqual(near["disposition"], "manual")
         self.assertEqual(near["reason_code"], "status_mark_near_checkbox_unresolved")
+        for entry_id, expected_status in (
+            ("RECORD61-BODY-S003-E006", "符合"),
+            ("RECORD61-BODY-S013-E002", "符合"),
+            ("RECORD61-BODY-S025-E002", "不适用"),
+        ):
+            with self.subTest(entry_id=entry_id):
+                tolerated = ledger[entry_id]
+                self.assertEqual(tolerated["disposition"], "matched")
+                self.assertEqual(tolerated["record"]["status"], expected_status)
+                self.assertEqual(tolerated["record"]["status_reason_code"], "near_checkbox_tolerated")
+                self.assertLessEqual(
+                    tolerated["record"]["inks"][0]["near_checkbox_distance_pt"],
+                    2.0,
+                )
+        for entry_id in ("RECORD61-BODY-S052-E034", "RECORD61-BODY-S052-E066"):
+            with self.subTest(entry_id=entry_id):
+                self.assertEqual(ledger[entry_id]["disposition"], "manual")
+                self.assertEqual(
+                    ledger[entry_id]["reason_code"],
+                    "status_mark_near_checkbox_unresolved",
+                )
         self.assertEqual(
             ledger["RECORD61-CONCLUSION-S103"]["reason_code"],
             "record_status_near_checkbox_unresolved",
@@ -365,6 +398,12 @@ class FullRecord61Tests(unittest.TestCase):
         self.assertIn("第27页", findings["RECORD61-CONCLUSION-S052"]["summary"])
         self.assertIn("第48页", findings["RECORD61-CONCLUSION-S063"]["summary"])
         self.assertIn("原始记录空白", findings["RECORD61-BODY-S075-E004"]["summary"])
+        self.assertIn("9.6.2.1", findings["RECORD61-CONCLUSION-S075"]["summary"])
+        self.assertIn("9.6.2.2", findings["RECORD61-CONCLUSION-S075"]["summary"])
+        self.assertIn("根因对应 Q574", findings["RECORD61-CONCLUSION-S075"]["summary"])
+        sub_conclusions = findings["RECORD61-CONCLUSION-S075"]["details"]["sub_conclusions"]
+        self.assertEqual([item["clause"] for item in sub_conclusions], ["9.6.2.1", "9.6.2.2"])
+        self.assertEqual([item["status"] for item in sub_conclusions], ["pass", "error"])
         self.assertIn("Record第106页", findings["RECORD61-NUMERIC-8_7-01"]["summary"])
         self.assertIn("两种识别通道", findings["RECORD61-NUMERIC-8_7-02"]["summary"])
         self.assertIn("Report填写", findings["RECORD61-NUMERIC-8_7-03"]["summary"])
