@@ -119,11 +119,12 @@
 - SQLite backup API 独立副本：v7→v8，原计数 `20/21/20/236/192/3055/0` 保持不变，`quick_check=ok`、`foreign_key_check=[]`；故障副本回滚后版本仍为 v7、迁移记录为 0。
 - 网络绑定测试已通过正式审批在 loopback 临时端口运行；数据库迁移前后均保留了可恢复备份。真实工作台文件包含本机私有样例清单，继续由 `.gitignore` 排除；公开仓库提交的是上传工作台和规则/服务代码。
 
-## 2026-10-13 2948 GB 9706.1 跨行状态笔迹修复
+## 2026-10-13 2948 GB 9706.1 状态语义与跨行笔迹修复
 
 | 状态 | 项目 | 证据 |
 |---|---|---|
 | VERIFIED | 状态笔迹先按实际点/线段与复选框的交集归属到状态行；没有唯一复选框交集时才回退到质心归属，修复页 17 的 7.2.17 跨行斜线误归 | `mvp/full_record_61.py`、`tests.test_full_record_61.FullRecord61Tests.test_2948_cross_row_status_mark_binds_to_the_next_checkbox_row` |
-| VERIFIED | 空白、注销线或无法确定的 Record 状态改为 `manual`，不再直接制造 Report/Record mismatch；问题 130 `RECORD61-BODY-S041-E004` 与 `RECORD61-CONCLUSION-S041` 均恢复为 matched | `output/full-records-current-20261011/2948/report-record-9706-1/result.json` |
-| VERIFIED | 2948 GB 9706.1 当前 Ledger 从一致 902 / 不一致 3 / 待复核 111 / N/A 43 变为一致 942 / 不一致 3 / 待复核 72 / N/A 37；原结果保存在 `output/backups/cross-row-status-pre-fix-20261013/` | `output/full-records-current-20261011/summary.md`、备份目录 |
-| VERIFIED | 定向状态语义、问题 130 和空白状态人工复核测试通过；新复跑完成，剩余 3 个错误为原有 `status_result_mismatch`，未由本修复掩盖 | `tests.test_record61_scope_expanded`、`tests.test_full_record_61`、`output/runs/audit-2948-cross-row-fix-20261013/result.json` |
+| VERIFIED | 双横杠或整格斜线识别为 Record“不适用”，与 Report `/` 或 `——` 等价；问题 130 `RECORD61-BODY-S041-E004` 与 `RECORD61-CONCLUSION-S041` 均为 matched | `output/full-records-current-20261011/2948/report-record-9706-1/result.json` |
+| VERIFIED | 真正空白的状态框进入 `record_status_blank` error；靠近但未落入复选框的笔迹进入 `status_mark_near_checkbox_unresolved` manual，避免把不规范原始记录自动判成“不适用” | `mvp/full_record_61.py`、`tests.test_full_record_61` |
+| VERIFIED | 2948 GB 9706.1 当前 Ledger 为一致 919 / 不一致 5 / 待复核 93 / N/A 37；本轮前结果保存在 `output/backups/status-semantics-pre-fix-20261013/` | `output/full-records-current-20261011/summary.md`、备份目录 |
+| VERIFIED | Q62、Q980、Q982 的整格注销/斜线语义已收敛为通过；Q574、Q964 的空白状态为 error；Q741 为 Report 行映射缺失，Q941/Q952/Q992 为近框笔迹人工复核；Q1011–Q1013 为数值双通道识别未收敛 | `docs/TASK_STATUS_2026-10-13.md`、当前 `result.json` |
