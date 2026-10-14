@@ -358,6 +358,17 @@ class FullRecord61Tests(unittest.TestCase):
             "record_status_near_checkbox_unresolved",
         )
 
+    def test_2948_manual_findings_explain_why_review_is_needed(self) -> None:
+        findings = {item["id"]: item for item in self.results["2948"]["findings"]}
+        self.assertIn("14.13", findings["RECORD61-BODY-S097-E004"]["summary"])
+        self.assertIn("没有找到唯一对应行", findings["RECORD61-BODY-S097-E004"]["summary"])
+        self.assertIn("第27页", findings["RECORD61-CONCLUSION-S052"]["summary"])
+        self.assertIn("第48页", findings["RECORD61-CONCLUSION-S063"]["summary"])
+        self.assertIn("原始记录空白", findings["RECORD61-BODY-S075-E004"]["summary"])
+        self.assertIn("Record第106页", findings["RECORD61-NUMERIC-8_7-01"]["summary"])
+        self.assertIn("两种识别通道", findings["RECORD61-NUMERIC-8_7-02"]["summary"])
+        self.assertIn("Report填写", findings["RECORD61-NUMERIC-8_7-03"]["summary"])
+
     def test_nonpassing_rows_have_real_two_sided_locations_and_no_report_rules(self) -> None:
         for sample, result in self.results.items():
             with self.subTest(sample=sample):

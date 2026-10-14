@@ -3807,6 +3807,182 @@ def _entry_evidence(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
     return evidence
 
 
+def _entry_sequence(entry: Mapping[str, Any]) -> int | None:
+    match = re.search(r"-S(\d+)(?:-|$)", str(entry.get("entry_id") or entry.get("id") or ""))
+    return int(match.group(1)) if match else None
+
+
+def _record_location_text(record: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    if record.get("pdf_page"):
+        parts.append(f"第{record['pdf_page']}页")
+    if record.get("page_ordinal"):
+        parts.append(f"第{record['page_ordinal']}行")
+    if record.get("clause"):
+        parts.append(f"条款{record['clause']}")
+    return "Record" + "、".join(parts) if parts else "Record对应行"
+
+
+def _related_body_entries(entry: Mapping[str, Any], ledger: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    sequence = _entry_sequence(entry)
+    if sequence is None:
+        return []
+    prefix = f"RECORD61-BODY-S{sequence:03d}-"
+    return [item for item in ledger if str(item.get("entry_id") or "").startswith(prefix)]
+
+
+def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[str, Any]]) -> str:
+    """Build a reviewer-facing explanation while keeping ``reason_code`` stable.
+
+    ``reason_code`` is intentionally short and machine-readable.  The queue is
+    also consumed by people, so manual findings carry a plain-language reason
+    that describes the evidence to inspect and the decision that is blocked.
+    The detail is derived from the same comparison payload and never changes
+    the ledger disposition.
+    """
+
+    reason = str(entry.get("reason_code") or "")
+    comparison = entry.get("comparison") or {}
+    record = entry.get("record") or {}
+
+    if reason == "status_result_matched":
+        status = str(record.get("status") or comparison.get("observed") or "").strip()
+        report_result = str(
+            comparison.get("report_result_effective")
+            or comparison.get("report_result_physical")
+            or comparison.get("report_result")
+            or comparison.get("observed")
+            or ""
+        ).strip()
+        if status == "不适用" and report_result in {"/", "——", "—"}:
+            return f"{_record_location_text(record)}的Record状态为“不适用”，Report为“{report_result}”；双横线或整格斜线按不适用处理，已确认一致。"
+        if status and report_result:
+            return f"{_record_location_text(record)}的Record状态为“{status}”，Report结果为“{report_result}”，已确认一致。"
+        return "Record状态与Report结果已按状态语义规则确认一致。"
+
+    if reason == "sequence_result_matched":
+        expected = str(comparison.get("expected") or "").strip()
+        observed = str(comparison.get("observed") or "").strip()
+        if expected in {"/", "——", "—"} and observed in {"/", "——", "—"}:
+            return "该序号整体结论一致：Record的整格斜线/双横线按“不适用”处理，Report也记录为不适用。"
+        return f"该序号整体结论一致：Record计算为“{expected}”，Report记录为“{observed}”。"
+    if reason in {"record_row_missing_in_report", "record_row_not_uniquely_mapped", "record_row_ambiguous_mapping"}:
+        fields = comparison.get("field_comparisons") or {}
+        clause = (fields.get("clause") or {}).get("record_value") or "Record条款"
+        record_requirement = (fields.get("requirement") or {}).get("record_value") or "Record中的条款内容"
+        report_requirement = (fields.get("requirement") or {}).get("report_value") or "Report中的候选条款内容"
+        if reason == "record_row_missing_in_report":
+            action = "Report中没有找到唯一对应行"
+        elif reason == "record_row_ambiguous_mapping":
+            action = "Report中找到多条可能对应行"
+        else:
+            action = "两边条款内容不足以形成唯一对应"
+        return (
+            f"{_record_location_text(record)}的条款栏写作{clause}，但内容为“{record_requirement}”；"
+            f"当前候选Report内容为“{report_requirement}”；"
+            f"{action}，所以暂不比较这条结论。请人工确认两边实际对应的条款。"
+        )
+
+    if reason == "status_mark_near_checkbox_unresolved":
+        selected = record.get("selected_columns")
+        candidate = STATUS_BY_COLUMN.get(int(selected[0]), "") if isinstance(selected, Sequence) and selected else ""
+        candidate_text = f"，最近的是“{candidate}”框" if candidate else ""
+        requirement = compact(str(record.get("requirement") or ""))
+        requirement_text = f"；该行要求是“{requirement[:80]}”" if requirement else ""
+        return (
+            f"{_record_location_text(record)}检测到手写笔迹，但笔迹只靠近状态复选框{candidate_text}，没有可靠落入框内，"
+            f"因此不能自动认定已勾选；Report对应结果为“{comparison.get('report_result') or '未解析'}”{requirement_text}。请放大原图确认。"
+        )
+
+    if reason == "record_status_blank":
+        if record.get("pdf_page"):
+            return (
+                f"{_record_location_text(record)}的状态栏完全没有检测到笔迹，Record状态为空；"
+                f"Report对应结果为“{comparison.get('report_result') or '未解析'}”。这是原始记录空白，不能自动当作“不适用”或“符合”。"
+            )
+        related = [item for item in _related_body_entries(entry, ledger) if item.get("reason_code") == reason]
+        locations = [
+            _record_location_text(item.get("record") or {})
+            for item in related
+            if isinstance(item.get("record"), Mapping)
+        ]
+        location_text = "、".join(locations) if locations else "对应状态行"
+        observed = str(comparison.get("observed") or "").strip()
+        return (
+            f"序号{_entry_sequence(entry) or ''}的整体结论受到原始记录空白影响：{location_text}的状态栏没有笔迹，"
+            f"无法计算Record应有结论；Report序号结论为“{observed or '未解析'}”。"
+        )
+
+    if reason == "record_status_near_checkbox_unresolved":
+        related = [item for item in _related_body_entries(entry, ledger) if item.get("reason_code") == "status_mark_near_checkbox_unresolved"]
+        locations: list[str] = []
+        for item in related:
+            item_record = item.get("record") or {}
+            selected = item_record.get("selected_columns")
+            candidate = STATUS_BY_COLUMN.get(int(selected[0]), "") if isinstance(selected, Sequence) and selected else ""
+            suffix = f"（靠近“{candidate}”框）" if candidate else "（靠近状态框）"
+            locations.append(f"{_record_location_text(item_record)}{suffix}")
+        if locations:
+            return (
+                f"序号{_entry_sequence(entry) or ''}的整体结论无法自动计算：其中{len(locations)}处状态笔迹未可靠落入复选框，"
+                f"包括{'、'.join(locations[:6])}{'等' if len(locations) > 6 else ''}；请逐处查看Record原图。"
+            )
+        return "该序号的Record状态存在靠近复选框但未可靠落框的笔迹，整体结论无法自动计算，请查看原图。"
+
+    if reason == "record_cells_real_but_dual_recognition_unresolved":
+        source_cells = record.get("source_cells") or []
+        pages = sorted({str(cell.get("physical_page")) for cell in source_cells if cell.get("physical_page")})
+        page_text = f"Record第{','.join(pages)}页" if pages else "Record对应数值格"
+        block = str(record.get("block_type") or "")
+        semantic = (source_cells[0].get("semantic") or {}) if source_cells else {}
+        if block == "8.7" and semantic.get("metric") == "unweighted":
+            measure = "8.7无频率加权漏电流"
+        elif block == "8.7" and semantic.get("state") == "NC":
+            measure = "8.7正常状态对地漏电流"
+        elif block == "8.7" and semantic.get("state") == "SFC":
+            measure = "8.7单一故障状态对地漏电流"
+        else:
+            measure = f"{block}数值"
+        candidate_text: list[str] = []
+        for cell in source_cells:
+            channels = cell.get("recognition_channels") or {}
+            vision = [
+                str(item.get("text"))
+                for item in (channels.get("apple_vision") or {}).get("candidates", [])
+                if item.get("text") and re.search(r"\d", str(item.get("text")))
+            ]
+            tesseract = [
+                str(item.get("text"))
+                for item in (channels.get("tesseract") or {}).get("candidates", [])
+                if item.get("text") and re.search(r"\d", str(item.get("text")))
+            ]
+            cell_label = f"第{cell.get('row_index')}行" if cell.get("row_index") else "候选格"
+            cell_unit = str(cell.get("unit") or "").strip()
+            if cell_unit:
+                cell_label += f"（单位{cell_unit}）"
+            if vision or tesseract:
+                candidate_text.append(f"{cell_label}：Apple Vision={('/'.join(vision) or '无')}，Tesseract={('/'.join(tesseract) or '无')}")
+            else:
+                ink_count = cell.get("ink_count")
+                ink_text = f"，检测到{ink_count}个笔画" if ink_count else ""
+                candidate_text.append(f"{cell_label}：Apple Vision和Tesseract均未读出数字{ink_text}")
+        candidates = "；".join(candidate_text[:3])
+        report_value = str(comparison.get("report_value") or "Report对应值")
+        report = entry.get("report") or {}
+        report_unit = str(report.get("unit_context") or "").strip() if isinstance(report, Mapping) else ""
+        report_value_text = f"{report_value}{report_unit}" if report_unit else report_value
+        return (
+            f"{measure}：{page_text}有手写数值，但两种识别通道没有形成一致结果"
+            f"（{candidates}）；Report填写为“{report_value_text}”。请人工读取原始数值后再比较。"
+        )
+
+    if reason == "record_numeric_not_parsed":
+        return "Record数值格有手写内容，但暂时无法读出有效数字；请直接查看原始Record后录入数值。"
+    if reason == "record_numeric_not_uniquely_resolved":
+        return "Record中找到多个候选数值，系统无法判断应采用哪一个；请人工确认对应测量格。"
+    return ""
+
+
 def _findings(ledger: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for entry in ledger:
@@ -3818,6 +3994,8 @@ def _findings(ledger: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "not_applicable": "pass",
             "excluded": "pass",
         }[disposition]
+        reason_code = str(entry.get("reason_code") or "")
+        reason_detail = _finding_reason_detail(entry, ledger)
         findings.append(
             {
                 "id": entry["entry_id"],
@@ -3830,12 +4008,14 @@ def _findings(ledger: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                     if status == "manual"
                     else "9706.1 Record与Report一致或范围外"
                 ),
-                "summary": str(entry.get("reason_code") or ""),
+                "summary": reason_detail or reason_code,
                 "details": {
                     "scope_ids": entry.get("scope_ids", []),
                     "source_row_id": entry.get("source_row_id"),
                     "target_row_id": entry.get("target_row_id"),
                     "disposition": disposition,
+                    "reason_code": reason_code,
+                    "reason_detail": reason_detail,
                     "comparison": entry.get("comparison"),
                     "mapping": entry.get("mapping"),
                 },
