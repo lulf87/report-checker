@@ -348,6 +348,22 @@ class RealWorkbenchTests(unittest.TestCase):
         scope_rules = {item["rule_id"] for item in result_202["scope_ledger"]}
         self.assertTrue({"RECORD202-SCOPE", "RECORD202-IDENTITY", "RECORD202-METADATA"} <= scope_rules)
 
+    def test_real_workbench_uses_readable_issue_names(self) -> None:
+        source = self.module_source
+        self.assertIn("function findingDisplayTitle(finding, status)", source)
+        self.assertIn('return "原始记录空白";', source)
+        self.assertIn('return "内容不一致";', source)
+        self.assertIn('return "结论不一致";', source)
+        self.assertIn("function findingDisplaySummary(finding, status)", source)
+        self.assertIn("field_comparisons?.result", source)
+        self.assertIn("report_row_extra_vs_record", source)
+        self.assertIn("自动判定条件不足，请结合右侧证据确认", source)
+        self.assertNotIn("const rowText = [sourceId, targetId]", source)
+        self.assertNotIn(
+            "finding.details?.comparison?.reason_code || STATUS_META[status].label",
+            source,
+        )
+
     def test_stale_evidence_selection_cannot_overwrite_current_panes(self) -> None:
         self.assertIn("evidenceToken", self.module_source)
         self.assertIn("function evidenceSelectionIsCurrent(selection)", self.module_source)
