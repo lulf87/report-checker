@@ -364,9 +364,30 @@ class FullRecord61Tests(unittest.TestCase):
         self.assertEqual(ledger["RECORD61-CONCLUSION-S091"]["disposition"], "matched")
         self.assertEqual(ledger["RECORD61-CONCLUSION-S093"]["disposition"], "matched")
 
-        near = ledger["RECORD61-BODY-S103-E001"]
-        self.assertEqual(near["disposition"], "manual")
-        self.assertEqual(near["reason_code"], "status_mark_near_checkbox_unresolved")
+        # A unique near-box mark is now confirmed by its mapped Report result.
+        # The Record geometry still chooses the status; the Report only
+        # confirms that choice.
+        for entry_id, expected_status in (
+            ("RECORD61-BODY-S052-E034", "不适用"),
+            ("RECORD61-BODY-S052-E066", "不适用"),
+            ("RECORD61-BODY-S063-E010", "不适用"),
+            ("RECORD61-BODY-S103-E001", "不适用"),
+            ("RECORD61-BODY-S111-E001", "符合"),
+            ("RECORD61-BODY-S111-E004", "不适用"),
+        ):
+            with self.subTest(entry_id=entry_id):
+                near = ledger[entry_id]
+                self.assertEqual(near["disposition"], "matched")
+                self.assertEqual(near["reason_code"], "status_result_matched")
+                self.assertEqual(near["record"]["status"], expected_status)
+                self.assertEqual(
+                    near["record"]["status_reason_code"],
+                    "near_checkbox_context_confirmed",
+                )
+                self.assertEqual(
+                    near["record"]["context_confirmation"]["rule"],
+                    "unique_near_checkbox_plus_report_result",
+                )
         for entry_id, expected_status in (
             ("RECORD61-BODY-S003-E006", "符合"),
             ("RECORD61-BODY-S013-E002", "符合"),
@@ -381,17 +402,16 @@ class FullRecord61Tests(unittest.TestCase):
                     tolerated["record"]["inks"][0]["near_checkbox_distance_pt"],
                     2.0,
                 )
-        for entry_id in ("RECORD61-BODY-S052-E034", "RECORD61-BODY-S052-E066"):
-            with self.subTest(entry_id=entry_id):
-                self.assertEqual(ledger[entry_id]["disposition"], "manual")
+        for sequence in (52, 63, 103, 111):
+            with self.subTest(sequence=sequence):
                 self.assertEqual(
-                    ledger[entry_id]["reason_code"],
-                    "status_mark_near_checkbox_unresolved",
+                    ledger[f"RECORD61-CONCLUSION-S{sequence:03d}"]["disposition"],
+                    "matched",
                 )
-        self.assertEqual(
-            ledger["RECORD61-CONCLUSION-S103"]["reason_code"],
-            "record_status_near_checkbox_unresolved",
-        )
+                self.assertEqual(
+                    ledger[f"RECORD61-CONCLUSION-S{sequence:03d}"]["reason_code"],
+                    "sequence_result_matched",
+                )
 
     def test_2948_manual_findings_explain_why_review_is_needed(self) -> None:
         findings = {item["id"]: item for item in self.results["2948"]["findings"]}
@@ -404,8 +424,14 @@ class FullRecord61Tests(unittest.TestCase):
         self.assertEqual(q741["reason_code"], "status_result_matched")
         self.assertEqual(q741["mapping"]["method"], "embedded_subclause_and_unique_requirement_context")
         self.assertEqual(findings["RECORD61-BODY-S097-E004"]["status"], "pass")
-        self.assertIn("第27页", findings["RECORD61-CONCLUSION-S052"]["summary"])
-        self.assertIn("第48页", findings["RECORD61-CONCLUSION-S063"]["summary"])
+        # The formerly unresolved Q232/Q264/Q952 near-box marks are now
+        # confirmed by their matching Report results, so their sequence
+        # roll-ups are pass findings rather than manual findings.
+        for sequence in (52, 63, 103, 111):
+            self.assertEqual(
+                findings[f"RECORD61-CONCLUSION-S{sequence:03d}"]["status"],
+                "pass",
+            )
         self.assertIn("原始记录空白", findings["RECORD61-BODY-S075-E004"]["summary"])
         self.assertIn("9.6.2.1", findings["RECORD61-CONCLUSION-S075"]["summary"])
         self.assertIn("9.6.2.2", findings["RECORD61-CONCLUSION-S075"]["summary"])

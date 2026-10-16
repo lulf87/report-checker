@@ -775,6 +775,10 @@ def extract_record_61_status_rows(document: fitz.Document) -> tuple[list[dict[st
             "void_or_crossed_out": "double horizontal or full-pane slash; interpreted as 不适用",
             "near_checkbox": "ink approaches a checkbox but does not enter it; manual",
             "near_checkbox_tolerated": "single diagonal near-box mark within the narrow geometry tolerance; auto-resolved with evidence",
+            "near_checkbox_context_confirmed": (
+                "a unique near-box mark is confirmed by the uniquely mapped Report result; "
+                "the Report never selects the Record status"
+            ),
             "ambiguous": "ink occupies multiple status columns; manual",
             "glyph_variants": ["native_square_triplet", "alternate_first_square_triplet"],
         },
@@ -1899,6 +1903,79 @@ def _effective_report_group_result(
     return None, row_ids, "split_report_rows_unresolved"
 
 
+def _confirm_near_checkbox_from_report(
+    source: dict[str, Any],
+    targets: Sequence[ReportRow],
+    context_targets: Sequence[ReportRow],
+) -> dict[str, Any] | None:
+    """Use an unambiguous Report result to confirm one near-box Record mark.
+
+    The Report is only an auxiliary confirmation here.  The candidate status is
+    selected from the Record geometry first (one unique nearest checkbox), and
+    every automatically mapped Report result must agree with that candidate.
+    A blank, ambiguous, multi-mark, or otherwise unresolved Record row is never
+    filled from the Report.
+    """
+
+    if source.get("status_reason_code") != "status_mark_near_checkbox_unresolved":
+        return None
+    selected = source.get("selected_columns")
+    if not isinstance(selected, Sequence) or isinstance(selected, (str, bytes)):
+        return None
+    if len(selected) != 1 or len(source.get("inks") or []) != 1:
+        return None
+    try:
+        column = int(selected[0])
+    except (TypeError, ValueError):
+        return None
+    if column not in STATUS_BY_COLUMN:
+        return None
+
+    unique_targets: list[ReportRow] = []
+    seen_target_ids: set[str] = set()
+    for target in targets:
+        if target.row_id in seen_target_ids:
+            continue
+        seen_target_ids.add(target.row_id)
+        unique_targets.append(target)
+    if not unique_targets:
+        return None
+
+    candidate_status = STATUS_BY_COLUMN[column]
+    confirmations: list[dict[str, Any]] = []
+    for target in unique_targets:
+        effective_result, contributing_target_ids, result_method = _effective_report_result(
+            source,
+            target,
+            context_targets,
+        )
+        comparison = compare_record61_status_result(candidate_status, effective_result)
+        if comparison.decision != "match":
+            return None
+        confirmations.append(
+            {
+                "target_row_id": target.row_id,
+                "physical_result": target.result_raw,
+                "effective_result": effective_result,
+                "contributing_target_row_ids": contributing_target_ids,
+                "result_aggregation": result_method,
+            }
+        )
+
+    source["status"] = candidate_status
+    source["result"] = candidate_status
+    source["status_reason_code"] = "near_checkbox_context_confirmed"
+    source["status_class"] = "selected"
+    source["status_disposition"] = "matched"
+    source["context_confirmation"] = {
+        "rule": "unique_near_checkbox_plus_report_result",
+        "selected_column": column,
+        "selected_status": candidate_status,
+        "confirmations": confirmations,
+    }
+    return source["context_confirmation"]
+
+
 def _numeric_mapping_covered(
     source: Mapping[str, Any] | None,
     target: ReportRow | None,
@@ -1974,6 +2051,26 @@ def _status_ledger(
                 f"target={len(context_targets)}"
             )
         edges = _mapping_edges(sources, targets)
+
+        # A near-box mark has already identified a unique candidate column in
+        # the Record extraction layer.  When its automatically mapped Report
+        # row(s) carry the matching result, use that result as a second,
+        # contextual confirmation.  Apply this before group and sequence
+        # conclusions so the resolved status participates in both ledgers.
+        source_targets: dict[str, list[ReportRow]] = defaultdict(list)
+        for source, target, automatic, _ in edges:
+            if not automatic or source is None or target is None:
+                continue
+            source_targets[source["row_id"]].append(target)
+        for source in sources:
+            if source["row_id"] not in source_targets:
+                continue
+            _confirm_near_checkbox_from_report(
+                source,
+                source_targets[source["row_id"]],
+                context_targets,
+            )
+
         merged_groups: dict[str, dict[str, Any]] = defaultdict(
             lambda: {"sources": [], "targets": []}
         )
@@ -4114,6 +4211,15 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
             or comparison.get("observed")
             or ""
         ).strip()
+        if record.get("status_reason_code") == "near_checkbox_context_confirmed":
+            confirmation = record.get("context_confirmation") or {}
+            selected_status = str(
+                confirmation.get("selected_status") or status or ""
+            ).strip()
+            return (
+                f"{_record_location_text(record)}的笔迹虽未完整落入复选框，但只靠近唯一的“{selected_status}”框；"
+                f"Report对应结果为“{report_result}”，与该状态语义一致，已用上下文辅助规则自动确认。"
+            )
         if record.get("status_reason_code") == "near_checkbox_tolerated":
             distance = next(
                 (
