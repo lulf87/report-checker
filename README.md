@@ -214,7 +214,7 @@ output/full-records-current-20261011/summary.json
 |---|---|---:|---:|---:|---:|---:|---:|
 | SAMPLE-A | GB 9706.1 | 889 | 0 | 183 | 1 | 1034 / 1034 | 978 / 978 |
 | SAMPLE-B | GB 9706.1 | 859 | 0 | 220 | 1 | 1045 / 1045 | 978 / 978 |
-| SAMPLE-D | GB 9706.1 | 919 | 5 | 93 | 37 | 1262 / 1262 | 980 / 980 |
+| SAMPLE-D | GB 9706.1 | 951 | 5 | 61 | 37 | 1262 / 1262 | 980 / 980 |
 | SAMPLE-B | GB 9706.202 | 189 | 0 | 10 | 0 | 199 / 199 | 177 / 177 |
 | SAMPLE-C | GB 9706.202 | 158 | 28 | 13 | 0 | 199 / 199 | 177 / 177 |
 | SAMPLE-D | GB 9706.202 | 183 | 1 | 15 | 0 | 199 / 199 | 177 / 177 |
@@ -225,12 +225,12 @@ output/full-records-current-20261011/summary.json
 |---|---|---:|---:|---:|---:|
 | SAMPLE-A | GB 9706.1 | 889 | 0 | 183 | 1 |
 | SAMPLE-B | GB 9706.1 | 859 | 0 | 220 | 1 |
-| SAMPLE-D | GB 9706.1 | 919 | 5 | 93 | 37 |
+| SAMPLE-D | GB 9706.1 | 951 | 5 | 61 | 37 |
 | SAMPLE-B | GB 9706.202 | 189 | 0 | 10 | 0 |
 | SAMPLE-C | GB 9706.202 | 158 | 28 | 13 | 0 |
 | SAMPLE-D | GB 9706.202 | 183 | 1 | 15 | 0 |
 
-当前结果按项目字段比较重新计算；已冻结的“电压、电流或/和能量的限制”项目别名按等价处理并保留双方原文，其他项目名称差异进入 `mismatch`；图例和结构核验作为独立 Finding 保留。2948 的 GB 9706.1 当前正式结果已排除 Record 封面五项身份字段，Ledger 为一致 919 / 不一致 5 / 待复核 93 / N/A 37；双横杠或整格斜线按 Record“不适用”与 Report `/` 等价处理，真正空白状态进入不一致，靠近但未落入复选框的笔迹进入人工复核。旧的 241 条结果保存在 `output/backups/full-records-current-20261011-pre-unify-20261011/`，本轮修复前的临时结果保存在 `output/backups/cross-row-status-pre-fix-20261013/`，状态语义修复前结果保存在 `output/backups/status-semantics-pre-fix-20261013/`。完整运行总览位于 `output/full-records-current-20261011/index.html`。
+当前结果按项目字段比较重新计算；已冻结的“电压、电流或/和能量的限制”项目别名按等价处理并保留双方原文，其他项目名称差异进入 `mismatch`；图例和结构核验作为独立 Finding 保留。2948 的 GB 9706.1 当前正式结果已排除 Record 封面五项身份字段，Ledger 为一致 951 / 不一致 5 / 待复核 61 / N/A 37；双横杠或整格斜线按 Record“不适用”与 Report `/` 等价处理，真正空白状态进入不一致，靠近但未落入复选框的笔迹进入人工复核；条款栏误写父级编号但正文唯一指向14.13时，按唯一上下文映射到 Report 14.13行。旧的 241 条结果保存在 `output/backups/full-records-current-20261011-pre-unify-20261011/`，本轮修复前的临时结果保存在 `output/backups/cross-row-status-pre-fix-20261013/`，状态语义修复前结果保存在 `output/backups/status-semantics-pre-fix-20261013/`。完整运行总览位于 `output/full-records-current-20261011/index.html`。
 
 六份运行的 Coverage 均守恒，但每份都仍含 `manual` 或 `mismatch`，因此“运行完整”不等于“样本自动通过”。
 

@@ -126,5 +126,5 @@
 | VERIFIED | 状态笔迹先按实际点/线段与复选框的交集归属到状态行；没有唯一复选框交集时才回退到质心归属，修复页 17 的 7.2.17 跨行斜线误归 | `mvp/full_record_61.py`、`tests.test_full_record_61.FullRecord61Tests.test_2948_cross_row_status_mark_binds_to_the_next_checkbox_row` |
 | VERIFIED | 双横杠或整格斜线识别为 Record“不适用”，与 Report `/` 或 `——` 等价；问题 130 `RECORD61-BODY-S041-E004` 与 `RECORD61-CONCLUSION-S041` 均为 matched | `output/full-records-current-20261011/2948/report-record-9706-1/result.json` |
 | VERIFIED | 真正空白的状态框进入 `record_status_blank` error；靠近但未落入复选框的笔迹进入 `status_mark_near_checkbox_unresolved` manual，避免把不规范原始记录自动判成“不适用” | `mvp/full_record_61.py`、`tests.test_full_record_61` |
-| VERIFIED | 2948 GB 9706.1 当前 Ledger 为一致 919 / 不一致 5 / 待复核 93 / N/A 37；本轮前结果保存在 `output/backups/status-semantics-pre-fix-20261013/` | `output/full-records-current-20261011/summary.md`、备份目录 |
-| VERIFIED | Q62、Q980、Q982 的整格注销/斜线语义已收敛为通过；Q574、Q964 的空白状态为 error；Q741 为 Report 行映射缺失，Q941/Q952/Q992 为近框笔迹人工复核；Q1011–Q1013 为数值双通道识别未收敛 | `docs/TASK_STATUS_2026-10-13.md`、当前 `result.json` |
+| VERIFIED | 2948 GB 9706.1 当前 Ledger 为一致 951 / 不一致 5 / 待复核 61 / N/A 37；本轮前结果保存在 `output/backups/status-semantics-pre-fix-20261013/` | `output/full-records-current-20261011/summary.md`、备份目录 |
+| VERIFIED | Q62、Q980、Q982 的整格注销/斜线语义已收敛为通过；Q574、Q964 的空白状态为 error；Q741 已通过正文唯一14.13子条款映射并按“不适用”与“——”等价处理；Q941/Q952/Q992 为近框笔迹人工复核；Q1011–Q1013 为数值双通道识别未收敛 | `docs/TASK_STATUS_2026-10-13.md`、当前 `result.json` |

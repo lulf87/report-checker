@@ -1441,6 +1441,55 @@ def _mapping_edges(
         remaining_source.discard(source)
         remaining_report -= set(members)
 
+    # Some Record templates repeat a parent clause in the clause column even
+    # when the requirement text explicitly names a more specific child clause.
+    # In sequence 97, for example, the Record row is labelled 14.1 but its
+    # text explicitly describes 14.13 and the IT-network context.  When that
+    # embedded child clause points to exactly one explicit Report heading and
+    # shares at least two context terms, use that bounded structural match.
+    # This runs before the broader structural fallback so the parent heading
+    # cannot consume the source row first.
+    def _context_terms(value: str) -> set[str]:
+        return set(
+            re.findall(
+                r"[A-Za-z]{2,}|[\u4e00-\u9fff]{2,}",
+                unicodedata.normalize("NFKC", value),
+            )
+        )
+
+    embedded_matches: list[tuple[int, int]] = []
+    for source in sorted(remaining_source):
+        source_clause = str(source_rows[source].get("clause") or "")
+        source_requirement = str(source_rows[source].get("requirement") or "")
+        embedded_clauses = {
+            _clause_token(value)
+            for value in re.findall(
+                r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])", source_requirement
+            )
+        }
+        if not embedded_clauses:
+            continue
+        source_terms = _context_terms(source_requirement)
+        candidates: list[int] = []
+        for report in sorted(remaining_report):
+            target = report_rows[report]
+            anchor = _leading_subclause(target.requirement_raw)
+            if not anchor or anchor not in embedded_clauses:
+                continue
+            if not _clause_compatible(source_clause, target.clause_raw):
+                continue
+            if len(source_terms & _context_terms(target.requirement_raw)) < 2:
+                continue
+            candidates.append(report)
+        if len(candidates) == 1:
+            embedded_matches.append((source, candidates[0]))
+    for source, report in embedded_matches:
+        edges.append(
+            (source, report, True, "embedded_subclause_and_unique_requirement_context")
+        )
+        remaining_source.discard(source)
+        remaining_report.discard(report)
+
     # The formal Report frequently gives a single explicit subclause heading
     # while the Record repeats that heading over several physical rows.  Text
     # containment cannot resolve those rows when the Report has shortened or

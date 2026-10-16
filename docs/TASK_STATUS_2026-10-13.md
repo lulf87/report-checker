@@ -1,6 +1,6 @@
 # 当前任务状态：2948 Report + GB 9706.1 Record
 
-更新时间：2026-10-13
+更新时间：2026-10-16
 
 ## 已完成
 
@@ -9,10 +9,11 @@
 - Record 状态框真正空白时报告 `record_status_blank` error。
 - 笔迹靠近复选框但没有落入复选框时报告 `status_mark_near_checkbox_unresolved`，保留人工复核，不自动推断为“不适用”。
 - 2948 的结果已重新生成并同步到真实工作台目录。
+- 对条款栏误写父级编号、但正文明确写出唯一子条款的情况增加受限映射：正文唯一指向14.13且上下文唯一时，优先配到 Report 的14.13行。
 
 ## 当前 2948 GB 9706.1 结果
 
-Ledger：一致 919，不一致 5，待复核 93，不适用 37，排除 5；Record Coverage `1262/1262`，Report Coverage `980/980`。
+Ledger：一致 951，不一致 5，待复核 61，不适用 37，排除 5；Record Coverage `1262/1262`，Report Coverage `980/980`。
 
 当前结果文件：
 
@@ -24,7 +25,7 @@ Ledger：一致 919，不一致 5，待复核 93，不适用 37，排除 5；Rec
 |---:|---|---|
 | 62 | 通过 | 双横杠注销线解释为“不适用”，与 Report `/` 一致 |
 | 574 | 错误 | Record 状态框真正空白，`record_status_blank` |
-| 741 | 待复核 | Record 行存在，但 Report 中没有唯一对应行，`record_row_missing_in_report` |
+| 741 | 通过 | Record 条款栏虽写14.1，但正文明确包含14.13且上下文唯一，已配到 Report 的14.13行；Record“不适用”与 Report“——”按等价处理 |
 | 941 | 待复核 | 序列 52 中存在近框但未落框笔迹，`record_status_near_checkbox_unresolved` |
 | 952 | 待复核 | 序列 63 中存在近框但未落框笔迹，`record_status_near_checkbox_unresolved` |
 | 964 | 错误 | 序列 75 的 Record 状态框为空，`record_status_blank` |
@@ -38,7 +39,7 @@ Ledger：一致 919，不一致 5，待复核 93，不适用 37，排除 5；Rec
 ## 尚未关闭
 
 - 3 个原有状态值不一致：`RECORD61-BODY-S052-E037`、`RECORD61-BODY-S052-E038`、`RECORD61-BODY-S061-E008`。
-- Q741 的 Report/Record 条款映射仍需业务确认，当前保留人工复核。
+- Q741 已通过受限的14.13正文子条款映射规则自动确认；1539 样本同一位置因 Record 为“符合”、Report 为“——”而单独暴露为真实不一致。
 - Q1011–Q1013 需要人工读取原始数值，或增加更可靠的局部数值识别通道。
 
 修复前快照：

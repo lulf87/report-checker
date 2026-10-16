@@ -270,7 +270,9 @@ class FullRecord61Tests(unittest.TestCase):
             for sample, result in self.results.items()
         }
         self.assertEqual(mismatches_by_sample["1347"], set())
-        self.assertEqual(mismatches_by_sample["1539"], set())
+        # The embedded 14.13 heading now resolves the previously manual row;
+        # sample 1539 then exposes its real Record=符合 vs Report=—— mismatch.
+        self.assertEqual(mismatches_by_sample["1539"], {"RECORD61-BODY-S097-E004"})
         self.assertEqual(
             mismatches_by_sample["2948"],
             {
@@ -393,8 +395,15 @@ class FullRecord61Tests(unittest.TestCase):
 
     def test_2948_manual_findings_explain_why_review_is_needed(self) -> None:
         findings = {item["id"]: item for item in self.results["2948"]["findings"]}
-        self.assertIn("14.13", findings["RECORD61-BODY-S097-E004"]["summary"])
-        self.assertIn("没有找到唯一对应行", findings["RECORD61-BODY-S097-E004"]["summary"])
+        q741 = next(
+            item
+            for item in self.results["2948"]["ledger"]
+            if item["entry_id"] == "RECORD61-BODY-S097-E004"
+        )
+        self.assertEqual(q741["disposition"], "matched")
+        self.assertEqual(q741["reason_code"], "status_result_matched")
+        self.assertEqual(q741["mapping"]["method"], "embedded_subclause_and_unique_requirement_context")
+        self.assertEqual(findings["RECORD61-BODY-S097-E004"]["status"], "pass")
         self.assertIn("第27页", findings["RECORD61-CONCLUSION-S052"]["summary"])
         self.assertIn("第48页", findings["RECORD61-CONCLUSION-S063"]["summary"])
         self.assertIn("原始记录空白", findings["RECORD61-BODY-S075-E004"]["summary"])
