@@ -73,7 +73,7 @@
 | S32 | Record 与 Report 的项目、条款、要求、建议、条件、单位、检验结果文本逐字段一致 | confirmed | `RECORD61-SCOPE` / partial；需扩展字段级比对 |
 | S33 | Record/Report 缺失行、额外行、无法唯一映射行或模板版本变化 | confirmed | `RECORD61-SCOPE` / partial；需扩展异常分类 |
 | S34 | Record 中“不符合”生成独立不符合警示 | confirmed | `RECORD61-NONCONFORMING-ALERT` / validated |
-| S35 | 日期、检测仪器、检测人员、复核人员、签字、备注等元数据 | confirmed | `RECORD61-METADATA` / validated |
+| S35 | 日期、检测仪器、检测人员、复核人员、签字、备注等元数据 | not_applicable | `RECORD61-METADATA` / current 9706.1 scope excludes Q1053–Q1058; rule state records the exclusion |
 
 ### D. GB 9706.202 Record + Report（S36–S48）
 
@@ -101,10 +101,10 @@
 | --- | --- | --- |
 | `report_self` | enabled | S09–S21，以及 S01–S08 |
 | `report_ptr` | disabled (`PTR_NOT_VALIDATED`) | 不纳入本次范围确认 |
-| `report_record_9706_1` | enabled | S22–S35，以及 S01–S08 |
+| `report_record_9706_1` | enabled | S22–S34，以及 S01–S08；S35 保留规则 ID 但按当前范围记为 `not_applicable` |
 | `report_record_9706_202` | enabled | S36–S47，以及 S01–S08 |
 
-当前规则目录中的规则 ID 必须在实现或范围文档中保持可追溯。新增范围项应先补充规则 ID、输入证据、结果处置和测试，再进入 enabled 规则计划。现有规则 ID 与本矩阵的对应关系见上表。当前目录中 `REPORT-R09-R10` 是早期兼容别名，不在现行 Report 自检 12 条规则计划中。9706.1 的模板外数值目标由 `RECORD61-NUMERIC-DISCOVERY` 显式记录；日期、仪器、人员、签字和备注由 `RECORD61-METADATA` 记录。9706.202 的项目字段由 `RECORD202-SCOPE` 记录，固定身份和元数据由 `RECORD202-IDENTITY`、`RECORD202-METADATA` 记录；当前模板不提供 Record 固定字段时用 `not_applicable` 保留依据。9706.202 的项目名称在 `RECORD202-SCOPE` 与正文 `RECORD202-BODY-STATUS` 中执行；已冻结的“电压、电流或/和能量的限制”别名按等价处理，其他名称仍严格比较；规则结果仍可能因 OCR、符号或映射证据不足而为 `manual`。
+当前规则目录中的规则 ID 必须在实现或范围文档中保持可追溯。新增范围项应先补充规则 ID、输入证据、结果处置和测试，再进入 enabled 规则计划。现有规则 ID 与本矩阵的对应关系见上表。当前目录中 `REPORT-R09-R10` 是早期兼容别名，不在现行 Report 自检 12 条规则计划中。9706.1 的模板外数值目标由 `RECORD61-NUMERIC-DISCOVERY` 显式记录；Q1053–Q1058 元数据保留 `RECORD61-METADATA` 规则状态，但按当前范围记为 `not_applicable`。9706.202 的项目字段由 `RECORD202-SCOPE` 记录，固定身份和元数据由 `RECORD202-IDENTITY`、`RECORD202-METADATA` 记录；当前模板不提供 Record 固定字段时用 `not_applicable` 保留依据。9706.202 的项目名称在 `RECORD202-SCOPE` 与正文 `RECORD202-BODY-STATUS` 中执行；已冻结的“电压、电流或/和能量的限制”别名按等价处理，其他名称仍严格比较；规则结果仍可能因 OCR、符号或映射证据不足而为 `manual`。
 
 Report 照片规则的适用对象按样品描述表逐行判定。备注明确写明“本次检测未使用”或“本次检验未使用”的条目，以及名称明确表示软件、模块、升级包、证书或功能的非实物条目，仍进入 Coverage Ledger，但照片存在性和照片内容规则记录为 `not_applicable`，并保留具体原因。其余实物条目继续按实物照片、中文标签照片和照片内容逐项核对；照片证据或 OCR 不足时记录为 `manual`。
 

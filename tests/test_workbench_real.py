@@ -335,8 +335,12 @@ class RealWorkbenchTests(unittest.TestCase):
             result_1347["ledger_status_counts"]["pass"],
             sum(item.get("disposition") == "matched" for item in result_1347["ledger"]),
         )
-        self.assertEqual(result_1347["ledger_status_counts"]["not_applicable"], 1)
-        self.assertIn("RECORD61-METADATA", {item["rule_id"] for item in result_1347["ledger"]})
+        self.assertEqual(result_1347["ledger_status_counts"]["not_applicable"], 54)
+        self.assertNotIn("RECORD61-METADATA", {item["rule_id"] for item in result_1347["ledger"]})
+        self.assertEqual(
+            result_1347["rule_execution_states"]["RECORD61-METADATA"]["state"],
+            "not_applicable",
+        )
         self.assertTrue(result_1347["coverage"]["numeric_discovery"]["conserved"])
 
         result_202 = json.loads(

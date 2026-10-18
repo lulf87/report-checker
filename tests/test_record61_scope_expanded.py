@@ -183,7 +183,7 @@ class Record61ScopeExpandedTests(unittest.TestCase):
         targets = _numeric_discovery_targets([row], set())
         self.assertEqual([item.row_id for item in targets], ["report:s99"])
 
-    def test_real_sample_emits_field_payloads_and_conserved_metadata_ledger(self) -> None:
+    def test_real_sample_excludes_cover_metadata_from_9706_1_scope(self) -> None:
         config = SAMPLE_CONFIGS["1347"]
         result = run_record_61_full(ROOT / config.report, ROOT / config.record61)
         body = [item for item in result["ledger"] if item.get("rule_id") == "RECORD61-BODY-STATUS"]
@@ -191,10 +191,14 @@ class Record61ScopeExpandedTests(unittest.TestCase):
         self.assertTrue({"project", "clause", "requirement", "condition", "unit", "result"} <= set(body[0]["record"]))
         self.assertTrue({"project", "clause", "requirement", "condition", "unit", "result"} <= set(body[0]["report"]))
         metadata = [item for item in result["ledger"] if item.get("rule_id") == "RECORD61-METADATA"]
-        self.assertEqual(len(metadata), 6)
+        self.assertEqual(metadata, [])
+        self.assertEqual(result["coverage"]["metadata"]["included"], False)
+        self.assertEqual(
+            result["rule_execution_states"]["RECORD61-METADATA"]["state"],
+            "not_applicable",
+        )
         self.assertTrue(result["coverage"]["source_rows"]["conserved"])
         self.assertTrue(result["coverage"]["report_rows"]["conserved"])
-        self.assertTrue(all(item.get("scope_ids") for item in metadata))
 
 
 if __name__ == "__main__":

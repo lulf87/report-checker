@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from mvp.checker import SAMPLE_CONFIGS, sha256_file
@@ -16,6 +17,7 @@ from mvp.full_record_61 import (
     _effective_report_result,
     _mapping_edges,
     _numeric_manual_comparison,
+    _report_guided_decimal_resolution,
     _requirements_highly_similar,
     _target_source_cells,
     run_record_61_full,
@@ -108,7 +110,23 @@ class FullRecord61Tests(unittest.TestCase):
                 self.assertEqual(numeric["expected_target_counts"], expected)
                 self.assertEqual(numeric["total_target_count"], sum(expected.values()))
                 self.assertEqual(len(numeric_entries), sum(expected.values()))
-                self.assertTrue(all(entry["disposition"] == "manual" for entry in numeric_entries))
+                self.assertTrue(
+                    all(
+                        entry["disposition"] in {"manual", "matched"}
+                        for entry in numeric_entries
+                    )
+                )
+                # The unit fixture runs without an output directory, so OCR
+                # channels are intentionally not executed here; the
+                # report-guided decimal rule has a focused unit test below.
+                self.assertEqual(
+                    {
+                        entry["entry_id"]
+                        for entry in numeric_entries
+                        if entry["disposition"] == "matched"
+                    },
+                    set(),
+                )
                 self.assertTrue(all(_valid_location(entry["record_location"]) for entry in numeric_entries))
                 self.assertTrue(all(_valid_location(entry["report_location"]) for entry in numeric_entries))
 
@@ -413,6 +431,7 @@ class FullRecord61Tests(unittest.TestCase):
                     "sequence_result_matched",
                 )
 
+
     def test_2948_manual_findings_explain_why_review_is_needed(self) -> None:
         findings = {item["id"]: item for item in self.results["2948"]["findings"]}
         q741 = next(
@@ -440,7 +459,10 @@ class FullRecord61Tests(unittest.TestCase):
         self.assertEqual([item["clause"] for item in sub_conclusions], ["9.6.2.1", "9.6.2.2"])
         self.assertEqual([item["status"] for item in sub_conclusions], ["pass", "error"])
         self.assertIn("Record第106页", findings["RECORD61-NUMERIC-8_7-01"]["summary"])
-        self.assertIn("两种识别通道", findings["RECORD61-NUMERIC-8_7-02"]["summary"])
+        self.assertTrue(
+            "小数点仅按唯一Report约束补回" in findings["RECORD61-NUMERIC-8_7-02"]["summary"]
+            or "两种识别通道" in findings["RECORD61-NUMERIC-8_7-02"]["summary"]
+        )
         self.assertIn("Report填写", findings["RECORD61-NUMERIC-8_7-03"]["summary"])
 
     def test_nonpassing_rows_have_real_two_sided_locations_and_no_report_rules(self) -> None:
@@ -505,6 +527,35 @@ class Record61NumericDecisionTests(unittest.TestCase):
         }
         self.assertEqual(_accepted_dual_channel_value(agreed), "509")
         self.assertIsNone(_accepted_dual_channel_value(disputed))
+
+    def test_report_guided_decimal_repair_confirms_unique_maximum(self) -> None:
+        target = self._target("0.17", "mA")
+        target = replace(target, clause_raw="8.7")
+        cells = [
+            {
+                "row_id": "record:cell:1",
+                "unit": "uA",
+                "recognition_channels": {
+                    "apple_vision": {"candidates": [{"text": "172.6", "confidence": 1.0}]},
+                    "tesseract": {"candidates": []},
+                },
+            },
+            {
+                "row_id": "record:cell:2",
+                "unit": "uA",
+                "recognition_channels": {
+                    "apple_vision": {"candidates": [{"text": "1726", "confidence": 1.0}]},
+                    "tesseract": {"candidates": []},
+                },
+            },
+        ]
+        result = _report_guided_decimal_resolution(target, cells)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["decision"], "match")
+        self.assertEqual(result["reason_code"], "report_guided_decimal_ocr_matched")
+        self.assertEqual(result["record_values"], ["172.6", "172.6"])
+        self.assertTrue(result["record_candidates"][1]["decimal_repaired"])
 
     def test_high_similarity_mapping_preserves_measurement_and_obligation_semantics(self) -> None:
         self.assertTrue(

@@ -101,6 +101,12 @@ METADATA_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("remark", ("备注", "观察记录"), "S35"),
 )
 
+# The current 9706.1 comparison scope ends at the Record body and its numeric
+# cells.  The six cover metadata fields map to the workbench's Q1053–Q1058;
+# they are retained as extraction helpers for future scope revisions but are
+# explicitly outside this run's comparison inventory.
+RECORD61_METADATA_INCLUDED = False
+
 
 def _rect(value: Sequence[float] | fitz.Rect) -> list[float]:
     rect = fitz.Rect(value)
@@ -3236,6 +3242,121 @@ def _target_source_cells(
     return [cell for cell in cells if cell["semantic"].get("condition") == condition]
 
 
+def _numeric_ocr_candidate_variants(value: str) -> set[str]:
+    """Return conservative OCR variants for a missing decimal point.
+
+    Handwritten Record values such as ``1726`` and ``3378`` are commonly read
+    by OCR without the decimal point even though the image visibly contains
+    ``172.6`` and ``337.8``.  Only decimal insertion is considered; digits are
+    never deleted, reordered, or invented.
+    """
+
+    token = str(value or "").strip()
+    variants = {token}
+    if token.startswith(("<", ">")) or "." in token:
+        return variants
+    if not token.isdigit() or not 2 <= len(token) <= 5:
+        return variants
+    for index in range(1, len(token)):
+        variants.add(f"{token[:index]}.{token[index:]}")
+    return variants
+
+
+def _report_guided_decimal_resolution(
+    target: ReportRow,
+    cells: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Resolve a multi-cell maximum when every cell has one Report-compatible value.
+
+    This is deliberately stricter than choosing the OCR value nearest to the
+    Report.  Every applicable cell must yield exactly one compatible numeric
+    value after optional decimal insertion, and the maximum of those values
+    must still compare to the Report result.  Thus an OCR outlier or an empty
+    cell keeps the item manual.
+    """
+
+    if not cells:
+        return None
+    resolved: list[dict[str, Any]] = []
+    for cell_index, cell in enumerate(cells):
+        channels = cell.get("recognition_channels") or {}
+        raw_candidates: list[tuple[str, str, float | None]] = []
+        for channel_name in ("apple_vision", "tesseract"):
+            for item in (channels.get(channel_name) or {}).get("candidates", []):
+                raw_text = str(item.get("text") or "").strip()
+                confidence = item.get("confidence")
+                for raw_value in sorted(_ocr_numeric_values([item])):
+                    raw_candidates.append((channel_name, raw_value, confidence))
+        if not raw_candidates:
+            return None
+
+        matches: dict[str, dict[str, Any]] = {}
+        for channel_name, raw_value, confidence in raw_candidates:
+            for candidate in sorted(_numeric_ocr_candidate_variants(raw_value)):
+                comparison = compare_numeric_observation(
+                    candidate,
+                    cell.get("unit"),
+                    target.result_raw,
+                    target.unit_context,
+                )
+                if comparison.decision != "match":
+                    continue
+                existing = matches.get(candidate)
+                item = {
+                    "cell_index": cell_index,
+                    "source_row_id": cell.get("row_id"),
+                    "physical_page": cell.get("physical_page"),
+                    "row_index": cell.get("row_index"),
+                    "channel": channel_name,
+                    "raw_ocr": raw_value,
+                    "candidate": candidate,
+                    "decimal_repaired": candidate != raw_value,
+                    "confidence": confidence,
+                    "comparison": comparison.to_dict(),
+                }
+                if existing is None or (confidence or 0.0) > (existing.get("confidence") or 0.0):
+                    matches[candidate] = item
+        if len(matches) != 1:
+            return None
+        resolved.append(next(iter(matches.values())))
+
+    # Compare the maximum applicable candidate once more.  This preserves the
+    # 8.7/16.6 aggregation rule instead of treating each cell as independent.
+    try:
+        maximum_item = max(
+            resolved,
+            key=lambda item: abs(
+                convert_decimal(
+                    item["candidate"],
+                    cells[int(item["cell_index"])].get("unit"),
+                    target.unit_context,
+                )
+            ),
+        )
+    except (TypeError, ValueError, KeyError):
+        return None
+    maximum_cell = cells[int(maximum_item["cell_index"])]
+    maximum_comparison = compare_numeric_observation(
+        maximum_item["candidate"],
+        maximum_cell.get("unit"),
+        target.result_raw,
+        target.unit_context,
+    )
+    if maximum_comparison.decision != "match":
+        return None
+    return {
+        "decision": "match",
+        "reason_code": "report_guided_decimal_ocr_matched",
+        "expected": maximum_comparison.expected,
+        "observed": maximum_comparison.observed,
+        "record_values": [item["candidate"] for item in resolved],
+        "record_candidates": resolved,
+        "maximum_candidate": maximum_item["candidate"],
+        "aggregation": "maximum_applicable_value",
+        "recognition_method": "report_guided_decimal_insertion",
+    }
+
+
 def _numeric_manual_comparison(
     block: str,
     target: ReportRow,
@@ -3274,6 +3395,10 @@ def _numeric_manual_comparison(
             result["record_candidate"] = candidate
             result["recognition_method"] = "report_guided_ocr"
             return result
+    if block in {"8.7", "16.6"}:
+        guided = _report_guided_decimal_resolution(target, cells)
+        if guided is not None:
+            return guided
     if any(cell.get("semantic", {}).get("measurement_position_unresolved") for cell in cells):
         return {
             "decision": "manual",
@@ -4357,6 +4482,16 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
             f"（{candidates}）；Report填写为“{report_value_text}”。请人工读取原始数值后再比较。"
         )
 
+    if reason == "report_guided_decimal_ocr_matched":
+        record_values = comparison.get("record_values") or []
+        candidate_text = "、".join(str(value) for value in record_values)
+        maximum = str(comparison.get("maximum_candidate") or "")
+        return (
+            f"{_record_location_text(record)}的数值候选为“{candidate_text}”，其中最大值“{maximum}”经过单位换算后"
+            f"与Report结果“{comparison.get('report_value') or comparison.get('observed') or ''}”一致；"
+            "OCR缺失的小数点仅按唯一Report约束补回，已自动确认。"
+        )
+
     if reason == "record_numeric_not_parsed":
         return "Record数值格有手写内容，但暂时无法读出有效数字；请直接查看原始Record后录入数值。"
     if reason == "record_numeric_not_uniquely_resolved":
@@ -4474,6 +4609,23 @@ def _record61_rule_execution_states(
                 "target_count": 0,
                 "search_basis": "Report sequences 1-117, actual numeric or percentage results outside validated numeric blocks",
                 "inventory_conserved": True,
+            },
+        )
+
+    metadata = coverage.get("metadata", {})
+    if (
+        not RECORD61_METADATA_INCLUDED
+        and metadata.get("eligible") == 0
+        and metadata.get("accounted") == 0
+        and metadata.get("conserved") is True
+    ):
+        declare_empty(
+            "RECORD61-METADATA",
+            "RECORD61_METADATA_OUTSIDE_CURRENT_SCOPE",
+            {
+                "target_count": 0,
+                "excluded_fields": [field for field, _, _ in METADATA_FIELDS],
+                "search_basis": "Current 9706.1 scope ends at body status and numeric comparison; Q1053-Q1058 are excluded",
             },
         )
 
@@ -4604,9 +4756,13 @@ def run_record_61_full(
             report_number,
             derived_output_dir,
         )
-        metadata_ledger, metadata_coverage, metadata_source_ids, metadata_target_ids = _metadata_ledger(
-            record_document, report_document
-        )
+        if RECORD61_METADATA_INCLUDED:
+            metadata_ledger, metadata_coverage, metadata_source_ids, metadata_target_ids = _metadata_ledger(
+                record_document, report_document
+            )
+        else:
+            metadata_ledger, metadata_coverage = [], []
+            metadata_source_ids, metadata_target_ids = [], []
         scope_ledger, scope_coverage = _scope_118_entry(record_document, report_118[0])
 
     ledger = [
@@ -4679,6 +4835,17 @@ def run_record_61_full(
         "conserved": len(numeric_discovery_targets) == len(numeric_discovery_ledger),
         "target_row_ids": [row.row_id for row in numeric_discovery_targets],
     }
+    coverage["metadata"] = {
+        "eligible": len(metadata_ledger),
+        "accounted": len(metadata_ledger),
+        "conserved": True,
+        "included": RECORD61_METADATA_INCLUDED,
+        "excluded_reason": (
+            "record61_metadata_outside_current_comparison_scope"
+            if not RECORD61_METADATA_INCLUDED
+            else None
+        ),
+    }
 
     report_hash_after = sha256_file(report_path)
     record_hash_after = sha256_file(record_path)
@@ -4723,10 +4890,10 @@ def run_record_61_full(
                 "117 independent sequence-conclusion comparisons",
                 "4.11, 8.6, 8.7, 9.6 and 16.6 numeric or final-percentage targets",
                 "all Report numeric/percentage results outside validated blocks as explicit manual discovery targets",
-                "object-level dates, instruments, personnel, signatures and remarks",
             ],
             "not_applicable": [
-                "Report sequence 118 / chapter 17: no corresponding row in this Record template"
+                "Report sequence 118 / chapter 17: no corresponding row in this Record template",
+                "Record/Report cover metadata Q1053–Q1058: excluded from the current 9706.1 comparison scope",
             ],
         },
         "extraction": extraction,
