@@ -415,6 +415,37 @@ def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> 
 
 def _extra_criterion(text: str) -> dict[str, Any] | None:
     units = rf"(?:{_NUMERIC_UNITS}|mJ|J|A|W|dB)"
+    # A limit computed in the requirement itself, e.g. "应限制……漏电流小于I漏；
+    # I漏[mA]=2.0×10−5×d×L×f×U试=135.7[mA]" or "相应限值为：I漏[mA]=…=201.6[mA]".
+    formula_values = re.findall(rf"=(\d+(?:\.\d+)?)\[?({_SIMPLE_UNITS})\]?", text)
+    if formula_values and (re.search(r"小于I", text) or re.search(r"限值为", text)):
+        number, unit = formula_values[-1]
+        strict = bool(re.search(r"小于I", text)) and not re.search(r"限值为", text)
+        return {
+            "kind": "upper",
+            "value": _parse_number(number),
+            "inclusive": not strict,
+            "unit": unit,
+            "source": f"={number}{unit}",
+        }
+    # "……的限值改变为100mA" / "限值改为…"
+    if match := re.search(rf"限值(?:改变为|改为|变为|调整为)(\d+(?:\.\d+)?)({units})?", text):
+        return {
+            "kind": "upper",
+            "value": _parse_number(match.group(1)),
+            "inclusive": True,
+            "unit": match.group(2) or _declared_unit(text),
+            "source": match.group(0),
+        }
+    # "不应产生150mA以上高频电流" / "不得产生50mA以上…"
+    if match := re.search(rf"(?:不应|不得|不能|不可|应不)[^。；;0-9]{{0,12}}?(\d+(?:\.\d+)?)({units})?以上", text):
+        return {
+            "kind": "upper",
+            "value": _parse_number(match.group(1)),
+            "inclusive": True,
+            "unit": match.group(2) or _declared_unit(text),
+            "source": match.group(0),
+        }
     patterns = (
         (rf"(?:不应|应不|不得|不)低于[^0-9。；;]*?(\d+(?:\.\d+)?)({units})?", "lower", True),
         (rf"不应[^。；;]*?降到?(\d+(?:\.\d+)?)({units})?[^。；;]*?以下", "lower", True),
