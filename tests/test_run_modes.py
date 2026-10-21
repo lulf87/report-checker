@@ -89,7 +89,8 @@ class ReportSelfRunnerTests(unittest.TestCase):
             # R12～R16（2026-10-20）：2795 的检验项目“（除生物相容性，电磁兼容性）”用了逗号。
             # 照片 OCR 关闭，结果与本机装了哪些识别引擎无关；R17 因此为人工复核。
             # 1347、2948 的样品描述表没有日期列，R03 不执行。
-            "1347": {"pass": 14, "warning": 0, "manual": 4, "error": 0},
+            # 1.1.1: REPORT-R07-B reads the limit computed in item 140, so 1347 has no manual R07-B item left.
+            "1347": {"pass": 15, "warning": 0, "manual": 3, "error": 0},
             "1539": {"pass": 13, "warning": 0, "manual": 5, "error": 0},
             "2795": {"pass": 12, "warning": 0, "manual": 4, "error": 2},
             "2948": {"pass": 13, "warning": 0, "manual": 4, "error": 1},
