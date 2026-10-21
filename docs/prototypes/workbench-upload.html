@@ -249,6 +249,32 @@
       .mode-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .drop-grid, .progress-steps { grid-template-columns: 1fr; }
     }
+    /* ---- 结果：总结论、筛选、搜索、上下条 ---- */
+    .verdict-card { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding: 16px 20px; }
+    .verdict-card[hidden] { display: none; }
+    .verdict-text { font-size: 18px; font-weight: 800; }
+    .verdict-text small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    .verdict-stats { display: flex; gap: 8px; }
+    .stat { display: grid; justify-items: center; min-width: 108px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .stat b { font-size: 24px; line-height: 1.1; }
+    .stat span { color: var(--muted); font-size: 12px; }
+    .stat.error b { color: var(--error); } .stat.manual b { color: var(--manual); } .stat.pass b { color: var(--pass); }
+    .stat.error { background: var(--error-soft); } .stat.manual { background: var(--manual-soft); } .stat.pass { background: var(--pass-soft); }
+    .stat[aria-pressed="true"] { box-shadow: inset 0 0 0 2px currentColor; color: var(--teal); }
+    .finding-search { width: 100%; min-height: 34px; margin-top: 8px; padding: 6px 10px; border: 1px solid #bdcdd1; border-radius: 6px; font-size: 13px; }
+    .findings .group-head { padding: 8px 6px 2px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .04em; list-style: none; cursor: default; }
+    .findings .group-head.section { margin-top: 6px; padding: 6px 6px; border-bottom: 1px solid var(--line); color: var(--ink); font-size: 12px; }
+    .finding-rule { color: #8aa0a6; font-size: 11px; }
+    .finding-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .nav-button { min-height: 30px; padding: 3px 10px; font-size: 12px; }
+    .finding-pos { min-width: 54px; color: var(--muted); font-size: 12px; text-align: center; }
+    .printed-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .printed-label:empty { display: none; }
+    .results-workspace:has(.comparison-card.visible) > .comparison-card { position: sticky; top: 16px; height: calc(100vh - 32px); min-height: 560px; }
+    .results-workspace:has(.comparison-card.visible) > .comparison-card .pdf-grid { min-height: 300px; }
+    @media (max-width: 980px) {
+      .results-workspace:has(.comparison-card.visible) > .comparison-card { position: static; height: auto; }
+    }
   </style>
 </head>
 <body>
@@ -360,17 +386,27 @@
       <p class="tech-line">任务编号 <span id="run-id">—</span></p>
     </section>
 
+    <section class="card verdict-card" id="verdict-card" hidden aria-live="polite">
+      <div class="verdict-text" id="verdict-text"></div>
+      <div class="verdict-stats" id="verdict-stats">
+        <button type="button" class="stat error" data-filter="error"><b>0</b><span>处问题</span></button>
+        <button type="button" class="stat manual" data-filter="manual"><b>0</b><span>处需要你确认</span></button>
+        <button type="button" class="stat pass" data-filter="pass"><b>0</b><span>项一致</span></button>
+      </div>
+    </section>
+
     <div class="results-workspace" id="results-workspace">
       <aside class="card findings-card" aria-labelledby="findings-title">
         <div class="findings-toolbar">
-          <h2 id="findings-title">问题列表</h2>
+          <h2 id="findings-title">核对结果</h2>
           <div class="filters" id="finding-filters" aria-label="按结果筛选">
-            <button class="filter" type="button" data-status="all" aria-pressed="true">全部 <span>0</span></button>
+            <button class="filter" type="button" data-status="todo" aria-pressed="true" title="问题和需要确认的">需处理 <span>0</span></button>
             <button class="filter" type="button" data-status="error" aria-pressed="false">问题 <span>0</span></button>
-            <button class="filter" type="button" data-status="manual" aria-pressed="false">待复核 <span>0</span></button>
-            <button class="filter" type="button" data-status="warning" aria-pressed="false">警示 <span>0</span></button>
+            <button class="filter" type="button" data-status="manual" aria-pressed="false">待确认 <span>0</span></button>
             <button class="filter" type="button" data-status="pass" aria-pressed="false">一致 <span>0</span></button>
+            <button class="filter" type="button" data-status="all" aria-pressed="false">全部 <span>0</span></button>
           </div>
+          <input class="finding-search" id="finding-search" type="search" placeholder="搜索序号、条款或文字，例如 96、13.2.3、委托方" aria-label="搜索结果">
         </div>
         <ol class="findings" id="findings" aria-live="polite"><li class="empty">核对完成后在这里显示结果。</li></ol>
       </aside>
@@ -381,14 +417,19 @@
           <h2 id="comparison-title">原始文件比对</h2>
           <p class="subtitle">点左边的一条结果，这里会打开对应页面并标出位置。</p>
         </div>
-        <span class="hint" id="comparison-mode-label">—</span>
+        <div class="finding-nav">
+          <span class="hint" id="comparison-mode-label">—</span>
+          <button type="button" class="secondary nav-button" id="prev-finding" title="上一条（↑ 或 K）">‹ 上一条</button>
+          <span class="finding-pos" id="finding-pos">—</span>
+          <button type="button" class="secondary nav-button" id="next-finding" title="下一条（↓ 或 J）">下一条 ›</button>
+        </div>
       </div>
       <div class="comparison-brief" id="comparison-brief" aria-live="polite">
         <span class="finding-status manual">未选择</span>
         <div class="brief-copy"><div class="brief-title">请在左边选择一条结果</div><div class="brief-detail">核对完成后显示原始文件</div></div>
         <span class="finding-id">—</span>
       </div>
-      <details class="check-details" id="check-details" open hidden>
+      <details class="check-details" id="check-details" hidden>
         <summary>核对明细 <span class="check-count" id="check-count"></span></summary>
         <div class="check-scroll">
           <table class="check-table">
@@ -400,12 +441,13 @@
       <div class="pdf-grid">
         <article class="pdf-pane" data-pane-role="report" data-finding-status="manual" aria-label="Report 原始 PDF">
           <div class="pdf-toolbar">
-            <div class="document-name" title="Report">Report</div>
+            <div class="document-name" title="检验报告">检验报告</div>
             <select class="evidence-picker" aria-label="选择 Report 证据位置" disabled><option>无证据位置</option></select>
             <div class="page-controls" aria-label="Report 翻页">
               <button class="secondary tool-button previous-page" type="button" title="上一页" aria-label="Report 上一页">‹</button>
               <input class="page-input" type="number" min="1" value="1" aria-label="Report 页码">
               <span class="page-total">/ —</span>
+              <span class="printed-label" title="纸面页码"></span>
               <button class="secondary tool-button next-page" type="button" title="下一页" aria-label="Report 下一页">›</button>
             </div>
             <div class="zoom-controls" aria-label="Report 缩放">
@@ -419,12 +461,13 @@
         </article>
         <article class="pdf-pane" data-pane-role="record" data-finding-status="manual" aria-label="Record 原始 PDF">
           <div class="pdf-toolbar">
-            <div class="document-name" title="Record">Record</div>
+            <div class="document-name" title="原始记录">原始记录</div>
             <select class="evidence-picker" aria-label="选择 Record 证据位置" disabled><option>无证据位置</option></select>
             <div class="page-controls" aria-label="Record 翻页">
               <button class="secondary tool-button previous-page" type="button" title="上一页" aria-label="Record 上一页">‹</button>
               <input class="page-input" type="number" min="1" value="1" aria-label="Record 页码">
               <span class="page-total">/ —</span>
+              <span class="printed-label" title="纸面页码"></span>
               <button class="secondary tool-button next-page" type="button" title="下一页" aria-label="Record 下一页">›</button>
             </div>
             <div class="zoom-controls" aria-label="Record 缩放">
@@ -452,7 +495,7 @@
       record61: { apiMode: "report_record_9706_1", label: "报告 ↔ GB 9706.1 原始记录", recordRole: "record_9706_1", inputField: "record_document_id", documentLabel: "GB 9706.1 原始记录", recordKind: "record61", note: "需要检验报告和 GB 9706.1 原始记录。" },
       record202: { apiMode: "report_record_9706_202", label: "报告 ↔ GB 9706.202 原始记录", recordRole: "record_9706_202", inputField: "record_document_id", documentLabel: "GB 9706.202 原始记录（表 2）", recordKind: "record202", note: "需要检验报告和 GB 9706.202 原始记录（表 2）。" }
     });
-    const STATUS_LABELS = Object.freeze({ pass: "一致", warning: "警示", manual: "待复核", error: "问题" });
+    const STATUS_LABELS = Object.freeze({ pass: "一致", warning: "警示", manual: "待确认", error: "问题" });
 
     const form = document.getElementById("upload-form");
     const apiBaseInput = document.getElementById("api-base");
@@ -478,6 +521,13 @@
     const comparisonModeLabel = document.getElementById("comparison-mode-label");
     const comparisonBrief = document.getElementById("comparison-brief");
     const modeCards = document.getElementById("mode-cards");
+    const verdictCard = document.getElementById("verdict-card");
+    const verdictText = document.getElementById("verdict-text");
+    const verdictStats = document.getElementById("verdict-stats");
+    const findingSearch = document.getElementById("finding-search");
+    const prevFinding = document.getElementById("prev-finding");
+    const nextFinding = document.getElementById("next-finding");
+    const findingPos = document.getElementById("finding-pos");
     const statusCard = document.getElementById("status-card");
     const progressSteps = document.getElementById("progress-steps");
     const runElapsed = document.getElementById("run-elapsed");
@@ -487,7 +537,8 @@
 
     let csrfToken = null;
     let activeFindings = [];
-    let activeFilter = "all";
+    let activeFilter = "todo";
+    let searchText = "";
     let pollToken = 0;
     let activeMode = "self";
     let activeRun = null;
@@ -882,28 +933,96 @@
       return result;
     }
 
+    const TODO_STATUSES = new Set(["error", "manual", "warning"]);
+    function matchesFilter(item, filter = activeFilter) {
+      if (filter === "all") return true;
+      if (filter === "todo") return TODO_STATUSES.has(item.status);
+      return item.status === filter;
+    }
+    function searchableText(item) {
+      if (!item._search) {
+        const lines = problemLines(item).map(line => line.text);
+        item._search = [displayTitle(item), item.title, item.summary, String(item.id || "").split("@")[0], ...lines].join(" ").toLowerCase();
+      }
+      return item._search;
+    }
+    function visibleFindings() {
+      const query = searchText.trim().toLowerCase();
+      return activeFindings.filter(item => matchesFilter(item) && (!query || searchableText(item).includes(query)));
+    }
+
     function renderFilters() {
       const counts = countStatuses(activeFindings);
       filters.querySelectorAll("[data-status]").forEach(button => {
         const status = button.dataset.status;
         button.setAttribute("aria-pressed", String(status === activeFilter));
         const count = button.querySelector("span");
-        if (count) count.textContent = String(status === "all" ? activeFindings.length : counts[status]);
+        const value = status === "all" ? activeFindings.length : activeFindings.filter(item => matchesFilter(item, status)).length;
+        if (count) count.textContent = String(value);
       });
+      verdictStats.querySelectorAll("[data-filter]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.filter === activeFilter)));
     }
 
+    // ---- 标题：Record 结果写成“序号 · 条款 · 要求”，不用笼统的“Record 与 Report 不一致” ----
+    function displayTitle(item) {
+      const d = item.details || {};
+      const c = d.comparison || {};
+      const fc = c.field_comparisons || {};
+      if (d.record_item !== undefined && d.record_logical_row !== undefined) {
+        const project = c.project?.record_project || (c.project?.report_projects || [])[0] || "";
+        return `项目${d.record_item} 第${d.record_logical_row}行${project ? ` · ${project}` : ""}`;
+      }
+      if (fc.clause || fc.requirement) {
+        const clause = fc.clause?.record_value || fc.clause?.report_value || "";
+        const requirement = String(fc.requirement?.report_value || fc.requirement?.record_value || "").replace(/^[\d.\s]+/, "");
+        const sequence = d.mapping?.sequence;
+        return `${sequence ? `序号${sequence} · ` : ""}${clause} ${clip(requirement, 26)}`.trim();
+      }
+      return item.title || item.rule_id || "核对结果";
+    }
+    function chapterOf(item) {
+      const clause = item.details?.comparison?.field_comparisons?.clause?.record_value || item.details?.comparison?.field_comparisons?.clause?.report_value;
+      const match = String(clause || "").match(/^(\d+)/);
+      return match ? `第 ${match[1]} 章` : null;
+    }
+    function ruleCode(item) { return String(item.rule_id || item.id || "").split("@")[0]; }
+
     function renderFindings() {
-      const visible = activeFilter === "all" ? activeFindings : activeFindings.filter(item => item.status === activeFilter);
+      const visible = visibleFindings();
       findings.replaceChildren();
       if (!visible.length) {
         const empty = document.createElement("li");
         empty.className = "empty";
-        empty.textContent = activeFindings.length ? "这个筛选下没有结果。" : "核对完成后在这里显示结果。";
+        empty.textContent = !activeFindings.length
+          ? "核对完成后在这里显示结果。"
+          : searchText ? "没有找到符合搜索的结果。" : activeFilter === "todo" ? "没有需要处理的结果，全部一致。" : "这个筛选下没有结果。";
         findings.append(empty);
         renderFilters();
+        updateFindingNav();
         return;
       }
+      const SECTION_NAMES = { error: "问题", manual: "需要确认", warning: "警示", pass: "一致" };
+      const statusCount = countStatuses(visible);
+      const sections = new Set(visible.map(item => item.status)).size > 1;
+      const chapters = visible.length > 30 && visible.some(item => chapterOf(item));
+      let lastSection = null;
+      let lastChapter = null;
+      const addHead = (text, kind) => {
+        const head = document.createElement("li");
+        head.className = `group-head ${kind}`;
+        head.textContent = text;
+        findings.append(head);
+      };
       visible.forEach(item => {
+        if (sections && item.status !== lastSection) {
+          addHead(`${SECTION_NAMES[item.status] || item.status}（${statusCount[item.status] ?? ""}）`, "section");
+          lastSection = item.status;
+          lastChapter = null;
+        }
+        if (chapters) {
+          const chapter = chapterOf(item) || "其他";
+          if (chapter !== lastChapter) { addHead(chapter, "chapter"); lastChapter = chapter; }
+        }
         const row = document.createElement("li");
         row.className = "finding";
         row.dataset.findingId = item.id || item.rule_id || "";
@@ -915,15 +1034,12 @@
         badge.className = `finding-status ${status}`;
         badge.textContent = STATUS_LABELS[status] || status;
         const copy = document.createElement("div");
-        const id = document.createElement("div");
-        id.className = "finding-id";
-        id.textContent = String(item.id || item.rule_id || "未命名结果").split("@")[0];
         const title = document.createElement("div");
         title.className = "finding-title";
-        title.textContent = item.title || item.rule_id || "核对结果";
+        title.textContent = displayTitle(item);
         const detail = document.createElement("div");
         detail.className = "finding-detail";
-        const problems = ["error", "manual", "warning"].includes(status) ? problemLines(item) : [];
+        const problems = TODO_STATUSES.has(status) ? problemLines(item) : [];
         if (problems.length) {
           detail.classList.add("has-problem");
           detail.textContent = problems[0].text + (problems.length > 1 ? `（另有 ${problems.length - 1} 处）` : "");
@@ -931,21 +1047,74 @@
         } else {
           detail.textContent = listSummary(item);
         }
-        copy.append(id, title, detail);
-        const evidence = document.createElement("span");
-        evidence.className = "finding-id";
-        evidence.textContent = `${Array.isArray(item.evidence) ? item.evidence.length : 0} 个证据`;
-        row.append(badge, copy, evidence);
+        const rule = document.createElement("div");
+        rule.className = "finding-rule";
+        rule.textContent = ruleCode(item);
+        copy.append(title, detail, rule);
+        row.append(badge, copy);
         findings.append(row);
       });
       renderFilters();
+      updateFindingNav();
+    }
+
+    function renderVerdict() {
+      if (!activeFindings.length) { verdictCard.hidden = true; return; }
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      let errors = 0; let manual = 0; let pass = 0;
+      activeFindings.forEach(item => {
+        if (!meta.recordRole) {
+          const rows = checkRowsFor(item);
+          if (rows.length) {
+            rows.forEach(row => { const key = normStatus(row.status); if (key === "error") errors += 1; else if (key === "manual" || key === "warning") manual += 1; else if (key === "pass") pass += 1; });
+            return;
+          }
+        }
+        if (item.status === "error") errors += 1;
+        else if (TODO_STATUSES.has(item.status)) manual += 1;
+        else if (item.status === "pass") pass += 1;
+      });
+      const [errorStat, manualStat, passStat] = verdictStats.querySelectorAll("[data-filter]");
+      errorStat.querySelector("b").textContent = String(errors);
+      manualStat.querySelector("b").textContent = String(manual);
+      passStat.querySelector("b").textContent = String(pass);
+      const headline = errors
+        ? `发现 ${errors} 处问题${manual ? `，另有 ${manual} 处需要你确认` : ""}`
+        : manual ? `没有发现明确的问题，有 ${manual} 处需要你确认` : `全部 ${pass} 项核对一致`;
+      verdictText.replaceChildren(document.createTextNode(headline));
+      const note = document.createElement("small");
+      note.textContent = errors || manual ? "左边默认只列出需要处理的结果；点上面的数字可以切换。" : "左边可以切换到“一致”查看每一项核对了什么。";
+      verdictText.append(note);
+      verdictCard.hidden = false;
+    }
+
+    function updateFindingNav() {
+      const visible = visibleFindings();
+      const index = visible.findIndex(item => item.id === selectedFindingId);
+      findingPos.textContent = visible.length ? `${index >= 0 ? index + 1 : "—"} / ${visible.length}` : "—";
+      prevFinding.disabled = index <= 0;
+      nextFinding.disabled = index < 0 || index >= visible.length - 1;
+    }
+    function selectFinding(item, { scrollList = true } = {}) {
+      if (!item) return;
+      selectedFindingId = item.id;
+      renderFindings();
+      if (scrollList) findings.querySelector(`[data-finding-id="${CSS.escape(item.id)}"]`)?.scrollIntoView({ block: "nearest" });
+      showFindingComparison(item);
+    }
+    function stepFinding(delta) {
+      const visible = visibleFindings();
+      const index = visible.findIndex(item => item.id === selectedFindingId);
+      const next = visible[index < 0 ? 0 : index + delta];
+      if (next) selectFinding(next);
     }
 
     function renderFindingBrief(finding) {
       const detail = comparisonBrief.querySelector(".brief-detail");
       detail.replaceChildren();
       const summary = document.createElement("div");
-      summary.textContent = finding.summary || finding.details?.comparison?.reason_code || "—";
+      const rawSummary = String(finding.summary || "");
+      summary.textContent = /^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—");
       detail.append(summary);
       const status = String(finding.status || "");
       if (!["error", "manual", "warning"].includes(status)) return;
@@ -987,8 +1156,8 @@
       if (row.problem) return row.problem;
       const meta = MODE_META[activeMode] || MODE_META.self;
       const where = row.sub ? `${row.label}（${row.sub}）` : row.label;
-      const aTitle = row.a.title || (meta.recordRole ? "Report" : "报告");
-      const bTitle = row.b.title || (meta.recordRole ? "Record" : "对照");
+      const aTitle = row.a.title || "报告";
+      const bTitle = row.b.title || (meta.recordRole ? "原始记录" : "对照");
       const values = [];
       if (row.a.text) values.push(`${aTitle}写“${clip(row.a.text, 40)}”`);
       if (row.b.text) values.push(/为$/.test(bTitle) ? `${bTitle}“${clip(row.b.text, 40)}”` : `${bTitle}为“${clip(row.b.text, 40)}”`);
@@ -1011,7 +1180,7 @@
 
 
     // ---- 核对明细：把每条结果的比对内容整理成“检查内容 / 两侧的值与位置 / 结果”表格 ----
-    const CHECK_RESULT_LABELS = Object.freeze({ pass: "一致", match: "一致", error: "不一致", mismatch: "不一致", manual: "待复核", warning: "警示", not_applicable: "不适用", excluded: "范围外", info: "信息" });
+    const CHECK_RESULT_LABELS = Object.freeze({ pass: "一致", match: "一致", error: "不一致", mismatch: "不一致", manual: "待确认", warning: "警示", not_applicable: "不适用", excluded: "范围外", info: "信息" });
     const REASON_TEXT = Object.freeze({
       photo_text_contains_report_value: "照片识别文字中找到报告值",
       name_parts_found_in_photo_text: "名称各部分均在照片中找到",
@@ -1019,8 +1188,8 @@
       associated_photo_found: "找到关联照片",
       value_within_bound: "实测值在限值内",
       photo_ocr_not_available: "本机没有照片识别引擎",
-      record_report_status_match: "Record 符号与 Report 结果对应",
-      status_result_matched: "Record 勾选与 Report 结果对应",
+      record_report_status_match: "原始记录的符号与 报告结果对应",
+      status_result_matched: "原始记录的勾选与 报告结果对应",
       paired_field_difference: "文字不完全相同（仅供参考，不影响结论）",
       paired_field_unresolved: "一侧缺少该字段（仅供参考）",
       project_name_match: "项目名称相同",
@@ -1031,16 +1200,16 @@
       record_status_symbol_not_found: "格内没有找到可识别的状态符号",
       record_ink_geometry_unresolved: "笔画形状无法判断是哪种符号",
       requirement_identity_abnormal: "该项的版式与已知模板不一致",
-      record_report_status_mismatch: "Record 符号与 Report 结果不对应",
-      status_result_mismatch: "Record 勾选与 Report 结果不对应",
-      merged_record_status_group_mismatch: "Report 合并行的结果与 Record 多行勾选不一致",
-      record_status_blank: "Record 状态栏没有勾",
-      status_box_blank: "Record 状态栏没有勾",
+      record_report_status_mismatch: "原始记录的符号与 报告结果不对应",
+      status_result_mismatch: "原始记录的勾选与 报告结果不对应",
+      merged_record_status_group_mismatch: "报告合并行的结果与 原始记录多行勾选不一致",
+      record_status_blank: "原始记录状态栏没有勾",
+      status_box_blank: "原始记录状态栏没有勾",
       single_ink_column_resolved: "勾落在唯一一个状态框内",
       record_measurement_not_uniquely_resolved: "手写数值无法唯一识别",
       record_measurement_position_unresolved: "手写数值的位置无法确定",
       record_percentage_occurrence_not_dual_recognised: "百分比手写值两路识别不一致",
-      report_mapping_missing: "Report 中没有对应行",
+      report_mapping_missing: "报告中没有对应行",
       parent_clause_mismatch: "父条款不一致",
       project_name_difference: "项目名称不同",
       project_name_not_uniquely_resolved: "项目名称无法唯一确定",
@@ -1052,8 +1221,8 @@
       report_placeholder_but_photo_has_value: "报告填“/”，但标签上有值",
       acceptance_criterion_not_resolved: "接受标准是文字描述，无法自动计算",
       value_outside_bound: "实测值超出限值",
-      numeric_value_matched: "实测值与 Report 数值相同",
-      numeric_value_mismatch: "实测值与 Report 数值不同",
+      numeric_value_matched: "实测值与 报告数值相同",
+      numeric_value_mismatch: "实测值与 报告数值不同",
       acceptance_limit_matched: "实测值满足标准限值",
       acceptance_limit_mismatch: "实测值不满足标准限值",
       acceptance_unit_conversion_unresolved: "单位无法换算，转人工",
@@ -1061,7 +1230,7 @@
       handwriting_not_read_by_two_channels: "没有两路识别读到同一个数",
       handwriting_channels_disagree: "各路识别读数不同",
       record_ink_cross_row_ambiguous: "笔画跨到相邻行，无法确定属于哪一行",
-      record_202_legend_unverified: "Record 末页符号图例未通过核对",
+      record_202_legend_unverified: "原始记录末页符号图例未通过核对",
       annotated_value_within_bound: "带注释的实测值在限值内",
       associated_photo_found_but_content_not_resolved: "找到关联照片，但照片中没有识别出这个内容",
       basis_wording_ok: "检验依据写法正确",
@@ -1082,7 +1251,7 @@
       inspection_items_wording_ok: "检验项目写法正确",
       label_date_not_resolved: "标签上的日期没有识别出来",
       label_photo_found_but_ocr_record_missing: "找到标签照片，但照片文字识别没有结果",
-      merged_record_status_group_matched: "Record 多行勾选合并后与 Report 一致",
+      merged_record_status_group_matched: "原始记录多行勾选合并后与 报告一致",
       name_bracket_width_ok: "单位名称括号全/半角一致",
       numeric_block_row_mapping_covered_by_numeric_ledger: "数值行已在数值核对中覆盖",
       numeric_result_has_unconfirmed_suffix: "实测值后面带有无法确认的字符",
@@ -1102,20 +1271,20 @@
       range_contained: "实测范围在要求范围内",
       range_within_bound: "实测范围满足限值",
       record_cells_real_but_dual_recognition_unresolved: "手写数值两路识别不一致",
-      record_cover_identity_excluded_by_user_scope: "Record 封面身份字段按约定不比对",
-      record_template_ends_at_chapter_16_and_has_no_chapter_17_row: "Record 模板到第 16 章为止，没有第 17 章",
+      record_cover_identity_excluded_by_user_scope: "原始记录封面身份字段按约定不比对",
+      record_template_ends_at_chapter_16_and_has_no_chapter_17_row: "原始记录模板到第 16 章为止，没有第 17 章",
       remark_not_compared_with_photo: "备注不与照片比对",
       report_cell_blank_or_column_absent: "报告该单元格为空或没有这一列",
       report_date_not_stated: "报告没有写日期",
-      report_guided_decimal_ocr_matched: "按 Report 数值引导识别手写小数后一致",
+      report_guided_decimal_ocr_matched: "按报告数值引导识别手写小数后一致",
       report_placeholder_and_photo_has_no_value: "报告填“/”，标签上也没有该项",
       report_refers_to_other_section: "首页写“见…栏”，不在此比对",
-      report_row_extra_vs_record: "Report 多出的行，Record 模板没有对应行",
+      report_row_extra_vs_record: "报告多出的行，原始记录模板没有对应行",
       report_value_not_found_in_photo_text: "照片上的文字里没有找到报告中的这个值",
       requirement_difference: "标准要求文字不同",
       requirement_match: "标准要求相同",
       requirement_match_concatenated: "标准要求合并后相同",
-      row_mapping_unresolved: "无法确定 Record 与 Report 的对应行",
+      row_mapping_unresolved: "无法确定 原始记录与报告 的对应行",
       sample_marked_not_used: "样品标注为未使用，不比对",
       sample_number_ok: "样品编号正确",
       sampling_fields_ok: "抽样字段正确",
@@ -1308,11 +1477,17 @@
         const fieldResult = (c.field_comparisons || {}).result;
         const recordValue = c.record_symbol ?? c.record_status ?? fieldResult?.record_value ?? c.normalized_record_value ?? c.record_value ?? null;
         const reportValue = c.report_result_physical ?? c.report_result ?? (d.report_results ? d.report_results.join(" / ") : null) ?? c.observed ?? c.expected;
-        const AGGREGATION = { physical_report_result: "Report 单行结果", split_report_rows_aggregated: "Report 多行合并后比较", merged_record_status_group: "Record 多行勾选合并后比较" };
-        rows.push({ label: c.record_symbol !== undefined ? "状态符号" : "勾选结果",
-          sub: c.result_aggregation ? (AGGREGATION[c.result_aggregation] || c.result_aggregation) : "",
-          a: side(reportValue, reportLoc), b: side(recordValue ?? "（未识别）", recordLoc),
-          status: normStatus(c.status?.decision || c.decision || finding.status), note: reasonText(c.status || c) });
+        const AGGREGATION = { physical_report_result: "", split_report_rows_aggregated: "报告多行合并后比较", merged_record_status_group: "原始记录多行勾选合并后比较" };
+        const isSymbol = c.record_symbol !== undefined;
+        const statusKey = normStatus(c.status?.decision || c.decision || finding.status);
+        const recordSaid = recordValue == null || recordValue === "" ? (isSymbol ? "原始记录这一格没认出符号" : "原始记录这一行没认出勾选") : `原始记录${isSymbol ? "画的是" : "勾的是"}“${textOf(recordValue)}”`;
+        rows.push({ label: isSymbol ? "状态符号" : "勾选结果",
+          sub: c.result_aggregation ? (AGGREGATION[c.result_aggregation] ?? c.result_aggregation) : "",
+          a: side(reportValue, reportLoc, "报告"), b: side(recordValue ?? "（未识别）", recordLoc, "原始记录"),
+          status: statusKey, note: reasonText(c.status || c),
+          problem: statusKey === "pass" ? "" : (recordValue == null || recordValue === ""
+            ? `报告写“${textOf(reportValue) || "（空）"}”；原始记录：${reasonText(c.status || c) || "没认出勾选或符号"}`
+            : `报告写“${textOf(reportValue) || "（空）"}”，${recordSaid}；${statusKey === "error" ? "两边不一致" : reasonText(c.status || c) || "需要人工确认"}`) });
         Object.entries(c.field_comparisons || {}).forEach(([name, fc]) => {
           if (name === "result") return;
           const label = { project: "检验项目", clause: "条款", requirement: "标准要求", suggestion: "建议", condition: "建议/观察记录" }[name] || name;
@@ -1372,7 +1547,9 @@
         const value = c.numeric && c.numeric.record_value ? ` ${c.numeric.record_value}` : "";
         return `${where}Record ${c.record_symbol || "未识别"}${value} ↔ Report ${d.report_results.join(" / ") || "—"}`;
       }
-      return item.summary || c.reason_code || "—";
+      const raw = String(item.summary || "");
+      if (/^[a-z0-9_]+$/i.test(raw)) return REASON_TEXT[raw] || "";
+      return raw || REASON_TEXT[c.reason_code] || "—";
     }
 
     async function focusCheckRow(row, which) {
@@ -1392,6 +1569,17 @@
     }
 
     const rowElements = new WeakMap();
+    async function refreshPageChips() {
+      const chips = [...document.querySelectorAll("#check-rows .loc-chip[data-pdf-page]")];
+      for (const chip of chips) {
+        const pane = chip.dataset.pageRole === "report" ? reportPane : recordPane;
+        const pdfPage = Number(chip.dataset.pdfPage);
+        const printed = await pane.printedPage(pdfPage);
+        const who = chip.dataset.pageRole === "report" ? "报告" : "记录";
+        chip.textContent = printed && printed !== pdfPage ? `${who} 第 ${printed} 页（PDF ${pdfPage}）` : `${who} 第 ${pdfPage} 页`;
+      }
+    }
+
     function showCheckRow(row) {
       if (!row) return;
       const tr = rowElements.get(row);
@@ -1411,8 +1599,8 @@
       const meta = MODE_META[activeMode] || MODE_META.self;
       const rows = [...checkRowsFor(finding)];
       body.replaceChildren();
-      document.getElementById("check-col-a").textContent = meta.recordRole ? "Report（位置 · 内容）" : "报告中的位置 · 内容";
-      document.getElementById("check-col-b").textContent = meta.recordRole ? "Record（位置 · 内容）" : "对照对象（首页 / 照片 / 规则）";
+      document.getElementById("check-col-a").textContent = meta.recordRole ? "检验报告（位置 · 内容）" : "报告中的位置 · 内容";
+      document.getElementById("check-col-b").textContent = meta.recordRole ? "原始记录（位置 · 内容）" : "对照对象（首页 / 照片 / 规则）";
       if (!rows.length) { box.hidden = true; return; }
       const order = { error: 0, manual: 1, warning: 2, pass: 3, info: 4 };
       rows.sort((x, y) => (order[normStatus(x.status)] ?? 5) - (order[normStatus(y.status)] ?? 5));
@@ -1429,7 +1617,9 @@
         if (sideValue.loc) {
           const chip = document.createElement("button");
           chip.type = "button"; chip.className = "loc-chip";
-          chip.textContent = `${sideValue.loc.role === "report" ? (meta.recordRole ? "Report" : "报告") : "Record"} 第 ${sideValue.loc.pdf_page} 页`;
+          chip.dataset.pageRole = sideValue.loc.role === "report" ? "report" : "record";
+          chip.dataset.pdfPage = String(sideValue.loc.pdf_page);
+          chip.textContent = `${sideValue.loc.role === "report" ? "报告" : "记录"} 第 ${sideValue.loc.pdf_page} 页`;
           chip.addEventListener("click", event => { event.stopPropagation(); setActive(); focusCheckRow(row, key); });
           td.append(document.createElement("br"), chip);
         }
@@ -1470,13 +1660,17 @@
       // The comparison stage sits below a potentially long Finding list. Bring
       // it into view as soon as a Finding is selected so the PDF evidence is
       // visible without requiring a manual page-length scroll.
-      requestAnimationFrame(() => comparisonCard.scrollIntoView({ behavior: "smooth", block: "start" }));
+      requestAnimationFrame(() => {
+        const top = comparisonCard.getBoundingClientRect().top;
+        if (top > window.innerHeight * 0.6 || top < -40) comparisonCard.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
       comparisonModeLabel.textContent = meta.label;
       const status = String(finding.status || "manual");
       const badge = comparisonBrief.querySelector(".finding-status");
       badge.className = `finding-status ${status}`;
       badge.textContent = STATUS_LABELS[status] || status;
-      comparisonBrief.querySelector(".brief-title").textContent = finding.title || finding.rule_id || "核对结果";
+      comparisonBrief.querySelector(".brief-title").textContent = displayTitle(finding);
+      updateFindingNav();
       renderFindingBrief(finding);
       renderCheckDetails(finding);
       comparisonBrief.querySelector(".finding-id").textContent = String(finding.id || "—").split("@")[0];
@@ -1490,8 +1684,9 @@
       recordPane.root.setAttribute("aria-hidden", String(!meta.recordRole));
       try {
         if (meta.recordRole && !recordDocument) throw new Error("缺少 Record 文档信息。");
-        await reportPane.loadDocument(reportDocument, "Report");
-        if (meta.recordRole) await recordPane.loadDocument(recordDocument, "Record");
+        await reportPane.loadDocument(reportDocument, "检验报告");
+        if (meta.recordRole) await recordPane.loadDocument(recordDocument, "原始记录");
+        refreshPageChips();
         if (token !== comparisonToken) return;
         await reportPane.setFinding(status, reportLocations);
         if (meta.recordRole) await recordPane.setFinding(status, recordLocations);
@@ -1520,6 +1715,9 @@
         this.root = root;
         this.role = root.dataset.paneRole;
         this.documentName = root.querySelector(".document-name");
+        this.printedLabel = root.querySelector(".printed-label");
+        this.printedCache = new Map();
+        this.loadingPromise = null;
         this.evidencePicker = root.querySelector(".evidence-picker");
         this.previousButton = root.querySelector(".previous-page");
         this.nextButton = root.querySelector(".next-page");
@@ -1592,7 +1790,7 @@
         const url = sourceUrl(documentInfo);
         if (!url) { this.setMessage(`${fallbackLabel} 文档不可用。`); return; }
         const label = documentInfo.original_filename || fallbackLabel;
-        this.documentName.textContent = `${this.role === "report" ? "Report" : "Record"} · ${label}`;
+        this.documentName.textContent = label === fallbackLabel ? fallbackLabel : `${fallbackLabel} · ${label}`;
         this.documentName.title = label;
         if (this.url === url && this.pdfDocument) return;
         const token = ++this.documentToken;
@@ -1600,9 +1798,12 @@
         this.renderTask?.cancel();
         this.url = url; this.pdfDocument = null; this.pageNumber = 1; this.zoom = 1;
         this.pageInput.value = "1"; this.pageTotal.textContent = "/ —"; this.updateControls();
-        this.setMessage(`正在读取 ${this.role === "report" ? "Report" : "Record"}…`);
+        this.setMessage(`正在打开${this.role === "report" ? "检验报告" : "原始记录"}…`);
+        this.printedCache = new Map();
+        this.loadingPromise = getPdfDocument(url).catch(() => null);
         try {
-          const document = await getPdfDocument(url);
+          const document = await this.loadingPromise;
+          if (!document) throw new Error("PDF 打不开");
           if (token !== this.documentToken) return;
           this.pdfDocument = document;
           this.pageInput.max = String(document.numPages);
@@ -1623,21 +1824,41 @@
       renderEvidencePicker() {
         this.evidencePicker.replaceChildren();
         if (!this.evidenceLocations.length) {
-          const option = document.createElement("option"); option.value = "0"; option.textContent = "该侧无精确证据位置";
+          const option = document.createElement("option"); option.value = "0"; option.textContent = "这一侧没有对应位置";
           this.evidencePicker.append(option); this.evidencePicker.disabled = true; return;
         }
         this.evidenceLocations.forEach((location, index) => {
           const option = document.createElement("option"); option.value = String(index); option.selected = index === 0;
-          option.textContent = `证据 ${index + 1}/${this.evidenceLocations.length} · 第 ${location.pdf_page} 页 · ${location.semantic_role || "证据"}`;
+          option.textContent = `位置 ${index + 1}/${this.evidenceLocations.length} · PDF 第 ${location.pdf_page} 页 · ${location.semantic_role || "位置"}`;
           this.evidencePicker.append(option);
         });
         this.evidencePicker.disabled = false;
       }
       goToEvidence(index) { this.selectedEvidenceIndex = Math.max(0, Math.min(this.evidenceLocations.length - 1, Number(index) || 0)); this.renderEvidencePicker(); const location = this.evidenceLocations[this.selectedEvidenceIndex]; if (location) this.goToPage(location.pdf_page, true); }
+      // 纸面页码：读页面文字里的“共 N 页 第 M 页”
+      async printedPage(pageNumber) {
+        const doc = this.pdfDocument || await this.loadingPromise;
+        if (!doc || pageNumber < 1 || pageNumber > doc.numPages) return null;
+        if (!this.printedCache.has(pageNumber)) {
+          this.printedCache.set(pageNumber, doc.getPage(pageNumber)
+            .then(page => page.getTextContent())
+            .then(content => {
+              const text = content.items.map(item => item.str || "").join("").replace(/\s+/g, "");
+              const match = text.match(/共\d+页第(\d+)页/);
+              return match ? Number(match[1]) : null;
+            })
+            .catch(() => null));
+        }
+        return this.printedCache.get(pageNumber);
+      }
       goToPage(page, focusHighlight = false) {
         if (!this.pdfDocument) return Promise.resolve();
         this.pageNumber = Math.max(1, Math.min(this.pdfDocument.numPages, Math.round(Number(page) || 1)));
         this.pageInput.value = String(this.pageNumber); this.updateControls();
+        const shown = this.pageNumber;
+        this.printedPage(shown).then(printed => {
+          if (this.pageNumber === shown) this.printedLabel.textContent = printed && printed !== shown ? `纸面第 ${printed} 页` : "";
+        });
         return this.renderPage({ focusHighlight });
       }
       setZoom(nextZoom) {
@@ -1753,10 +1974,14 @@
       }));
       showRun(run, mode);
       runCount.textContent = String(activeFindings.length);
+      activeFilter = activeFindings.some(item => TODO_STATUSES.has(item.status)) ? "todo" : "all";
+      searchText = "";
+      findingSearch.value = "";
+      renderVerdict();
+      const first = visibleFindings()[0] || activeFindings[0];
+      selectedFindingId = first?.id || null;
       renderFindings();
-      selectedFindingId = activeFindings[0]?.id || null;
-      renderFindings();
-      if (activeFindings[0]) await showFindingComparison(activeFindings[0]);
+      if (first) await showFindingComparison(first);
       else { comparisonCard.classList.remove("visible"); setComparisonMessage("这次核对没有结果"); }
     }
 
@@ -1952,18 +2177,34 @@
     findings.addEventListener("click", event => {
       const row = event.target.closest("[data-finding-id]");
       if (!row) return;
-      selectedFindingId = row.dataset.findingId;
+      selectFinding(activeFindings.find(item => item.id === row.dataset.findingId), { scrollList: false });
+    });
+    findingSearch.addEventListener("input", () => { searchText = findingSearch.value; renderFindings(); });
+    verdictStats.addEventListener("click", event => {
+      const button = event.target.closest("[data-filter]");
+      if (!button) return;
+      activeFilter = button.dataset.filter;
       renderFindings();
-      showFindingComparison(activeFindings.find(item => item.id === selectedFindingId));
+      const first = visibleFindings()[0];
+      if (first) selectFinding(first);
+    });
+    prevFinding.addEventListener("click", () => stepFinding(-1));
+    nextFinding.addEventListener("click", () => stepFinding(1));
+    document.addEventListener("keydown", event => {
+      if (!activeFindings.length || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.target.closest("input, select, textarea, [contenteditable]")) return;
+      const down = event.key === "ArrowDown" || event.key === "j" || event.key === "J";
+      const up = event.key === "ArrowUp" || event.key === "k" || event.key === "K";
+      if (!down && !up) return;
+      event.preventDefault();
+      stepFinding(down ? 1 : -1);
     });
     findings.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
       const row = event.target.closest("[data-finding-id]");
       if (!row) return;
       event.preventDefault();
-      selectedFindingId = row.dataset.findingId;
-      renderFindings();
-      showFindingComparison(activeFindings.find(item => item.id === selectedFindingId));
+      selectFinding(activeFindings.find(item => item.id === row.dataset.findingId), { scrollList: false });
     });
     apiBaseInput.addEventListener("change", () => {
       const value = apiBaseInput.value.trim();
