@@ -38,6 +38,7 @@ from mvp.checker import (
     number_evidence_rects,
     page_three_fields,
     render_cell_for_ocr,
+    report_page_tables,
     sha256_file,
     verified_202_legend_mapping,
 )
@@ -573,7 +574,7 @@ def extract_report_202_rows(document: fitz.Document) -> dict[int, list[dict[str,
     active_clause = ""
 
     for page in document:
-        for table_index, table in enumerate(page.find_tables().tables, start=1):
+        for table_index, table in enumerate(report_page_tables(page), start=1):
             if not is_formal_report_table(table):
                 continue
             extracted = table.extract()
@@ -667,7 +668,7 @@ def _report_202_structure(document: fitz.Document) -> dict[str, Any]:
     formal_pages: list[int] = []
     formal_table_shapes: dict[str, list[list[int]]] = {}
     for page in document:
-        tables = [table for table in page.find_tables().tables if is_formal_report_table(table)]
+        tables = [table for table in report_page_tables(page) if is_formal_report_table(table)]
         if tables:
             formal_pages.append(page.number + 1)
         formal_table_shapes[str(page.number + 1)] = [

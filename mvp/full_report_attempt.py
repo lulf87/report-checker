@@ -19,6 +19,12 @@ except ImportError:
     import fitz
 
 
+def _report_page_tables(page: Any) -> list[Any]:
+    from mvp.checker import report_page_tables
+
+    return report_page_tables(page)
+
+
 HEADER_NAMES = ("序号", "检验项目", "标准条款", "标准要求", "检验结果", "单项结论", "备注")
 UPPER_WORDS = ("不应大于", "不应超过", "不得超过", "不超过")
 LOWER_WORDS = ("不应小于", "应不小于", "不小于", "至少")
@@ -612,7 +618,7 @@ def scan_report_numeric_measurements(document: fitz.Document) -> dict[str, Any]:
 
     for page in document:
         printed_page = _printed_page_number(page)
-        for table in page.find_tables().tables:
+        for table in _report_page_tables(page):
             if not _is_formal_report_table(table):
                 continue
             formal_table_pages.add(page.number + 1)

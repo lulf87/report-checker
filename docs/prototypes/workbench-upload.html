@@ -88,7 +88,8 @@
     .finding > .finding-id:last-child { grid-column: 2; font-size: 11px; }
     .finding-id { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .finding-title { margin-top: 2px; font-size: 13px; font-weight: 700; line-height: 1.35; }
-    .finding-detail { display: -webkit-box; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .finding-detail { display: -webkit-box; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+    .finding-detail.has-problem { color: var(--ink); }
     .finding-status { padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 750; white-space: nowrap; }
     .finding-status.pass { color: var(--pass); background: var(--pass-soft); }
     .finding-status.manual { color: var(--manual); background: var(--manual-soft); }
@@ -112,6 +113,14 @@
     .brief-detail { display: flex; max-height: 104px; flex-direction: column; gap: 3px; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .brief-evidence-link { width: fit-content; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-size: 11px; text-align: left; text-decoration: underline; cursor: pointer; }
     .brief-evidence-link:hover { color: var(--ink); }
+    .brief-detail { max-height: 180px; }
+    .brief-problems { margin: 4px 0 0; padding-left: 18px; color: var(--ink); }
+    .brief-problems li { margin: 2px 0; }
+    .brief-problems button { display: block; width: 100%; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+    .brief-problems button:hover { color: var(--accent); text-decoration: underline; }
+    .brief-problems .more { color: var(--muted); list-style: none; margin-left: -18px; }
+    tr.is-flash { animation: flash 1.2s ease-out; }
+    @keyframes flash { from { background: #fff4c2; } to { background: transparent; } }
     .check-details { margin: 0 16px 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
     .check-details[hidden] { display: none; }
     .check-details > summary { display: flex; align-items: center; gap: 8px; padding: 8px 11px; font-weight: 750; cursor: pointer; list-style: none; }
@@ -560,13 +569,20 @@
         const copy = document.createElement("div");
         const id = document.createElement("div");
         id.className = "finding-id";
-        id.textContent = item.id || item.rule_id || "未命名 Finding";
+        id.textContent = String(item.id || item.rule_id || "未命名 Finding").split("@")[0];
         const title = document.createElement("div");
         title.className = "finding-title";
         title.textContent = item.title || item.rule_id || "核对结果";
         const detail = document.createElement("div");
         detail.className = "finding-detail";
-        detail.textContent = listSummary(item);
+        const problems = ["error", "manual", "warning"].includes(status) ? problemLines(item) : [];
+        if (problems.length) {
+          detail.classList.add("has-problem");
+          detail.textContent = problems[0].text + (problems.length > 1 ? `（另有 ${problems.length - 1} 处）` : "");
+          detail.title = problems.map(line => line.text).join("\n");
+        } else {
+          detail.textContent = listSummary(item);
+        }
         copy.append(id, title, detail);
         const evidence = document.createElement("span");
         evidence.className = "finding-id";
@@ -577,37 +593,74 @@
       renderFilters();
     }
 
-    function renderFindingBrief(finding, reportLocations) {
+    function renderFindingBrief(finding) {
       const detail = comparisonBrief.querySelector(".brief-detail");
       detail.replaceChildren();
       const summary = document.createElement("div");
       summary.textContent = finding.summary || finding.details?.comparison?.reason_code || "—";
       detail.append(summary);
-      const comparisons = finding.details?.comparisons;
-      if (!Array.isArray(comparisons)) return;
-      const manual = comparisons.filter(item => item?.status === "manual");
-      if (!manual.length) return;
-      const reasonText = {
-        acceptance_criterion_not_resolved: "接受标准是文字描述或峰值条件，未能转换为可自动计算的限值",
-        unit_prefix_conversion_required_but_disabled: "需要进行单位前缀换算，当前保留人工确认",
-      };
-      manual.slice(0, 3).forEach(item => {
-        const page = item.pdf_page ? `PDF第${item.pdf_page}页` : "PDF页码未知";
-        const sequence = item.sequence ? `序号${item.sequence}` : "序号未知";
-        const value = item.result ? `结果 ${item.result}` : "结果未识别";
-        const reason = reasonText[item.reason] || item.reason || "自动判定条件不足";
-        const locationIndex = reportLocations.findIndex(location => location.pdf_page === Number(item.pdf_page));
-        const link = document.createElement("button");
-        link.type = "button";
-        link.className = "brief-evidence-link";
-        link.textContent = `人工复核：${page} · ${sequence} · ${value}；${reason}`;
-        link.disabled = locationIndex < 0;
-        link.addEventListener("click", () => {
-          if (locationIndex >= 0) reportPane.goToEvidence(locationIndex);
-        });
-        detail.append(link);
+      const status = String(finding.status || "");
+      if (!["error", "manual", "warning"].includes(status)) return;
+      const lines = problemLines(finding);
+      if (!lines.length) return;
+      const list = document.createElement("ol");
+      list.className = "brief-problems";
+      lines.slice(0, 8).forEach(line => {
+        const li = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = line.text;
+        button.title = "在下方明细和 PDF 中定位";
+        button.addEventListener("click", () => showCheckRow(line.row));
+        li.append(button);
+        list.append(li);
       });
+      if (lines.length > 8) {
+        const more = document.createElement("li");
+        more.className = "more";
+        more.textContent = `另有 ${lines.length - 8} 处，见下方核对明细`;
+        list.append(more);
+      }
+      detail.append(list);
     }
+
+    // Rows of the detail table for a finding (cached per finding object).
+    const rowCache = new WeakMap();
+    function checkRowsFor(finding) {
+      if (rowCache.has(finding)) return rowCache.get(finding);
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      const rows = meta.recordRole ? recordCheckRows(finding, meta.recordRole) : selfCheckRows(finding);
+      rowCache.set(finding, rows);
+      return rows;
+    }
+
+    // One plain sentence per problem: what was compared, where, and what differs.
+    function problemText(row) {
+      if (row.problem) return row.problem;
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      const where = row.sub ? `${row.label}（${row.sub}）` : row.label;
+      const aTitle = row.a.title || (meta.recordRole ? "Report" : "报告");
+      const bTitle = row.b.title || (meta.recordRole ? "Record" : "对照");
+      const values = [];
+      if (row.a.text) values.push(`${aTitle}写“${clip(row.a.text, 40)}”`);
+      if (row.b.text) values.push(/为$/.test(bTitle) ? `${bTitle}“${clip(row.b.text, 40)}”` : `${bTitle}为“${clip(row.b.text, 40)}”`);
+      const reason = row.note ? row.note : (normStatus(row.status) === "error" ? "两处不一致" : "需要人工确认");
+      return `${where}：${values.length ? values.join("，") + "；" : ""}${reason}`;
+    }
+
+    function problemLines(finding) {
+      const rows = checkRowsFor(finding);
+      const order = { error: 0, manual: 1, warning: 2 };
+      const problems = rows
+        .filter(row => normStatus(row.status) in order && !row.quiet)
+        .sort((x, y) => order[normStatus(x.status)] - order[normStatus(y.status)])
+        .map(row => ({ text: problemText(row), row }));
+      if (problems.length) return problems;
+      const errors = finding.details?.errors;
+      if (Array.isArray(errors) && errors.length) return errors.map(text => ({ text: String(text), row: null }));
+      return [];
+    }
+
 
     // ---- 核对明细：把每条结果的比对内容整理成“检查内容 / 两侧的值与位置 / 结果”表格 ----
     const CHECK_RESULT_LABELS = Object.freeze({ pass: "一致", match: "一致", error: "不一致", mismatch: "不一致", manual: "待复核", warning: "警示", not_applicable: "不适用", excluded: "范围外", info: "信息" });
@@ -660,7 +713,74 @@
       handwriting_not_read_by_two_channels: "没有两路识别读到同一个数",
       handwriting_channels_disagree: "各路识别读数不同",
       record_ink_cross_row_ambiguous: "笔画跨到相邻行，无法确定属于哪一行",
-      record_202_legend_unverified: "Record 末页符号图例未通过核对"
+      record_202_legend_unverified: "Record 末页符号图例未通过核对",
+      annotated_value_within_bound: "带注释的实测值在限值内",
+      associated_photo_found_but_content_not_resolved: "找到关联照片，但照片中没有识别出这个内容",
+      basis_wording_ok: "检验依据写法正确",
+      censored_lower_interval_within_bound: "“大于某值”的结果满足下限",
+      censored_upper_interval_within_bound: "“小于某值”的结果满足上限",
+      chinese_label_photo_missing: "没有找到这个对象的中文标签照片",
+      conclusion_wording_ok: "检验结论写法正确",
+      cover_version_draft_not_judged: "草稿（签发日期为空），不判断封面版本",
+      cover_version_ok: "封面版本号正确",
+      date_format_ok: "日期格式正确",
+      date_order_ok: "日期先后正确",
+      digit_containing_non_measurement_token: "含数字但不是测量值，不比对",
+      draft_issue_date_blank: "草稿，签发日期为空",
+      exact_after_layout_whitespace_only: "去掉排版空格后完全相同",
+      header_ok: "页眉正确",
+      inspection_items_range_symbol: "条款区间应使用“～”",
+      inspection_items_separator: "分隔符应使用“、”",
+      inspection_items_wording_ok: "检验项目写法正确",
+      label_date_not_resolved: "标签上的日期没有识别出来",
+      label_photo_found_but_ocr_record_missing: "找到标签照片，但照片文字识别没有结果",
+      merged_record_status_group_matched: "Record 多行勾选合并后与 Report 一致",
+      name_bracket_width_ok: "单位名称括号全/半角一致",
+      numeric_block_row_mapping_covered_by_numeric_ledger: "数值行已在数值核对中覆盖",
+      numeric_result_has_unconfirmed_suffix: "实测值后面带有无法确认的字符",
+      numeric_threshold_matched: "数值满足限值",
+      occurrence_order_match: "按出现顺序对应",
+      paired_field_absent_on_both_sides: "两边都没有这个字段",
+      paired_field_match: "两边相同",
+      parent_clause_difference: "父条款不同",
+      parent_clause_match: "父条款相同",
+      percent_deviation_within_tolerance: "百分比偏差在允差内",
+      photo_caption_matches_report_value: "照片标题与报告值一致",
+      photo_ocr_text_empty: "照片上没有识别出文字",
+      placeholder_content_not_reliably_localized: "无法可靠定位这个内容",
+      printed_total_ok: "总页数正确",
+      project_alias_match: "项目名称为已登记的等价写法",
+      project_matched_one_to_many: "一个项目对应多行",
+      range_contained: "实测范围在要求范围内",
+      range_within_bound: "实测范围满足限值",
+      record_cells_real_but_dual_recognition_unresolved: "手写数值两路识别不一致",
+      record_cover_identity_excluded_by_user_scope: "Record 封面身份字段按约定不比对",
+      record_template_ends_at_chapter_16_and_has_no_chapter_17_row: "Record 模板到第 16 章为止，没有第 17 章",
+      remark_not_compared_with_photo: "备注不与照片比对",
+      report_cell_blank_or_column_absent: "报告该单元格为空或没有这一列",
+      report_date_not_stated: "报告没有写日期",
+      report_guided_decimal_ocr_matched: "按 Report 数值引导识别手写小数后一致",
+      report_placeholder_and_photo_has_no_value: "报告填“/”，标签上也没有该项",
+      report_refers_to_other_section: "首页写“见…栏”，不在此比对",
+      report_row_extra_vs_record: "Report 多出的行，Record 模板没有对应行",
+      report_value_not_found_in_photo_text: "照片上的文字里没有找到报告中的这个值",
+      requirement_difference: "标准要求文字不同",
+      requirement_match: "标准要求相同",
+      requirement_match_concatenated: "标准要求合并后相同",
+      row_mapping_unresolved: "无法确定 Record 与 Report 的对应行",
+      sample_marked_not_used: "样品标注为未使用，不比对",
+      sample_number_ok: "样品编号正确",
+      sampling_fields_ok: "抽样字段正确",
+      sequence_result_matched: "结果一致",
+      signatory_title_ok: "职务名称正确",
+      signed_deviation_within_tolerance: "带正负号的偏差在允差内",
+      signed_result_may_be_deviation_or_absolute_value: "带正负号的结果，无法确定是偏差还是数值本身",
+      single_ocr_source_did_not_find_exact_content: "只有一路识别，且没有完全找到这个内容",
+      subclause_conclusion_matched: "分项结论一致",
+      subclause_conclusion_mismatch: "分项结论不一致",
+      unit_prefix_conversion_required_but_disabled: "需要单位前缀换算，转人工确认",
+      value_in_tolerance: "实测值在允差内",
+      table_header_missing: "检验结果表缺少表头"
     });
     const CHANNEL_NAMES = Object.freeze({ apple_vision: "Apple Vision", tesseract: "Tesseract", ios_handwriting_layer: "iOS 手写识别层" });
     function readingNote(reading) {
@@ -694,7 +814,10 @@
     function side(text, loc, title = "") { return { text: textOf(text), loc, title }; }
     function reasonText(item) {
       if (!item) return "";
-      return item.message || REASON_TEXT[item.reason_code] || REASON_TEXT[item.reason] || item.reason_code || item.reason || "";
+      if (item.message) return item.message;
+      const code = item.reason_code || item.reason;
+      if (!code) return "";
+      return REASON_TEXT[code] || (/^[A-Za-z0-9_]+$/.test(String(code)) ? "需要人工确认" : String(code));
     }
     function normStatus(status) {
       const value = String(status || "info");
@@ -711,7 +834,9 @@
         d.comparisons.forEach(c => rows.push({ label: c.field, sub: "第三页 ↔ 首页",
           a: side(c.page3, toLoc(c.page3_location, "report", "第三页")),
           b: side(c.cover, toLoc(c.cover_location, "report", "首页"), "首页"),
-          status: c.match ? "pass" : "error" }));
+          status: c.match ? "pass" : "error",
+          note: c.match ? "两处相同" : "第三页与首页写法不同",
+          problem: c.match ? "" : `${c.field}：第三页写“${textOf(c.page3)}”，首页写“${textOf(c.cover)}”，两处不同` }));
         const missing = new Set(d.missing_page3_fields || []);
         (d.required_page3_fields || []).forEach(field => {
           const raw = (d.page3_locations || {})[field];
@@ -719,7 +844,8 @@
           const loc = nums.length === 4 ? toLoc({ pdf_page: 3, rect: nums }, "report", "第三页") : null;
           rows.push({ label: field, sub: "第三页必填字段",
             a: side((d.page3_fields || {})[field], loc), b: side("应已填写", null, "规则"),
-            status: missing.has(field) ? "error" : "pass" });
+            status: missing.has(field) ? "error" : "pass",
+            problem: missing.has(field) ? `第三页“${field}”没有填写` : "" });
         });
       } else if (id === "REPORT-R02" && Array.isArray(d.objects)) {
         d.objects.forEach(o => {
@@ -730,7 +856,7 @@
             status: fc.status || o.status, note: reasonText(fc) }));
         });
       } else if (id === "REPORT-R03" && Array.isArray(d.comparisons)) {
-        d.comparisons.forEach(c => rows.push({ label: c.field || "日期", sub: c.report_format ? `格式 ${c.report_format}` : "",
+        d.comparisons.forEach(c => rows.push({ label: c.name ? `${c.sequence ?? ""}. ${c.name}` : (c.field || "日期"), sub: [c.field || "日期", c.report_format ? `格式 ${c.report_format}` : ""].filter(Boolean).join(" · "),
           a: side(c.report_value, toLoc(c.report_location, "report", "样品描述")),
           b: side(c.label_value || c.observed_value, toLoc(c.photo_location, "report", "照片"), c.photo_location?.photo_number ? `照片 №${c.photo_location.photo_number}` : "标签"),
           status: c.status, note: reasonText(c) }));
@@ -751,10 +877,24 @@
             status: o.status, note: reasonText(o) });
         });
       } else if (id === "REPORT-R07" && Array.isArray(d.item_checks)) {
-        d.item_checks.forEach(c => rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
-          a: side(`${(c.results || []).length} 行结果：${clip(c.results, 60)}`, null),
-          b: side(`应为“${c.expected}”，实际“${c.actual}”`, toLoc(c.location, "report", "单项结论"), "单项结论"),
-          status: c.status }));
+        d.item_checks.forEach(c => {
+          const pages = Array.isArray(c.conclusions_by_page) ? c.conclusions_by_page : [];
+          const pageName = p => p.printed_page ? `第${p.printed_page}页` : `PDF第${p.pdf_page}页`;
+          const odd = c.conclusion_conflict ? (pages.find(p => p.conclusion !== c.expected) || pages[0]) : null;
+          const resultLoc = c.result_location ? toLoc(c.result_location, "report", "检验结果") : null;
+          const samePage = !odd && resultLoc ? pages.find(p => p.pdf_page === resultLoc.pdf_page) : null;
+          const conclusionLoc = odd ? toLoc({ pdf_page: odd.pdf_page, rect: odd.rect }, "report", "单项结论")
+            : samePage ? toLoc({ pdf_page: samePage.pdf_page, rect: samePage.rect }, "report", "单项结论")
+            : toLoc(c.location, "report", "单项结论");
+          const bText = c.conclusion_conflict && pages.length
+            ? pages.map(p => `${pageName(p)}写“${p.conclusion}”`).join("，") + `；应统一为“${c.expected}”`
+            : `应为“${c.expected}”，实际“${c.actual}”`;
+          rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+            a: side(`${(c.results || []).length} 行结果：${clip(c.results, 60)}`, resultLoc),
+            b: side(bText, conclusionLoc, "单项结论"),
+            status: c.status, note: c.status === "pass" ? "" : (c.conclusion_conflict ? "跨页的单项结论不一致" : "单项结论与检验结果不对应"),
+            problem: c.status === "pass" ? "" : `序号${c.sequence}（${[c.project, c.clause].filter(Boolean).join(" ")}）：${c.message || bText}` });
+        });
       } else if (id === "REPORT-R07-B" && Array.isArray(d.comparisons)) {
         d.comparisons.forEach(c => rows.push({ label: `序号 ${c.sequence ?? ""}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
           a: side(c.result, toLoc({ pdf_page: c.pdf_page, rect: c.result_rect }, "report", "检验结果")),
@@ -763,7 +903,8 @@
       } else if (id === "REPORT-R08" && Array.isArray(d.items)) {
         d.items.forEach(c => rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
           a: side(c.missing_fields?.length ? `缺少：${c.missing_fields.join("、")}` : "项目、条款、要求、结果、单项结论均已填写", toLoc(c.location, "report", "检验结果")),
-          b: side("", null), status: c.status }));
+          b: side("", null), status: c.status,
+          problem: c.missing_fields?.length ? `序号${c.sequence}（${[c.project, c.clause].filter(Boolean).join(" ")}）缺少：${c.missing_fields.join("、")}` : "" }));
       } else if (id === "REPORT-R09") {
         const got = d.new_sequence_order || [];
         rows.push({ label: "新项目序号", a: side(got.length ? `${got[0]}–${got[got.length - 1]}（共 ${got.length} 个）` : "未识别", null),
@@ -773,7 +914,23 @@
         d.first_markers_by_page.forEach(m => rows.push({ label: `PDF 第 ${m.pdf_page} 页`, sub: "表格首项",
           a: side(Array.isArray(m.first_marker) ? (m.first_marker[0] === "new" ? `新项目 ${m.first_marker[1]}` : `续 ${m.first_marker[1]}`) : textOf(m.first_marker), toLoc({ pdf_page: m.pdf_page, rect: [0, 0, 1, 1] }, "report", "页面")),
           b: side("", null), status: "pass" }));
-        (d.errors || []).forEach(e => rows.push({ label: "跨页标注", a: side(e, null), b: side("", null), status: "error" }));
+        const headerless = Array.isArray(d.headerless_pages) ? d.headerless_pages : [];
+        headerless.forEach(h => rows.push({ label: h.printed_page ? `第 ${h.printed_page} 页` : `PDF 第 ${h.pdf_page} 页`, sub: "表头",
+          a: side("表格没有表头行，直接从项目内容开始", toLoc({ pdf_page: h.pdf_page, rect: h.rect }, "report", "表格顶部")),
+          b: side("序号、检验项目、标准条款、标准要求、检验结果、单项结论、备注", null, "应有表头"),
+          status: "error", note: "已按前面页面的表头继续核对",
+          problem: `${h.printed_page ? `第${h.printed_page}页（PDF第${h.pdf_page}页）` : `PDF第${h.pdf_page}页`}的检验结果表缺少表头` }));
+        if (headerless.length > 1) {
+          const first = headerless[0], last = headerless[headerless.length - 1];
+          rows.forEach(row => { if (row.sub === "表头") row.quiet = true; });
+          const firstHeaderRow = rows.findIndex(row => row.sub === "表头");
+          rows.splice(firstHeaderRow < 0 ? rows.length : firstHeaderRow, 0, { label: "表头缺失汇总", sub: `共 ${headerless.length} 页`,
+            a: side(`PDF第${first.pdf_page}～${last.pdf_page}页`, toLoc({ pdf_page: first.pdf_page, rect: first.rect }, "report", "表格顶部")),
+            b: side("每页检验结果表都应有表头", null, "规则"), status: "error",
+            note: "已按前面页面的表头继续核对",
+            problem: `检验结果表从${first.printed_page ? `第${first.printed_page}页（PDF第${first.pdf_page}页）` : `PDF第${first.pdf_page}页`}到${last.printed_page ? `第${last.printed_page}页（PDF第${last.pdf_page}页）` : `PDF第${last.pdf_page}页`}，共${headerless.length}页缺少表头；程序已按前面页面的表头继续核对` });
+        }
+        (d.errors || []).filter(e => !String(e).includes("缺少表头")).forEach(e => rows.push({ label: "跨页标注", a: side(e, null), b: side("", null), status: "error", problem: String(e) }));
       } else if (id === "REPORT-R11" && Array.isArray(d.page_states)) {
         d.page_states.forEach(p => rows.push({ label: `PDF 第 ${p.pdf_page} 页`, sub: "页脚页码",
           a: side(`第 ${p.printed_page ?? "?"} 页 / 共 ${p.printed_total ?? "?"} 页`, null), b: side("", null), status: p.status }));
@@ -784,7 +941,8 @@
           rows.push({ label: c.field || c.check_id, sub: c.check_id || "",
             a: side(c.observed, toLoc(c.location, "report", c.field || "报告")),
             b: side(c.expected ?? (c.photo_location ? "照片中找到" : ""), otherLoc, otherTitle),
-            status: c.status, note: c.message || reasonText(c) });
+            status: c.status, note: c.message || reasonText(c),
+            problem: c.message ? `${c.field || "检查项"}：${c.message}` : "" });
         });
       }
       return rows;
@@ -885,11 +1043,25 @@
       if (recordLocs.length) await recordPane.setFinding(status, recordLocs);
     }
 
+    const rowElements = new WeakMap();
+    function showCheckRow(row) {
+      if (!row) return;
+      const tr = rowElements.get(row);
+      if (tr) {
+        document.getElementById("check-details").open = true;
+        tr.parentElement.querySelectorAll("tr.is-active").forEach(el => el.classList.remove("is-active"));
+        tr.classList.add("is-active", "is-flash");
+        setTimeout(() => tr.classList.remove("is-flash"), 1300);
+        tr.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      focusCheckRow(row);
+    }
+
     function renderCheckDetails(finding) {
       const box = document.getElementById("check-details");
       const body = document.getElementById("check-rows");
       const meta = MODE_META[activeMode] || MODE_META.self;
-      const rows = meta.recordRole ? recordCheckRows(finding, meta.recordRole) : selfCheckRows(finding);
+      const rows = [...checkRowsFor(finding)];
       body.replaceChildren();
       document.getElementById("check-col-a").textContent = meta.recordRole ? "Report（位置 · 内容）" : "报告中的位置 · 内容";
       document.getElementById("check-col-b").textContent = meta.recordRole ? "Record（位置 · 内容）" : "对照对象（首页 / 照片 / 规则）";
@@ -932,6 +1104,7 @@
         if (row.note) { const n = document.createElement("span"); n.className = "check-note"; n.textContent = row.note; result.append(n); }
         current.append(label, cell(row.a, "a", row), cell(row.b, "b", row), result);
         current.addEventListener("click", () => { body.querySelectorAll("tr.is-active").forEach(el => el.classList.remove("is-active")); current.classList.add("is-active"); focusCheckRow(row); });
+        rowElements.set(row, current);
         body.append(current);
       });
       box.hidden = false;
@@ -956,9 +1129,9 @@
       badge.className = `finding-status ${status}`;
       badge.textContent = STATUS_LABELS[status] || status;
       comparisonBrief.querySelector(".brief-title").textContent = finding.title || finding.rule_id || "核对结果";
-      renderFindingBrief(finding, reportLocations);
+      renderFindingBrief(finding);
       renderCheckDetails(finding);
-      comparisonBrief.querySelector(".finding-id").textContent = finding.id || "—";
+      comparisonBrief.querySelector(".finding-id").textContent = String(finding.id || "—").split("@")[0];
       if (!reportDocument) {
         clearPane(reportPane, "缺少 Report 文档信息。");
         clearPane(recordPane, "等待 Record 文档。");

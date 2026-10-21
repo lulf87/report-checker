@@ -220,8 +220,21 @@ def _build_report_ledger(
     for sequence in by_id["REPORT-R09"].get("details", {}).get("new_sequence_order", []):
         item = report_items.get(sequence, {})
         add("REPORT-R09", ("S19",), f"sequence:{sequence}", "pass" if not by_id["REPORT-R09"].get("details", {}).get("errors") else "error", value=sequence, page_number=(item.get("pages") or [None])[0])
-    for marker in by_id["REPORT-R10"].get("details", {}).get("first_markers_by_page", []):
-        add("REPORT-R10", ("S20",), f"page:{marker.get('pdf_page')}", "pass" if not by_id["REPORT-R10"].get("details", {}).get("errors") else "error", value=marker, page_number=marker.get("pdf_page"))
+    r10_details = by_id["REPORT-R10"].get("details", {})
+    headerless_pages = {entry.get("pdf_page") for entry in r10_details.get("headerless_pages", [])}
+    continuation_failed = len(r10_details.get("errors", [])) > (1 if headerless_pages else 0)
+    for marker in r10_details.get("first_markers_by_page", []):
+        page_number = marker.get("pdf_page")
+        missing_header = page_number in headerless_pages
+        add(
+            "REPORT-R10",
+            ("S20",),
+            f"page:{page_number}",
+            "error" if missing_header or continuation_failed else "pass",
+            reason_code="table_header_missing" if missing_header else None,
+            value=marker,
+            page_number=page_number,
+        )
     for page_state in by_id["REPORT-R11"].get("details", {}).get("page_states", []):
         add("REPORT-R11", ("S21",), f"page:{page_state.get('pdf_page')}", str(page_state.get("status", by_id["REPORT-R11"].get("status", "manual"))), value=page_state, page_number=page_state.get("pdf_page"))
     for rule_id, scope_id in FRONT_RULE_SCOPES.items():

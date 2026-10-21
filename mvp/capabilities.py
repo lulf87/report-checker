@@ -409,9 +409,9 @@ RULE_CATALOG: dict[str, dict[str, Any]] = {
         "modes": ("report_self",),
     },
     "REPORT-R10": {
-        "label": "跨页续项",
-        "title": "跨页首项续N检查",
-        "version": "1.0.0",
+        "label": "表头与跨页续项",
+        "title": "表格表头与跨页首项续N检查",
+        "version": "1.1.0",
         "source": "report_baseline",
         "required_component_ids": ("pdf_parser", "report_template_bundle"),
         "family": "report",

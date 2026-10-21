@@ -53,7 +53,7 @@
 | S17 | 检验结果数值符合同行接受标准 | confirmed | `REPORT-R07-B` / validated |
 | S18 | 数值比较检查单位、上下限、误差、精度、符号和极性 | confirmed | `REPORT-R07-B` / validated |
 | S19 | 正式项目序号连续、无重复、无漏项 | confirmed | `REPORT-R09` / validated |
-| S20 | 跨页项目正确使用“续 N”标记 | confirmed | `REPORT-R10` / validated |
+| S20 | 检验结果表每页都有表头；跨页项目正确使用“续 N”标记 | confirmed | `REPORT-R10` / validated |
 | S21 | 打印页码和“共 N 页第 M 页”连续完整 | confirmed | `REPORT-R11` / validated |
 | S49 | 首页“检验项目”写法：区间用“～”、分隔用“、”；连续条款≥3条写区间、<3条逐条列举；除外条款按生物相容性、可用性、电磁兼容性顺序；不得写全性能/全项目/2.性能；标准编号年代号带连字符 | confirmed（2026-10-20） | `REPORT-R12` / validated |
 | S50 | 首页“检验依据”“检验结论”：产品技术要求全称、“及变更对比表”、标准名称后加“标准”、委托方与生产单位不一致时写“提供”、有除外或仅检时写“所检项目”、依据与结论一致、公司名称与委托方一致（含全/半角括号） | confirmed（2026-10-20） | `REPORT-R13` / validated |

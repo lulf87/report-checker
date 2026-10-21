@@ -1,6 +1,6 @@
 [project]
 name = "report-checker-mvp"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local deterministic PDF report checker: Report self-check and Report + GB 9706.1 / 9706.202 Record comparison"
 requires-python = ">=3.12"
 dependencies = [

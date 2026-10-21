@@ -420,8 +420,17 @@ def cover_value_after_label(page: fitz.Page, label: str) -> tuple[str, fitz.Rect
                 value += joiner + part
             return value, find_exact_rect(page, parts[0] if parts else value)
         if normalized.startswith(target) and len(normalized) > len(target):
-            value = normalized[len(target) :]
-            return value, find_exact_rect(page, value)
+            first = normalized[len(target) :]
+            value = first
+            if target != "检验类别":
+                # The value can wrap onto the next underline line (sample 2048:
+                # “…股份有限公” / “司”); read on until the next cover label.
+                for following in lines[index + 1 : index + 3]:
+                    if compact(following).startswith(COVER_LABELS) or re.search(r"研究院|检验报告|报告编号", compact(following)):
+                        break
+                    joiner = " " if re.search(r"[A-Za-z0-9.,]$", value) and re.match(r"[A-Za-z]", following) else ""
+                    value += joiner + compact(following)
+            return value, find_exact_rect(page, first)
     return "", None
 
 
@@ -505,21 +514,254 @@ def is_formal_report_table(table: fitz.table.Table) -> bool:
     return {"序号", "检验项目", "标准条款", "标准要求", "检验结果", "单项结论"}.issubset(mapping)
 
 
+def _page_ranges(pages: Iterable[int]) -> str:
+    """[88, 89, 90, 95] -> "88～90、95"."""
+
+    values = sorted({int(page) for page in pages})
+    parts: list[str] = []
+    start = previous = None
+    for value in values:
+        if start is None:
+            start = previous = value
+        elif value == previous + 1:
+            previous = value
+        else:
+            parts.append(f"{start}" if start == previous else f"{start}～{previous}")
+            start = previous = value
+    if start is not None:
+        parts.append(f"{start}" if start == previous else f"{start}～{previous}")
+    return "、".join(parts)
+
+
+def printed_page_number(page: fitz.Page) -> int | None:
+    match = re.search(r"第\s*(\d+)\s*页", page.get_text("text", clip=fitz.Rect(0, 0, page.rect.width, 180)))
+    return int(match.group(1)) if match else None
+
+
+# ---------------------------------------------------------------------------
+# Report tables printed without a header row
+# ---------------------------------------------------------------------------
+#
+# Some Reports (sample 2048, from printed page 86 on) continue the main table
+# without repeating the header row.  Such a table is recognised by its column
+# boundaries, which match the first header-bearing table of the same document.
+# It is then presented with a synthetic header row, so every rule keeps working
+# unchanged; the pages are also recorded so REPORT-R10 can report the format
+# problem.
+
+REPORT_COLUMN_TOLERANCE = 3.0
+
+
+class _SyntheticHeaderRow:
+    def __init__(self, cells: list[tuple[float, float, float, float] | None]) -> None:
+        self.cells = cells
+        present = [cell for cell in cells if cell is not None]
+        self.bbox = (present[0][0], present[0][1], present[-1][2], present[-1][3]) if present else (0, 0, 0, 0)
+
+
+class HeaderlessReportTable:
+    """A Report table without its header row, shown with a synthetic one."""
+
+    headerless = True
+
+    def __init__(self, table: fitz.table.Table, header: list[str | None], cells: list[Any]) -> None:
+        self._table = table
+        self._header = list(header)
+        self._header_row = _SyntheticHeaderRow(cells)
+
+    def extract(self) -> list[list[Any]]:
+        return [list(self._header)] + self._table.extract()
+
+    @property
+    def rows(self) -> list[Any]:
+        return [self._header_row] + list(self._table.rows)
+
+    @property
+    def row_count(self) -> int:
+        return int(self._table.row_count) + 1
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._table, name)
+
+
+def _table_column_starts(table: Any) -> list[float]:
+    starts = sorted({round(float(cell[0]), 1) for row in table.rows for cell in row.cells if cell is not None})
+    merged: list[float] = []
+    for value in starts:
+        if not merged or value - merged[-1] > 1.0:
+            merged.append(value)
+    return merged
+
+
+def _report_header_template(document: fitz.Document) -> dict[str, Any] | None:
+    cached = getattr(document, "_rc_report_header_template", "unset")
+    if cached != "unset":
+        return cached
+    template: dict[str, Any] | None = None
+    for page in document:
+        for table in page.find_tables().tables:
+            if not is_formal_report_table(table):
+                continue
+            header = table.extract()[0]
+            cells = list(table.rows[0].cells)
+            columns = []
+            for label, cell in zip(header, cells):
+                if cell is None or not compact(label):
+                    continue
+                columns.append({"label": compact(label), "x0": float(cell[0]), "x1": float(cell[2])})
+            template = {
+                "pdf_page": page.number + 1,
+                "columns": columns,
+                "x0": float(table.bbox[0]),
+                "x1": float(table.bbox[2]),
+            }
+            break
+        if template is not None:
+            break
+    try:
+        document._rc_report_header_template = template
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return template
+
+
+def _headerless_adapter(table: Any, template: Mapping[str, Any]) -> HeaderlessReportTable | None:
+    if abs(float(table.bbox[0]) - template["x0"]) > REPORT_COLUMN_TOLERANCE:
+        return None
+    if abs(float(table.bbox[2]) - template["x1"]) > REPORT_COLUMN_TOLERANCE:
+        return None
+    starts = _table_column_starts(table)
+    if len(starts) != int(table.col_count):
+        return None
+    header: list[str | None] = [None] * len(starts)
+    for column in template["columns"]:
+        matches = [index for index, start in enumerate(starts) if abs(start - column["x0"]) <= REPORT_COLUMN_TOLERANCE]
+        if len(matches) != 1:
+            return None
+        header[matches[0]] = column["label"]
+    labelled = [index for index, label in enumerate(header) if label]
+    if labelled[0] != 0:
+        return None
+    rows = table.extract()
+    if not rows or not re.fullmatch(r"(续)?\d+", compact(rows[0][0] or "")):
+        return None
+    y0 = float(table.bbox[1])
+    cells: list[Any] = [None] * len(starts)
+    for position, index in enumerate(labelled):
+        right = starts[labelled[position + 1]] if position + 1 < len(labelled) else float(table.bbox[2])
+        cells[index] = (starts[index], y0, right, y0)
+    return HeaderlessReportTable(table, header, cells)
+
+
+def report_page_tables(page: fitz.Page) -> list[Any]:
+    """page.find_tables().tables, with header-less Report table pages adapted.
+
+    A header-less table is accepted only on a page without any header-bearing
+    formal table, after the first header-bearing page, when its column starts
+    and outer edges match that page within 3 pt and its first cell is a
+    sequence number ("138" or "续138").
+    """
+
+    tables = list(page.find_tables().tables)
+    if any(is_formal_report_table(table) for table in tables):
+        return tables
+    document = page.parent
+    template = _report_header_template(document) if document is not None else None
+    if template is None or page.number + 1 <= template["pdf_page"]:
+        return tables
+    adapted: list[Any] = []
+    found = False
+    for table in tables:
+        adapter = None if found else _headerless_adapter(table, template)
+        if adapter is not None:
+            found = True
+            adapted.append(adapter)
+        else:
+            adapted.append(table)
+    if found:
+        pages = getattr(document, "_rc_headerless_report_pages", None)
+        if pages is None:
+            pages = set()
+            try:
+                document._rc_headerless_report_pages = pages
+            except Exception:  # pragma: no cover
+                pass
+        pages.add(page.number + 1)
+    return adapted
+
+
+def headerless_report_pages(document: fitz.Document) -> list[int]:
+    """PDF pages whose main table was printed without a header row."""
+
+    pages = []
+    for page in document:
+        tables = report_page_tables(page)
+        if any(getattr(table, "headerless", False) for table in tables):
+            pages.append(page.number + 1)
+    return pages
+
+
+def _page_label(entry: Mapping[str, Any]) -> str:
+    printed = entry.get("printed_page")
+    return f"第{printed}页（PDF第{entry['pdf_page']}页）" if printed else f"PDF第{entry['pdf_page']}页"
+
+
+def _r07_message(
+    expected: str,
+    actual: str,
+    values: Sequence[str],
+    conflict: bool,
+    by_page: Sequence[Mapping[str, Any]],
+) -> str:
+    """One plain sentence saying what was checked and what is wrong."""
+
+    if expected == "不符合":
+        basis = "检验结果中有“不符合要求”"
+    elif expected == "符合":
+        real = [value for value in values if value not in {"——", "/", "—", "-"}]
+        basis = f"检验结果中有实际结果（如“{real[0]}”）" if real else "检验结果中有实际结果"
+    elif expected == "/":
+        basis = "检验结果全部为“——”或“/”"
+    elif expected == "<检验结果缺失>":
+        basis = "没有找到检验结果"
+    else:
+        basis = "按引用项目的结论"
+    if conflict:
+        pages = "，".join(f"{_page_label(entry)}写“{entry['conclusion']}”" for entry in by_page)
+        return f"同一项目跨页的单项结论不一致：{pages}；{basis}，应统一为“{expected}”"
+    if not actual:
+        return f"{basis}，单项结论应为“{expected}”，但单项结论为空"
+    if actual != expected:
+        return f"{basis}，单项结论应为“{expected}”，实际写“{actual}”"
+    return f"{basis}，单项结论“{actual}”正确"
+
+
 def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     items: dict[int, dict[str, Any]] = {}
     page_sequences: list[dict[str, Any]] = []
     active_sequence: int | None = None
     continuation_errors: list[str] = []
     new_sequence_order: list[int] = []
+    headerless_pages: list[dict[str, Any]] = []
 
     for page in doc:
         selected: fitz.table.Table | None = None
-        for table in page.find_tables().tables:
+        for table in report_page_tables(page):
             if is_formal_report_table(table):
                 selected = table
                 break
         if selected is None:
             continue
+        page_printed = printed_page_number(page)
+        if getattr(selected, "headerless", False):
+            box = fitz.Rect(selected.bbox)
+            headerless_pages.append(
+                {
+                    "pdf_page": page.number + 1,
+                    "printed_page": page_printed,
+                    "rect": [round(box.x0, 3), round(box.y0, 3), round(box.x1, 3), round(min(box.y1, box.y0 + 14), 3)],
+                }
+            )
 
         rows = selected.extract()
         mapping = header_map(rows[0])
@@ -591,6 +833,7 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
                 item["row_locations"].append(
                     {
                         "pdf_page": page.number + 1,
+                        "printed_page": page_printed,
                         "result": result,
                         "conclusion": conclusion,
                         "result_rect": rect_list(result_cell) if result_cell is not None else None,
@@ -635,6 +878,32 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
         else:
             expected_conclusion_counts[expected] += 1
         conclusion_conflict = len(set(conclusions)) > 1
+        conclusions_by_page: list[dict[str, Any]] = []
+        for location in item["row_locations"]:
+            text = compact(location.get("conclusion") or "")
+            if not text or not location.get("conclusion_rect"):
+                continue
+            if conclusions_by_page and conclusions_by_page[-1]["pdf_page"] == location["pdf_page"] and conclusions_by_page[-1]["conclusion"] == text:
+                continue
+            conclusions_by_page.append(
+                {
+                    "pdf_page": location["pdf_page"],
+                    "printed_page": location.get("printed_page"),
+                    "conclusion": text,
+                    "rect": location["conclusion_rect"],
+                }
+            )
+        message = _r07_message(expected, actual, values, conclusion_conflict, conclusions_by_page)
+        # The row that decides the expected conclusion (first real result).
+        deciding = next(
+            (
+                location
+                for location in item["row_locations"]
+                if location.get("result_rect")
+                and compact(location.get("result") or "") not in {"", "——", "—", "/", "-"}
+            ),
+            None,
+        )
         conclusion_location = next(
             (location for location in item["row_locations"] if location.get("conclusion_rect") and location.get("conclusion")),
             None,
@@ -648,6 +917,20 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
                 "expected": expected,
                 "actual": actual or "<空>",
                 "status": "error" if (actual != expected or conclusion_conflict) else "pass",
+                "conclusion_conflict": conclusion_conflict,
+                "conclusions_by_page": conclusions_by_page,
+                "message": message,
+                "result_location": (
+                    {
+                        "document_role": "report",
+                        "pdf_page": deciding["pdf_page"],
+                        "rect": deciding["result_rect"],
+                        "source": "report_item_result",
+                        "result": deciding.get("result"),
+                    }
+                    if deciding
+                    else None
+                ),
                 "location": (
                     {
                         "document_role": "report",
@@ -669,6 +952,8 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
                     "results": item["results"],
                     "all_conclusions": item["conclusions"],
                     "conclusion_conflict": conclusion_conflict,
+                    "conclusions_by_page": conclusions_by_page,
+                    "message": message,
                     "pdf_pages": sorted(set(item["pages"])),
                 }
             )
@@ -678,6 +963,7 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
         "new_sequence_order": unique_new,
         "sequence_gaps": gaps,
         "continuation_errors": continuation_errors,
+        "headerless_pages": headerless_pages,
         "result_mismatches": result_mismatches,
         "item_checks": item_checks,
         "nonconforming_items": nonconforming,
@@ -694,7 +980,7 @@ def find_report_item_value_cell(
 ) -> tuple[int, str, fitz.Rect]:
     current_sequence: int | None = None
     for page in doc:
-        for table in page.find_tables().tables:
+        for table in report_page_tables(page):
             if not is_formal_report_table(table):
                 continue
             rows = table.extract()
@@ -857,12 +1143,37 @@ def _report_r09_r10_findings(diagnostics: Mapping[str, Any]) -> tuple[dict[str, 
         "details": {"new_sequence_order": new_sequence_order, "expected_sequence_order": expected, "errors": sequence_errors},
         "evidence": [],
     }
+    headerless = list(diagnostics.get("headerless_pages", []))
+    header_errors: list[str] = []
+    if headerless:
+        ranges = _page_ranges([entry["pdf_page"] for entry in headerless])
+        printed = [entry.get("printed_page") for entry in headerless if entry.get("printed_page")]
+        printed_text = f"（打印页第{_page_ranges(printed)}页）" if printed else ""
+        header_errors.append(
+            f"PDF第{ranges}页{printed_text}的检验结果表缺少表头（序号、检验项目、标准条款、标准要求、检验结果、单项结论、备注），"
+            f"共{len(headerless)}页；已按前面页面的表头继续核对"
+        )
+    r10_errors = header_errors + continuation_errors
+    if not r10_errors:
+        r10_summary = f"检查{len(first_markers)}个正式表格页，每页都有表头，跨页首项“续N”位置及序号正确"
+    else:
+        parts = []
+        if headerless:
+            parts.append(f"{len(headerless)}页检验结果表缺少表头（PDF第{_page_ranges([entry['pdf_page'] for entry in headerless])}页）")
+        if continuation_errors:
+            parts.append(f"{len(continuation_errors)}个跨页“续N”标记错误")
+        r10_summary = "发现" + "，".join(parts)
     r10 = {
         "id": "REPORT-R10",
-        "title": "跨页首项“续N”检查",
-        "status": "pass" if not continuation_errors else "error",
-        "summary": f"检查{len(first_markers)}个正式表格页，跨页首项“续N”位置及序号正确" if not continuation_errors else f"发现{len(continuation_errors)}个跨页标记错误",
-        "details": {"formal_table_pages_checked": len(first_markers), "first_markers_by_page": first_markers, "errors": continuation_errors},
+        "title": "表格表头与跨页首项“续N”",
+        "status": "pass" if not r10_errors else "error",
+        "summary": r10_summary,
+        "details": {
+            "formal_table_pages_checked": len(first_markers),
+            "first_markers_by_page": first_markers,
+            "headerless_pages": headerless,
+            "errors": r10_errors,
+        },
         "evidence": [],
     }
     return r09, r10
@@ -1106,7 +1417,9 @@ def report_self_check(
             "summary": (
                 f"{len(items)}个项目的多行结果聚合与单项结论一致"
                 if result_ok
-                else f"发现{len(diagnostics['result_mismatches'])}个聚合结论不一致"
+                else f"{len(diagnostics['result_mismatches'])}个项目的单项结论与检验结果不对应："
+                + "；".join(f"序号{item['sequence']}" for item in diagnostics["result_mismatches"][:8])
+                + ("等" if len(diagnostics["result_mismatches"]) > 8 else "")
             ),
             "details": {
                 "mismatches": diagnostics["result_mismatches"],
@@ -1147,6 +1460,16 @@ def report_self_check(
     r07b = _report_r07b_finding(report.path, output_dir, doc)
     r08 = _report_r08_finding(items)
     r09, r10 = _report_r09_r10_findings(diagnostics)
+    for entry in r10["details"].get("headerless_pages", [])[:3]:
+        r10["evidence"].append(
+            render_evidence(
+                doc[entry["pdf_page"] - 1],
+                [fitz.Rect(entry["rect"])],
+                output_dir / "evidence" / f"report-table-header-missing-p{entry['pdf_page']:03d}.png",
+                padding=24,
+                full_width=True,
+            )
+        )
     # 首页写法、日期、封面版本、页眉与编号规则（R12～R16）只读 Report 文本，不依赖 OCR。
     front_findings = front_matter_findings(doc)
     for front_finding in front_findings.values():
@@ -1350,7 +1673,7 @@ def find_report_numeric_value(
         text = page.get_text("text")
         if "漏电流和患者辅助电流的测量（潮湿预处理后）" not in text:
             continue
-        for table in page.find_tables().tables:
+        for table in report_page_tables(page):
             if not is_formal_report_table(table):
                 continue
             rows = table.extract()
@@ -1758,7 +2081,7 @@ def report_202_rows(doc: fitz.Document, target_sequence: int = 155) -> dict[str,
         text = page.get_text("text")
         if "201.15.101" not in text:
             continue
-        for table in page.find_tables().tables:
+        for table in report_page_tables(page):
             if not is_formal_report_table(table):
                 continue
             rows = table.extract()

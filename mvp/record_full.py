@@ -11,7 +11,7 @@ try:
 except ImportError:
     import fitz
 
-from mvp.checker import align_report_table_row, compact, display_text, header_map, is_formal_report_table, report_table_cell
+from mvp.checker import align_report_table_row, compact, display_text, header_map, is_formal_report_table, report_page_tables, report_table_cell
 
 
 RectTuple = tuple[float, float, float, float]
@@ -244,7 +244,7 @@ def scan_report_rows(
 
     with fitz.open(Path(report_path)) as document:
         for page in document:
-            for table_index, table in enumerate(page.find_tables().tables):
+            for table_index, table in enumerate(report_page_tables(page)):
                 if not is_formal_report_table(table):
                     continue
                 extracted = table.extract()
