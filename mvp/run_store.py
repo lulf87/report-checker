@@ -838,6 +838,31 @@ class RunStore:
                 self._attach_run_inputs_locked(run)
             return runs
 
+    def list_recent_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Most recent Runs across all Cases, newest first, with the Case name.
+
+        Bulky fields (published summary, input snapshot) are left out; fetch a
+        single Run for those.
+        """
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise RunStoreError("INVALID_LIMIT", "limit 必须在 1–100 之间")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT r.*, c.name AS case_name FROM runs r JOIN cases c ON c.id = r.case_id
+                   ORDER BY r.created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            runs: list[dict[str, Any]] = []
+            for row in rows:
+                run = self._run_from_row(row)
+                run.pop("published_summary", None)
+                run.pop("planned_rule_ids", None)
+                run["case_name"] = row["case_name"]
+                self._attach_run_inputs_locked(run)
+                runs.append(run)
+            return runs
+
     def list_queued_runs(self) -> list[dict[str, Any]]:
         """Return durable queued Runs in creation order for startup recovery."""
 

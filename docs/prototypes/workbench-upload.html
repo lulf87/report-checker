@@ -275,6 +275,33 @@
     @media (max-width: 980px) {
       .results-workspace:has(.comparison-card.visible) > .comparison-card { position: static; height: auto; }
     }
+    /* ---- 历史、处理意见、导出 ---- */
+    .history-card { margin-bottom: 14px; padding: 10px 16px; }
+    .history-card > summary { cursor: pointer; font-weight: 800; }
+    .history-count { color: var(--muted); font-size: 12px; font-weight: 400; }
+    .history-list { display: grid; gap: 4px; margin: 10px 0 2px; padding: 0; list-style: none; }
+    .history-item { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 7px 8px; border-radius: 6px; background: var(--soft); font-size: 13px; }
+    .history-item .when { color: var(--muted); font-size: 12px; }
+    .history-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-item .counts { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .history-item .counts b.e { color: var(--error); } .history-item .counts b.m { color: var(--manual); }
+    .history-item button { min-height: 28px; padding: 2px 12px; }
+    .verdict-actions { margin-left: auto; }
+    .review-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -4px 16px 12px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .review-box[hidden] { display: none; }
+    .review-label { color: var(--muted); font-size: 12px; font-weight: 800; }
+    .review-choices { display: flex; gap: 4px; }
+    .review-choice { min-height: 28px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); background: #fff; font-size: 12px; }
+    .review-choice[aria-checked="true"][data-decision="is_problem"] { border-color: var(--error); color: #fff; background: var(--error); }
+    .review-choice[aria-checked="true"][data-decision="not_problem"] { border-color: var(--pass); color: #fff; background: var(--pass); }
+    .review-choice[aria-checked="true"][data-decision="notified"] { border-color: var(--teal); color: #fff; background: var(--teal); }
+    .review-note { flex: 1 1 220px; min-height: 30px; padding: 4px 9px; border: 1px solid #bdcdd1; border-radius: 6px; font-size: 12px; }
+    .review-state { color: var(--muted); font-size: 11px; }
+    .decision-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 700; vertical-align: 1px; }
+    .decision-tag.is_problem { color: var(--error); background: var(--error-soft); }
+    .decision-tag.not_problem { color: var(--pass); background: var(--pass-soft); }
+    .decision-tag.notified { color: var(--teal); background: var(--teal-soft); }
+    @media (max-width: 760px) { .history-item { grid-template-columns: 1fr auto; } .history-item .when, .history-item .counts { grid-column: 1; } }
   </style>
 </head>
 <body>
@@ -286,6 +313,11 @@
       </div>
       <span class="local-badge" title="文件不会上传到互联网">仅在本机运行</span>
     </header>
+
+    <details class="card history-card" id="history-card">
+      <summary>最近核对 <span class="history-count" id="history-count"></span></summary>
+      <ol class="history-list" id="history-list"><li class="empty">正在读取…</li></ol>
+    </details>
 
     <section class="card setup-card" aria-labelledby="setup-title">
       <h2 id="setup-title" class="step-title"><span class="step-no">1</span>选择核对内容</h2>
@@ -388,6 +420,9 @@
 
     <section class="card verdict-card" id="verdict-card" hidden aria-live="polite">
       <div class="verdict-text" id="verdict-text"></div>
+      <div class="verdict-actions">
+        <button type="button" class="secondary" id="export-problems" title="导出成 Excel 能打开的表格">导出问题清单</button>
+      </div>
       <div class="verdict-stats" id="verdict-stats">
         <button type="button" class="stat error" data-filter="error"><b>0</b><span>处问题</span></button>
         <button type="button" class="stat manual" data-filter="manual"><b>0</b><span>处需要你确认</span></button>
@@ -428,6 +463,16 @@
         <span class="finding-status manual">未选择</span>
         <div class="brief-copy"><div class="brief-title">请在左边选择一条结果</div><div class="brief-detail">核对完成后显示原始文件</div></div>
         <span class="finding-id">—</span>
+      </div>
+      <div class="review-box" id="review-box" hidden>
+        <span class="review-label">处理意见</span>
+        <div class="review-choices" role="radiogroup" aria-label="处理意见">
+          <button type="button" class="review-choice" data-decision="is_problem" aria-checked="false">是问题</button>
+          <button type="button" class="review-choice" data-decision="not_problem" aria-checked="false">不是问题</button>
+          <button type="button" class="review-choice" data-decision="notified" aria-checked="false">已通知修改</button>
+        </div>
+        <input class="review-note" id="review-note" type="text" maxlength="2000" placeholder="备注（可选），回车保存">
+        <span class="review-state" id="review-state"></span>
       </div>
       <details class="check-details" id="check-details" hidden>
         <summary>核对明细 <span class="check-count" id="check-count"></span></summary>
@@ -528,6 +573,15 @@
     const prevFinding = document.getElementById("prev-finding");
     const nextFinding = document.getElementById("next-finding");
     const findingPos = document.getElementById("finding-pos");
+    const historyList = document.getElementById("history-list");
+    const historyCount = document.getElementById("history-count");
+    const exportButton = document.getElementById("export-problems");
+    const reviewBox = document.getElementById("review-box");
+    const reviewNote = document.getElementById("review-note");
+    const reviewState = document.getElementById("review-state");
+    const DECISION_NAMES = Object.freeze({ is_problem: "是问题", not_problem: "不是问题", notified: "已通知修改" });
+    let notesByKey = new Map();
+    let notesSubject = "";
     const statusCard = document.getElementById("status-card");
     const progressSteps = document.getElementById("progress-steps");
     const runElapsed = document.getElementById("run-elapsed");
@@ -936,7 +990,7 @@
     const TODO_STATUSES = new Set(["error", "manual", "warning"]);
     function matchesFilter(item, filter = activeFilter) {
       if (filter === "all") return true;
-      if (filter === "todo") return TODO_STATUSES.has(item.status);
+      if (filter === "todo") return TODO_STATUSES.has(item.status) && notesByKey.get(findingKey(item))?.decision !== "not_problem";
       return item.status === filter;
     }
     function searchableText(item) {
@@ -986,6 +1040,7 @@
       return match ? `第 ${match[1]} 章` : null;
     }
     function ruleCode(item) { return String(item.rule_id || item.id || "").split("@")[0]; }
+    function findingKey(item) { return String(item.id || item.rule_id || "").split("@")[0]; }
 
     function renderFindings() {
       const visible = visibleFindings();
@@ -1037,6 +1092,14 @@
         const title = document.createElement("div");
         title.className = "finding-title";
         title.textContent = displayTitle(item);
+        const decision = notesByKey.get(findingKey(item));
+        if (decision) {
+          const tag = document.createElement("span");
+          tag.className = `decision-tag ${decision.decision}`;
+          tag.textContent = DECISION_NAMES[decision.decision] || decision.decision;
+          if (decision.note) tag.title = decision.note;
+          title.append(tag);
+        }
         const detail = document.createElement("div");
         detail.className = "finding-detail";
         const problems = TODO_STATUSES.has(status) ? problemLines(item) : [];
@@ -1056,6 +1119,150 @@
       });
       renderFilters();
       updateFindingNav();
+    }
+
+    // ---- 处理意见 ----
+    async function loadNotes(run) {
+      notesByKey = new Map();
+      notesSubject = "";
+      try {
+        const payload = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}/notes`);
+        notesSubject = payload?.subject || "";
+        (payload?.items || []).forEach(item => notesByKey.set(item.finding_key, item));
+      } catch (_) { /* 处理意见读不到不影响查看结果 */ }
+    }
+    function formatDate(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+    }
+    function renderReview(finding) {
+      const show = finding && TODO_STATUSES.has(String(finding.status));
+      reviewBox.hidden = !show;
+      if (!show) return;
+      const saved = notesByKey.get(findingKey(finding));
+      reviewBox.querySelectorAll("[data-decision]").forEach(button => button.setAttribute("aria-checked", String(saved?.decision === button.dataset.decision)));
+      reviewNote.value = saved?.note || "";
+      reviewState.textContent = !saved ? "" : saved.carried_over ? `沿用 ${formatDate(saved.created_at)} 那次核对的意见` : `已保存 ${formatDate(saved.created_at)}`;
+    }
+    async function saveReview(decision, note) {
+      const finding = activeFindings.find(item => item.id === selectedFindingId);
+      if (!finding || !activeRun) return;
+      reviewState.textContent = "正在保存…";
+      const before = visibleFindings();
+      const position = before.findIndex(item => item.id === finding.id);
+      try {
+        const saved = await apiJson(`/api/v1/runs/${encodeURIComponent(activeRun.id)}/notes`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ finding_key: findingKey(finding), decision, note })
+        });
+        if (decision === "cleared") notesByKey.delete(saved.finding_key);
+        else notesByKey.set(saved.finding_key, { ...saved, carried_over: false });
+        finding._search = null;
+        renderReview(finding);
+        renderVerdict();
+        renderFindings();
+        // 标为“不是问题”后它会从“需处理”里消失：自动跳到原来的下一条
+        const after = visibleFindings();
+        if (position >= 0 && !after.some(item => item.id === finding.id) && after.length) {
+          selectFinding(after[Math.min(position, after.length - 1)]);
+        }
+      } catch (error) {
+        reviewState.textContent = `没保存成功：${explainError(error).title}`;
+      }
+    }
+
+    // ---- 导出问题清单（Excel 可直接打开的 CSV） ----
+    function csvCell(value) {
+      const text = String(value ?? "").replace(/\r?\n/g, " ");
+      return /[",]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    }
+    function exportProblems() {
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      const header = ["序号", "结果", "核对项目", "问题说明", "报告页（PDF）", "原始记录页（PDF）", "处理意见", "备注", "规则"];
+      const lines = [header];
+      let index = 0;
+      activeFindings.filter(item => TODO_STATUSES.has(item.status)).forEach(item => {
+        const decision = notesByKey.get(findingKey(item));
+        const problems = problemLines(item);
+        const entries = problems.length ? problems : [{ text: listSummary(item), row: null }];
+        entries.forEach(entry => {
+          const row = entry.row;
+          const pages = role => [row?.a?.loc, row?.b?.loc].filter(loc => loc && (role === "report" ? loc.role === "report" : loc.role !== "report")).map(loc => loc.pdf_page);
+          index += 1;
+          lines.push([
+            index,
+            STATUS_LABELS[item.status] || item.status,
+            displayTitle(item),
+            entry.text,
+            pages("report").join("、"),
+            meta.recordRole ? pages("record").join("、") : "",
+            decision ? DECISION_NAMES[decision.decision] : "",
+            decision?.note || "",
+            ruleCode(item),
+          ]);
+        });
+      });
+      const csv = "\ufeff" + lines.map(line => line.map(csvCell).join(",")).join("\r\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 10);
+      link.href = url;
+      link.download = `${notesSubject && !notesSubject.startsWith("sha:") && !notesSubject.startsWith("run:") ? notesSubject : "核对结果"}_${meta.label.replace(/[\s↔]+/g, "")}_问题清单_${stamp}.csv`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+
+    // ---- 最近核对 ----
+    const API_MODE_KEYS = Object.freeze(Object.fromEntries(Object.entries(MODE_META).map(([key, meta]) => [meta.apiMode, key])));
+    async function loadHistory() {
+      try {
+        const payload = await apiJson("/api/v1/runs?limit=12");
+        const runs = (payload?.items || []).filter(run => API_MODE_KEYS[run.mode]);
+        historyCount.textContent = runs.length ? `（${runs.length}）` : "";
+        historyList.replaceChildren();
+        if (!runs.length) { const empty = document.createElement("li"); empty.className = "empty"; empty.textContent = "还没有核对记录。"; historyList.append(empty); return; }
+        runs.forEach(run => {
+          const item = document.createElement("li");
+          item.className = "history-item";
+          const when = document.createElement("span"); when.className = "when"; when.textContent = formatDate(run.created_at);
+          const name = document.createElement("span"); name.className = "name";
+          name.textContent = `${String(run.case_name || "").replace(/ 核对任务$/, "")} · ${MODE_META[API_MODE_KEYS[run.mode]].label}`;
+          name.title = name.textContent;
+          const counts = document.createElement("span"); counts.className = "counts";
+          const c = run.finding_counts || {};
+          if (run.lifecycle_status === "succeeded") counts.innerHTML = `问题 <b class="e">${c.error || 0}</b> · 待确认 <b class="m">${(c.manual || 0) + (c.warning || 0)}</b>`;
+          else counts.textContent = { running: "核对中", queued: "排队中" }[run.lifecycle_status] || "没有完成";
+          const open = document.createElement("button");
+          open.type = "button"; open.className = "secondary"; open.textContent = "打开";
+          open.disabled = run.lifecycle_status !== "succeeded";
+          open.addEventListener("click", () => openHistoryRun(run));
+          item.append(when, name, counts, open);
+          historyList.append(item);
+        });
+      } catch (error) {
+        historyList.replaceChildren(problemBox(error, "读不到核对记录"));
+      }
+    }
+    async function openHistoryRun(run) {
+      const modeKey = API_MODE_KEYS[run.mode];
+      pollToken += 1;
+      stopClock();
+      statusCard.hidden = false;
+      setProgress("done");
+      runMode.textContent = MODE_META[modeKey].label;
+      runElapsed.textContent = formatDate(run.created_at);
+      setRunStatus("已完成 · 历史记录", "pass");
+      setStatusText(`这是 ${formatDate(run.created_at)} 的核对结果。`);
+      try {
+        const full = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}`);
+        await loadFindings(full, modeKey);
+        verdictCard.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) {
+        statusMessage.replaceChildren(problemBox(error, "打不开这次核对"));
+      }
     }
 
     function renderVerdict() {
@@ -1083,7 +1290,9 @@
         : manual ? `没有发现明确的问题，有 ${manual} 处需要你确认` : `全部 ${pass} 项核对一致`;
       verdictText.replaceChildren(document.createTextNode(headline));
       const note = document.createElement("small");
-      note.textContent = errors || manual ? "左边默认只列出需要处理的结果；点上面的数字可以切换。" : "左边可以切换到“一致”查看每一项核对了什么。";
+      const handled = activeFindings.filter(item => notesByKey.has(findingKey(item))).length;
+      note.textContent = (errors || manual ? "左边默认只列出需要处理的结果，标为“不是问题”的不再列出；点上面的数字可以切换。" : "左边可以切换到“一致”查看每一项核对了什么。")
+        + (handled ? ` 已填写处理意见 ${handled} 条。` : "");
       verdictText.append(note);
       verdictCard.hidden = false;
     }
@@ -1672,6 +1881,7 @@
       comparisonBrief.querySelector(".brief-title").textContent = displayTitle(finding);
       updateFindingNav();
       renderFindingBrief(finding);
+      renderReview(finding);
       renderCheckDetails(finding);
       comparisonBrief.querySelector(".finding-id").textContent = String(finding.id || "—").split("@")[0];
       if (!reportDocument) {
@@ -1974,6 +2184,7 @@
       }));
       showRun(run, mode);
       runCount.textContent = String(activeFindings.length);
+      await loadNotes(run);
       activeFilter = activeFindings.some(item => TODO_STATUSES.has(item.status)) ? "todo" : "all";
       searchText = "";
       findingSearch.value = "";
@@ -2009,6 +2220,7 @@
           setProgress("done");
           setRunStatus(`已完成 · ${overallText}`, overallKind);
           setStatusText("核对完成，结果在下面。");
+          loadHistory();
           return;
         }
         if (["failed", "cancelled", "interrupted"].includes(lifecycle)) {
@@ -2075,7 +2287,7 @@
       startClock();
       statusCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
       try {
-        const caseName = caseNameInput.value.trim() || `${report.name} 核对任务`;
+        const caseName = caseNameInput.value.trim() || `${fileState.report?.number || report.name.replace(/\.pdf$/i, "")} 核对任务`;
         const caseData = await apiJson("/api/v1/cases", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2188,6 +2400,24 @@
       const first = visibleFindings()[0];
       if (first) selectFinding(first);
     });
+    reviewBox.addEventListener("click", event => {
+      const button = event.target.closest("[data-decision]");
+      if (!button) return;
+      const current = notesByKey.get(findingKey(activeFindings.find(item => item.id === selectedFindingId) || {}));
+      const decision = current?.decision === button.dataset.decision && !current.carried_over ? "cleared" : button.dataset.decision;
+      saveReview(decision, decision === "cleared" ? "" : reviewNote.value);
+    });
+    const saveNote = () => {
+      const finding = activeFindings.find(item => item.id === selectedFindingId);
+      const current = finding ? notesByKey.get(findingKey(finding)) : null;
+      if ((current?.note || "") === reviewNote.value.trim()) return;
+      if (!current) { reviewState.textContent = "请先选择“是问题 / 不是问题 / 已通知修改”"; return; }
+      saveReview(current.decision, reviewNote.value);
+    };
+    reviewNote.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); saveNote(); } });
+    reviewNote.addEventListener("blur", saveNote);
+    exportButton.addEventListener("click", exportProblems);
+    document.getElementById("history-card").addEventListener("toggle", event => { if (event.target.open) loadHistory(); });
     prevFinding.addEventListener("click", () => stepFinding(-1));
     nextFinding.addEventListener("click", () => stepFinding(1));
     document.addEventListener("keydown", event => {
@@ -2215,6 +2445,7 @@
     if (savedApiBase) apiBaseInput.value = savedApiBase;
     updateModeFields();
     renderFilters();
+    loadHistory();
     setComparisonMessage("核对完成后选择一条结果");
   </script>
 </body>

@@ -26,6 +26,7 @@ from mvp.ptr_report_contract import (
     mode_input_contract_payload,
 )
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
+from mvp.review_notes import ReviewNoteError, ReviewNoteStore, stable_finding_key
 from mvp.run_store import RunStore, RunStoreError
 
 
@@ -51,6 +52,7 @@ class RunStateHTTPServer(ThreadingHTTPServer):
         storage_root: str = "output/blob-store",
         output_root: str = "output/runs",
         allow_unresolved_inputs: bool = False,
+        notes_path: str = ":memory:",
     ) -> None:
         # ``socketserver.TCPServer.__init__`` calls ``server_close`` when
         # binding or activation fails.  Seed the cleanup flags before the
@@ -62,6 +64,8 @@ class RunStateHTTPServer(ThreadingHTTPServer):
         self._store_closed = False
         super().__init__(server_address, RunStateRequestHandler)
         self.documents = DocumentStore(store, storage_root)
+        self.notes = ReviewNoteStore(notes_path)
+        self._subject_cache: dict[str, str] = {}
         self.allow_unresolved_inputs = allow_unresolved_inputs
         self.output_root = Path(output_root).expanduser().resolve()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="report-checker-worker")
@@ -86,7 +90,35 @@ class RunStateHTTPServer(ThreadingHTTPServer):
             self._executor_closed = True
         if not self._store_closed:
             self.store.close()
+            notes = getattr(self, "notes", None)
+            if notes is not None:
+                notes.close()
             self._store_closed = True
+
+    def subject_for_run(self, run: dict[str, Any]) -> str:
+        """The report number of a Run's Report (``QW2024-3944``) for notes."""
+
+        report = next((item for item in run.get("run_inputs") or [] if item.get("role") == "report"), None)
+        if report is None:
+            report = (run.get("input_snapshot") or {}).get("report")
+        if not report:
+            return f"run:{run['id']}"
+        sha = str(report.get("blob_sha256") or report.get("document_id"))
+        if sha in self._subject_cache:
+            return self._subject_cache[sha]
+        subject = f"sha:{sha}"
+        try:
+            import fitz  # PyMuPDF
+            from mvp.checker import extract_report_number
+
+            with fitz.open(self.documents.source_path(report["document_id"])) as document:
+                number = extract_report_number(document[0].get_text("text")) if document.page_count else None
+            if number is not None:
+                subject = f"QW{number[0]}-{number[1]}"
+        except Exception:  # pragma: no cover - notes still work by file hash
+            pass
+        self._subject_cache[sha] = subject
+        return subject
 
     def submit_run(self, run_id: str) -> None:
         if self._executor_closed:
@@ -366,10 +398,20 @@ class RunStateRequestHandler(CapabilityRequestHandler):
             parts = path.split("/")
             if len(parts) == 5 and parts[4]:
                 return HTTPStatus.OK, self.server.documents.get_document(parts[4])
+        if path == "/api/v1/runs":
+            query = parse_qs(urlsplit(self.path).query)
+            limit = int(query.get("limit", ["20"])[0])
+            return HTTPStatus.OK, {"items": self.server.store.list_recent_runs(limit=limit), "next_cursor": None}
         if path.startswith("/api/v1/runs/"):
             parts = path.split("/")
             if len(parts) == 5 and parts[4]:
                 return HTTPStatus.OK, self.server.store.get_run(parts[4])
+            if len(parts) == 6 and parts[4] and parts[5] == "notes":
+                run = self.server.store.get_run(parts[4])
+                subject = self.server.subject_for_run(run)
+                latest = self.server.notes.latest(subject=subject, mode=run["mode"])
+                items = [{**item, "carried_over": item["run_id"] != run["id"]} for item in latest.values()]
+                return HTTPStatus.OK, {"subject": subject, "items": items, "next_cursor": None}
             if len(parts) == 6 and parts[4] and parts[5] == "events":
                 return HTTPStatus.OK, {"items": self.server.store.list_events(parts[4]), "next_cursor": None}
             if len(parts) == 6 and parts[4] and parts[5] == "rule-executions":
@@ -685,6 +727,24 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                 run = self.server.store.get_run(run["id"])
                 self._send_json(HTTPStatus.ACCEPTED, run)
                 return
+            if path.startswith("/api/v1/runs/") and path.endswith("/notes"):
+                run = self.server.store.get_run(path.split("/")[4])
+                if run["lifecycle_status"] != "succeeded":
+                    raise RunStoreError("RUN_NOT_REVIEWABLE", "只有已完成的核对可以填写处理意见", status=409)
+                finding_key = stable_finding_key(str(payload.get("finding_key") or ""))
+                try:
+                    saved = self.server.notes.add(
+                        subject=self.server.subject_for_run(run),
+                        mode=run["mode"],
+                        finding_key=finding_key,
+                        decision=str(payload.get("decision") or ""),
+                        note=payload.get("note") or "",
+                        run_id=run["id"],
+                    )
+                except ReviewNoteError as error:
+                    raise RunStoreError(error.code, error.message) from error
+                self._send_json(HTTPStatus.CREATED, saved)
+                return
             if path.startswith("/api/v1/findings/") and path.endswith("/reviews"):
                 finding_id = path.split("/")[4]
                 readonly_fields = {
@@ -792,6 +852,7 @@ def create_server(
         storage_root=storage_root,
         output_root=output_root,
         allow_unresolved_inputs=allow_unresolved_inputs,
+        notes_path=":memory:" if str(database) == ":memory:" else str(Path(database).with_name("review-notes.sqlite3")),
     )
     # A queued Run is durable work, not an in-memory promise.  Resubmit it
     # after the server and single-worker executor are ready; unresolved test
