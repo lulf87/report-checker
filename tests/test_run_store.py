@@ -165,8 +165,8 @@ class RunStoreTests(unittest.TestCase):
             "mode": "report_self",
             "lifecycle_status": "succeeded",
             "machine_overall_status": "error",
-            "status_counts": {"pass": 11, "warning": 0, "manual": 0, "error": 1},
-            "coverage": {"planned": 12, "completed": 12},
+            "status_counts": {"pass": len(REPORT_SELF_RULE_ORDER) - 1, "warning": 0, "manual": 0, "error": 1},
+            "coverage": {"planned": len(REPORT_SELF_RULE_ORDER), "completed": len(REPORT_SELF_RULE_ORDER)},
             "findings": [
                 {"id": rule_id, "rule_id": rule_id, "status": "error" if rule_id == "REPORT-R07" else "pass"}
                 for rule_id in REPORT_SELF_RULE_ORDER
@@ -213,7 +213,7 @@ class RunStoreTests(unittest.TestCase):
                 {
                     "mode": "report_self",
                     "machine_overall_status": "error",
-                    "status_counts": {"pass": 11, "warning": 0, "manual": 0, "error": 1},
+                    "status_counts": {"pass": len(REPORT_SELF_RULE_ORDER) - 1, "warning": 0, "manual": 0, "error": 1},
                     "findings": [
                         {
                             "id": rule_id,

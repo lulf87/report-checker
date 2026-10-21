@@ -1431,12 +1431,14 @@ class RunStore:
                         or not math.isfinite(float(value))
                         for value in bbox
                     )
-                    or bbox[0] < 0
-                    or bbox[1] < 0
+                    # 0.01 pt tolerance: coordinates are rounded to 3 decimals,
+                    # so a whole-page box can exceed 841.91998 by float noise.
+                    or bbox[0] < -0.01
+                    or bbox[1] < -0.01
                     or bbox[0] >= bbox[2]
                     or bbox[1] >= bbox[3]
-                    or bbox[2] > float(page_width)
-                    or bbox[3] > float(page_height)
+                    or bbox[2] > float(page_width) + 0.01
+                    or bbox[3] > float(page_height) + 0.01
                 ):
                     raise RunStoreError("WORKER_RESULT_EVIDENCE_INVALID", "Worker evidence 坐标超出页面范围")
         if set(counts) != set(expected_counts) or any(

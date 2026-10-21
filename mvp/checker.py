@@ -25,6 +25,8 @@ from PIL import Image, ImageDraw
 # deterministic rule implementations without creating an import cycle.
 from mvp.full_report_attempt import scan_report_numeric_file
 from mvp.full_report_photo import analyze_report_photo_rules
+from mvp.photo_ocr import PhotoOcrProvider, engine_versions, photo_ocr_enabled
+from mvp.report_front_rules import front_matter_findings
 
 
 STATUS_RANK = {"pass": 0, "warning": 1, "manual": 2, "error": 3}
@@ -51,6 +53,12 @@ REPORT_SELF_RULE_ORDER = (
     "REPORT-R09",
     "REPORT-R10",
     "REPORT-R11",
+    "REPORT-R12",
+    "REPORT-R13",
+    "REPORT-R14",
+    "REPORT-R15",
+    "REPORT-R16",
+    "REPORT-R17",
 )
 
 
@@ -154,6 +162,58 @@ def expected_report_conclusion(results: Iterable[Any]) -> str:
     if any("不符合要求" in value for value in values):
         return "不符合"
     if any(value not in {"——", "/"} for value in values):
+        return "符合"
+    return "/"
+
+
+_CROSS_REFERENCE_RE = re.compile(r"见序号(\d+)(?:中(\d+(?:\.\d+)*))?")
+_CROSS_RANGE_RE = re.compile(r"见序号(\d+)～序号(\d+)")
+
+
+def cross_reference_conclusion(
+    results: Iterable[Any],
+    items: Mapping[int, Mapping[str, Any]],
+) -> str | None:
+    """Derive the conclusion of an item whose results only point to other items.
+
+    “见序号32中20.1”取序号32中以20.1开头的分项结果；“见序号1～序号118”取这些序号的单项结论。
+    任何引用无法唯一解析时返回 ``None``，沿用原有判定。
+    """
+
+    values = [compact(value) for value in results if compact(value)]
+    if not values:
+        return None
+    references: list[tuple[int, int, str | None]] = []
+    for value in values:
+        if match := _CROSS_RANGE_RE.fullmatch(value):
+            references.append((int(match.group(1)), int(match.group(2)), None))
+        elif match := _CROSS_REFERENCE_RE.fullmatch(value):
+            references.append((int(match.group(1)), int(match.group(1)), match.group(2)))
+        else:
+            return None
+    derived: list[str] = []
+    for start, end, subclause in references:
+        if end < start or end - start > 500:
+            return None
+        for number in range(start, end + 1):
+            target = items.get(number)
+            if target is None:
+                return None
+            if subclause:
+                rows = [
+                    result
+                    for requirement, result in zip(target.get("requirements", []), target.get("results", []))
+                    if re.match(rf"{re.escape(subclause)}(?![\d.])", compact(requirement))
+                ]
+                if not rows:
+                    return None
+                derived.append(expected_report_conclusion(rows))
+            else:
+                conclusions = [compact(value) for value in target.get("conclusions", []) if compact(value)]
+                derived.append(conclusions[0] if conclusions else expected_report_conclusion(target.get("results", [])))
+    if "不符合" in derived:
+        return "不符合"
+    if "符合" in derived:
         return "符合"
     return "/"
 
@@ -337,14 +397,28 @@ def classify_report_number_field(text: str) -> dict[str, Any]:
     return {"state": "malformed", "number": None}
 
 
+COVER_LABELS = ("委托方", "样品名称", "型号规格", "检验类别")
+
+
 def cover_value_after_label(page: fitz.Page, label: str) -> tuple[str, fitz.Rect | None]:
     lines = [line.strip() for line in page.get_text("text").splitlines() if line.strip()]
     target = compact(label)
     for index, line in enumerate(lines):
         normalized = compact(line)
         if normalized == target and index + 1 < len(lines):
-            value = lines[index + 1]
-            return value, find_exact_rect(page, value)
+            # 封面值可能换行（如“…消融导”“管”），一直取到下一个封面标签为止。
+            parts: list[str] = []
+            for following in lines[index + 1 :]:
+                if compact(following).startswith(COVER_LABELS):
+                    break
+                parts.append(following)
+                if target == "检验类别":
+                    break
+            value = parts[0] if parts else lines[index + 1]
+            for part in parts[1:]:
+                joiner = " " if re.search(r"[A-Za-z0-9.,]$", value) and re.match(r"[A-Za-z]", part) else ""
+                value += joiner + part
+            return value, find_exact_rect(page, parts[0] if parts else value)
         if normalized.startswith(target) and len(normalized) > len(target):
             value = normalized[len(target) :]
             return value, find_exact_rect(page, value)
@@ -542,6 +616,7 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
                 gaps.append(f"新项目序号重复：{duplicates}")
 
     result_mismatches: list[dict[str, Any]] = []
+    item_checks: list[dict[str, Any]] = []
     nonconforming: list[int] = []
     expected_conclusion_counts: dict[str, int] = {"符合": 0, "/": 0, "不符合": 0, "缺失": 0}
     for number, item in items.items():
@@ -549,6 +624,10 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
         conclusions = [compact(value) for value in item["conclusions"] if compact(value)]
         actual = conclusions[0] if conclusions else ""
         expected = expected_report_conclusion(values)
+        # 结果全部是“见序号…”时，单项结论应与被引用项目一致（如被引用分项为“/”则本项为“/”）。
+        referenced = cross_reference_conclusion(values, items)
+        if referenced is not None:
+            expected = referenced
         if expected == "不符合":
             nonconforming.append(number)
         if expected == "<检验结果缺失>":
@@ -556,6 +635,31 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
         else:
             expected_conclusion_counts[expected] += 1
         conclusion_conflict = len(set(conclusions)) > 1
+        conclusion_location = next(
+            (location for location in item["row_locations"] if location.get("conclusion_rect") and location.get("conclusion")),
+            None,
+        )
+        item_checks.append(
+            {
+                "sequence": number,
+                "project": item.get("project"),
+                "clause": item.get("clause"),
+                "results": list(item["results"]),
+                "expected": expected,
+                "actual": actual or "<空>",
+                "status": "error" if (actual != expected or conclusion_conflict) else "pass",
+                "location": (
+                    {
+                        "document_role": "report",
+                        "pdf_page": conclusion_location["pdf_page"],
+                        "rect": conclusion_location["conclusion_rect"],
+                        "source": "report_item_conclusion",
+                    }
+                    if conclusion_location
+                    else None
+                ),
+            }
+        )
         if actual != expected or conclusion_conflict:
             result_mismatches.append(
                 {
@@ -575,6 +679,7 @@ def scan_report_items(doc: fitz.Document) -> tuple[dict[int, dict[str, Any]], di
         "sequence_gaps": gaps,
         "continuation_errors": continuation_errors,
         "result_mismatches": result_mismatches,
+        "item_checks": item_checks,
         "nonconforming_items": nonconforming,
         "expected_conclusion_counts": expected_conclusion_counts,
     }
@@ -669,8 +774,30 @@ def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any
         "conclusions": lambda item: any(compact(value) for value in item.get("conclusions", [])),
     }
     missing: list[dict[str, Any]] = []
+    checked: list[dict[str, Any]] = []
     for sequence, item in items.items():
         absent = [name for name, predicate in required_fields.items() if not predicate(item)]
+        first_row = next((location for location in item.get("row_locations", []) if location.get("result_rect")), None)
+        checked.append(
+            {
+                "sequence": sequence,
+                "project": item.get("project"),
+                "clause": item.get("clause"),
+                "missing_fields": absent,
+                "status": "error" if absent else "pass",
+                "pdf_pages": sorted(set(item.get("pages", []))),
+                "location": (
+                    {
+                        "document_role": "report",
+                        "pdf_page": first_row["pdf_page"],
+                        "rect": first_row["result_rect"],
+                        "source": "report_item_result",
+                    }
+                    if first_row
+                    else None
+                ),
+            }
+        )
         if absent:
             missing.append(
                 {
@@ -691,6 +818,7 @@ def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any
         ),
         "details": {
             "items_checked": len(items),
+            "items": checked,
             "required_fields": list(required_fields),
             "placeholders_count_as_filled": ["/", "——"],
             "missing": missing,
@@ -777,7 +905,12 @@ def _report_r07b_finding(report_path: Path, output_dir: Path, document: fitz.Doc
     return finding
 
 
-def report_self_check(report: SourceFile, output_dir: Path) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
+def report_self_check(
+    report: SourceFile,
+    output_dir: Path,
+    *,
+    photo_ocr: bool | None = None,
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
     doc = fitz.open(report.path)
     findings: list[dict[str, Any]] = []
 
@@ -977,6 +1110,7 @@ def report_self_check(report: SourceFile, output_dir: Path) -> tuple[list[dict[s
             ),
             "details": {
                 "mismatches": diagnostics["result_mismatches"],
+                "item_checks": diagnostics.get("item_checks", []),
                 "nonconforming_items": diagnostics["nonconforming_items"],
                 "expected_conclusion_counts": diagnostics["expected_conclusion_counts"],
                 "rule": "不符合优先；否则有实际结果即符合；全为——或/则单项结论应为/",
@@ -984,18 +1118,39 @@ def report_self_check(report: SourceFile, output_dir: Path) -> tuple[list[dict[s
             "evidence": r07_evidence,
         }
     )
-    # Add the expanded Report-only scope to the same production entry point.
-    # OCR derivatives are deliberately not accepted by this runner: photo and
-    # label content therefore remains ``manual`` (or a concrete missing-photo
-    # ``error``), with the reason retained by the reusable photo-rule module.
-    photo_analysis = analyze_report_photo_rules(report.path, None, None)
+    # Photo-page rules (R02-R06, R17).  Label and nameplate text is read by the
+    # local OCR engines available on this machine (Apple Vision on macOS and/or
+    # RapidOCR); no network or LLM is involved.  Without any engine the label
+    # content stays ``manual`` with an explicit reason.
+    use_photo_ocr = photo_ocr_enabled() if photo_ocr is None else bool(photo_ocr)
+    ocr_provider = PhotoOcrProvider(doc) if use_photo_ocr else None
+    photo_analysis = analyze_report_photo_rules(report.path, None, None, ocr_provider=ocr_provider)
     photo_findings = photo_analysis["findings"]
-    for finding in photo_findings:
+    r17 = photo_analysis["page3_photo_finding"]
+    ocr_records = photo_analysis["ocr_records"]
+    if ocr_records:
+        artifact = output_dir / "artifacts" / "photo-ocr.json"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text(json.dumps(ocr_records, ensure_ascii=False, indent=1), encoding="utf-8")
+    photo_ocr_info = {
+        "enabled": use_photo_ocr,
+        "backends": list(ocr_provider.backends) if ocr_provider is not None else [],
+        "versions": engine_versions(ocr_provider.backends) if ocr_provider is not None else {},
+        "images_recognized": len(ocr_records),
+        "artifact": "artifacts/photo-ocr.json" if ocr_records else None,
+        "errors": list(ocr_provider.errors[:20]) if ocr_provider is not None else [],
+    }
+    for finding in [*photo_findings, r17]:
+        finding["details"]["photo_ocr"] = photo_ocr_info
         _render_finding_locations(doc, finding, output_dir)
 
     r07b = _report_r07b_finding(report.path, output_dir, doc)
     r08 = _report_r08_finding(items)
     r09, r10 = _report_r09_r10_findings(diagnostics)
+    # 首页写法、日期、封面版本、页眉与编号规则（R12～R16）只读 Report 文本，不依赖 OCR。
+    front_findings = front_matter_findings(doc)
+    for front_finding in front_findings.values():
+        _render_finding_locations(doc, front_finding, output_dir)
 
     # Give missing-field findings a page-level location so every concrete
     # omission remains reviewable in the HTML evidence panel.
@@ -1020,6 +1175,8 @@ def report_self_check(report: SourceFile, output_dir: Path) -> tuple[list[dict[s
         "REPORT-R09": r09,
         "REPORT-R10": r10,
         "REPORT-R11": baseline["REPORT-R11"],
+        **front_findings,
+        "REPORT-R17": r17,
     }
     findings = [by_id[rule_id] for rule_id in REPORT_SELF_RULE_ORDER]
     doc.close()

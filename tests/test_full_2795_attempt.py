@@ -42,7 +42,8 @@ class Full2795AttemptIntegrationTests(unittest.TestCase):
         self.assertEqual(self.report_result["coverage"]["completed"], 12)
         self.assertEqual(
             self.report_result["status_counts"],
-            {"pass": 7, "warning": 0, "manual": 4, "error": 1},
+            # 2026-10-20：R02～R04 改为按报告值能否在照片识别文字中找到判定，2795 的 Vision 识别结果可全部确认。
+            {"pass": 11, "warning": 0, "manual": 0, "error": 1},
         )
         self.assertEqual(self.report_result["machine_overall_status"], "error")
 
@@ -52,13 +53,13 @@ class Full2795AttemptIntegrationTests(unittest.TestCase):
             {rule_id: findings[rule_id]["status"] for rule_id in REPORT_RULE_ORDER},
             {
                 "REPORT-R01": "pass",
-                "REPORT-R02": "manual",
-                "REPORT-R03": "manual",
-                "REPORT-R04": "manual",
+                "REPORT-R02": "pass",
+                "REPORT-R03": "pass",
+                "REPORT-R04": "pass",
                 "REPORT-R05": "pass",
                 "REPORT-R06": "pass",
                 "REPORT-R07": "error",
-                "REPORT-R07-B": "manual",
+                "REPORT-R07-B": "pass",
                 "REPORT-R08": "pass",
                 "REPORT-R09": "pass",
                 "REPORT-R10": "pass",
@@ -67,7 +68,7 @@ class Full2795AttemptIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             findings["REPORT-R07-B"]["details"]["counts"],
-            {"pass": 53, "error": 0, "manual": 8},
+            {"pass": 61, "error": 0, "manual": 0},
         )
         self.assertEqual(findings["REPORT-R08"]["details"]["items_checked"], 163)
 

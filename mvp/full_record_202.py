@@ -23,6 +23,7 @@ try:
 except ImportError:  # PyMuPDF < 1.24 exposes the same API as ``fitz``.
     import fitz
 
+from mvp.record_flattened import adapt_flattened_record, collect_invisible_text
 from mvp.checker import (
     SAMPLE_CONFIGS,
     classify_report_number_field,
@@ -32,9 +33,11 @@ from mvp.checker import (
     find_exact_rect,
     header_map,
     is_formal_report_table,
+    local_ocr_candidates,
     local_text_ocr,
     number_evidence_rects,
     page_three_fields,
+    render_cell_for_ocr,
     sha256_file,
     verified_202_legend_mapping,
 )
@@ -157,6 +160,31 @@ FROZEN_REPORT_ITEM_IDENTITIES: dict[int, str] = {
     34: "4bd7c48ba50d8d1b", 35: "63083d588cc5120b", 36: "1f183e33695ac36a",
     37: "f61ffb4b751fbd75", 38: "5353fac2e8e1689f",
 }
+
+# Some Record copies (sample 3944) print item 16 as three rows, splitting
+# "对于中性电极电缆……" out of the first row exactly like the Report does.  The
+# three Record requirements then carry the Report's frozen item-16 identity.
+ITEM16_SPLIT_RECORD_IDENTITY = FROZEN_REPORT_ITEM_IDENTITIES[16]
+# Report template variants that keep the same rows and order.  Item 22
+# (Report item 140): sample 3944 fills in the "单极 / 双极" column labels of the
+# test-voltage tables inside the requirement cells.
+REPORT_ITEM_IDENTITY_VARIANTS: dict[int, frozenset[str]] = {
+    22: frozenset({"0cd56b30f5d905fa"}),
+}
+
+
+def _item16_split_variant(record_rows: Sequence[Mapping[str, Any]]) -> bool:
+    item16 = [row for row in record_rows if int(row.get("item", 0)) == 16]
+    return len(item16) == 3 and _item_template_fingerprint(item16) == ITEM16_SPLIT_RECORD_IDENTITY
+
+
+def _expected_record_rows(item: int, item16_split: bool) -> int:
+    return 3 if item == 16 and item16_split else EXPECTED_ITEM_ROW_COUNTS[item]
+
+
+def _expected_report_rows(item: int, item16_split: bool) -> int:
+    return _expected_record_rows(item, item16_split) + (1 if item == 16 and not item16_split else 0)
+
 
 @dataclass(frozen=True)
 class ColumnBands:
@@ -290,8 +318,15 @@ def _stroke_is_linear(stroke: Sequence[tuple[float, float]]) -> bool:
     return bool(length) and math.dist(stroke[0], stroke[-1]) / length >= 0.9
 
 
+# Status crosses are drawn with strokes of 15-40 pt; shorter crossing strokes
+# belong to handwritten characters such as "十" in a remark.
+MIN_CROSS_STROKE_LENGTH = 15.0
+
+
 def _two_strokes_cross(strokes: Sequence[Sequence[tuple[float, float]]]) -> bool:
     if len(strokes) != 2 or not all(_stroke_is_linear(stroke) for stroke in strokes):
+        return False
+    if any(_path_length(stroke) < MIN_CROSS_STROKE_LENGTH for stroke in strokes):
         return False
     first_start, first_end = strokes[0][0], strokes[0][-1]
     second_start, second_end = strokes[1][0], strokes[1][-1]
@@ -1136,6 +1171,7 @@ def _legend_check(record_doc: fitz.Document) -> dict[str, Any]:
 
 def build_report_202_groups(
     report_rows: Mapping[int, list[dict[str, Any]]],
+    item16_split: bool = False,
 ) -> dict[int, list[list[dict[str, Any]]]]:
     groups: dict[int, list[list[dict[str, Any]]]] = {}
     for record_item in range(1, 39):
@@ -1145,6 +1181,9 @@ def build_report_202_groups(
             # Report preserves the introductory row and nested "颜色" header.  They
             # have no result and are structural, not comparison units.
             physical_rows = physical_rows[2:]
+            groups[record_item] = [[row] for row in physical_rows]
+        elif record_item == 16 and item16_split:
+            # Three-row Record variant: one Record row per Report row.
             groups[record_item] = [[row] for row in physical_rows]
         elif record_item == 16:
             # The Record combines the first two Report requirements in one row.
@@ -1167,6 +1206,7 @@ def build_report_202_groups(
 def _record_202_inventory_diagnostics(
     record_rows: Sequence[Mapping[str, Any]],
     report_groups: Mapping[int, Sequence[Sequence[Mapping[str, Any]]]],
+    item16_split: bool = False,
 ) -> dict[str, Any]:
     """Describe row inventory drift without silently dropping an edge.
 
@@ -1186,8 +1226,8 @@ def _record_202_inventory_diagnostics(
     extra_report_rows: list[dict[str, Any]] = []
     ambiguous_rows: list[dict[str, Any]] = []
     for item in range(1, 39):
-        expected_record = EXPECTED_ITEM_ROW_COUNTS[item]
-        expected_report = expected_record + (1 if item == 16 else 0)
+        expected_record = _expected_record_rows(item, item16_split)
+        expected_report = _expected_report_rows(item, item16_split)
         actual_record = len(record_by_item.get(item, ()))
         groups = list(report_groups.get(item, ()))
         actual_report = sum(len(group) for group in groups)
@@ -1212,7 +1252,7 @@ def _record_202_inventory_diagnostics(
                 for ordinal in range(expected_report + 1, actual_report + 1)
             )
         for ordinal, group in enumerate(groups, start=1):
-            allowed_many = item == 16 and ordinal == 1
+            allowed_many = item == 16 and ordinal == 1 and not item16_split
             if len(group) > 1 and not allowed_many:
                 ambiguous_rows.append(
                     {
@@ -1247,7 +1287,7 @@ def _record_202_inventory_diagnostics(
                     }
                 )
     return {
-        "expected_record_logical_rows": EXPECTED_COMPARISON_UNITS,
+        "expected_record_logical_rows": EXPECTED_COMPARISON_UNITS + (1 if item16_split else 0),
         "actual_record_logical_rows": len(record_rows),
         "expected_report_physical_rows": EXPECTED_REPORT_PHYSICAL_ROWS,
         "actual_report_physical_rows": sum(
@@ -1393,6 +1433,137 @@ def _is_single_open_triangle(ink: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_v_tick(stroke: Sequence[tuple[float, float]]) -> bool:
+    """A check mark written as a V: two straight arms meeting at a low apex.
+
+    The √ geometry rule expects a short left arm; some inspectors (sample
+    3944) write a symmetric V whose end-to-path ratio is about 0.4.
+    """
+
+    if len(stroke) < 3:
+        return False
+    start, end = stroke[0], stroke[-1]
+    chord = math.dist(start, end)
+    if chord <= 0:
+        return False
+
+    def offset(point: tuple[float, float]) -> float:
+        return abs(
+            (end[0] - start[0]) * (start[1] - point[1]) - (start[0] - point[0]) * (end[1] - start[1])
+        ) / chord
+
+    apex_index = max(range(1, len(stroke) - 1), key=lambda index: offset(stroke[index]), default=0)
+    if apex_index <= 0:
+        return False
+    apex = stroke[apex_index]
+    first, second = stroke[: apex_index + 1], stroke[apex_index:]
+    first_length, second_length = _path_length(first), _path_length(second)
+    if not first_length or not second_length:
+        return False
+    if math.dist(first[0], first[-1]) / first_length < 0.85 or math.dist(second[0], second[-1]) / second_length < 0.85:
+        return False
+    if min(first_length, second_length) / max(first_length, second_length) < 0.25:
+        return False
+    vector_a = (start[0] - apex[0], start[1] - apex[1])
+    vector_b = (end[0] - apex[0], end[1] - apex[1])
+    norm = math.hypot(*vector_a) * math.hypot(*vector_b)
+    if not norm:
+        return False
+    cosine = max(-1.0, min(1.0, (vector_a[0] * vector_b[0] + vector_a[1] * vector_b[1]) / norm))
+    if not 15.0 <= math.degrees(math.acos(cosine)) <= 110.0:
+        return False
+    # Page coordinates grow downwards: the apex is the lowest point.
+    height = max(abs(apex[1] - start[1]), abs(apex[1] - end[1]))
+    return apex[1] >= max(start[1], end[1]) - 0.1 * height
+
+
+def _trim_tick_hooks(stroke: Sequence[tuple[float, float]]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
+    """Split a single stroke at its lowest point and drop pen hooks.
+
+    Pens often leave a short hook where the nib lands or lifts (sample 3944).
+    Each arm is cut at its highest point, so only the two rising arms remain.
+    """
+
+    if len(stroke) < 4:
+        return None
+    apex_index = max(range(len(stroke)), key=lambda index: stroke[index][1])
+    if apex_index in (0, len(stroke) - 1):
+        return None
+    left = list(stroke[: apex_index + 1])
+    right = list(stroke[apex_index:])
+    left_tip = min(range(len(left)), key=lambda index: left[index][1])
+    right_tip = min(range(len(right)), key=lambda index: right[index][1])
+    return left[left_tip:], right[: right_tip + 1]
+
+
+def _is_hooked_v_tick(stroke: Sequence[tuple[float, float]]) -> bool:
+    """A √ / V whose two arms are straight once the end hooks are removed."""
+
+    arms = _trim_tick_hooks(stroke)
+    if arms is None:
+        return False
+    left, right = arms
+    total = _path_length(stroke)
+    left_length, right_length = _path_length(left), _path_length(right)
+    if not total or left_length < 4 or right_length < 4:
+        return False
+    # The hooks must stay small; otherwise this is a letter, not a tick.
+    if (left_length + right_length) / total < 0.75:
+        return False
+    for arm, length in ((left, left_length), (right, right_length)):
+        if math.dist(arm[0], arm[-1]) / length < 0.85:
+            return False
+        if abs(arm[0][1] - arm[-1][1]) / length < 0.4:
+            return False
+    if min(left_length, right_length) / max(left_length, right_length) < 0.2:
+        return False
+    apex = left[-1]
+    left_tip, right_tip = left[0], right[-1]
+    if not (left_tip[0] <= apex[0] + 1.0 and right_tip[0] >= apex[0] - 1.0 and right_tip[0] > left_tip[0] + 3.0):
+        return False
+    vector_a = (left_tip[0] - apex[0], left_tip[1] - apex[1])
+    vector_b = (right_tip[0] - apex[0], right_tip[1] - apex[1])
+    norm = math.hypot(*vector_a) * math.hypot(*vector_b)
+    if not norm:
+        return False
+    cosine = max(-1.0, min(1.0, (vector_a[0] * vector_b[0] + vector_a[1] * vector_b[1]) / norm))
+    return 15.0 <= math.degrees(math.acos(cosine)) <= 110.0
+
+
+# Fallback tick size (pt) when the strict rules find no symbol.
+SMALL_TICK_MIN_SIDE = 14.0
+SMALL_TICK_MIN_AREA = 250.0
+# A stroke that passes the hooked-V test may be narrower (tall narrow ticks).
+HOOKED_TICK_MIN_WIDTH = 8.0
+HOOKED_TICK_MIN_HEIGHT = 12.0
+
+
+def _is_small_tick_cluster(cluster: Sequence[Mapping[str, Any]]) -> bool:
+    """A single-stroke √ or V of at least 14 x 14 pt (relaxed fallback)."""
+
+    if len(cluster) != 1:
+        return False
+    ink = cluster[0]
+    bbox = _ink_bbox(ink)
+    if bbox is None:
+        return False
+    strokes = _ink_strokes(ink)
+    if (
+        len(strokes) == 1
+        and bbox.width >= HOOKED_TICK_MIN_WIDTH
+        and bbox.height >= HOOKED_TICK_MIN_HEIGHT
+        and _is_hooked_v_tick(strokes[0])
+    ):
+        return True
+    if bbox.width < SMALL_TICK_MIN_SIDE or bbox.height < SMALL_TICK_MIN_SIDE:
+        return False
+    if bbox.get_area() < SMALL_TICK_MIN_AREA:
+        return False
+    if str(ink.get("classified_symbol", "其他")) == "√":
+        return True
+    return len(strokes) == 1 and _is_v_tick(strokes[0])
+
+
 def _resolved_record_symbol(inks: Sequence[Mapping[str, Any]]) -> tuple[str | None, str | None]:
     if not inks:
         return None, "record_ink_count_not_one"
@@ -1402,14 +1573,28 @@ def _resolved_record_symbol(inks: Sequence[Mapping[str, Any]]) -> tuple[str | No
             return symbol, None
         if _is_single_open_triangle(inks[0]):
             return "△", None
+        if _is_small_tick_cluster(inks):
+            return "√", None
         return None, "record_ink_geometry_unresolved"
 
-    candidates = [
-        cluster
-        for cluster in _status_ink_clusters(inks)
-        if _is_high_confidence_status_cluster(cluster)
-    ]
+    clusters = _status_ink_clusters(inks)
+    candidates = [cluster for cluster in clusters if _is_high_confidence_status_cluster(cluster)]
     if not candidates:
+        small_ticks = [cluster for cluster in clusters if _is_small_tick_cluster(cluster)]
+        if len(small_ticks) > 1:
+            # A stray stroke that runs into the neighbouring row is not this
+            # row's mark; keep the candidates that lie wholly inside the row.
+            inside = [
+                cluster
+                for cluster in small_ticks
+                if not any(int(ink.get("runner_up_point_count") or 0) for ink in cluster)
+            ]
+            if len(inside) == 1:
+                small_ticks = inside
+        if len(small_ticks) == 1:
+            if _status_cluster_geometry(small_ticks[0])["cross_row_ambiguous"]:
+                return None, "record_ink_cross_row_ambiguous"
+            return "√", None
         return None, "record_status_symbol_not_found"
     if len(candidates) != 1:
         return None, "record_status_symbol_conflict"
@@ -1753,6 +1938,21 @@ def _acceptance_constraints(requirement: str) -> dict[str, Any]:
     }
 
 
+def _acceptance_convert(value: Any, from_unit: str | None, to_unit: str | None) -> Decimal:
+    """convert_decimal, treating an A-weighted level "dB(A)" as "dB".
+
+    Requirements write the limit as "65dB（A 计权）", so the parsed bound unit is
+    dB while the measured value carries dB(A).
+    """
+
+    def weighted(unit: str | None) -> bool:
+        return compact(str(unit or "")).replace("（", "(").replace("）", ")").lower() in {"db", "db(a)", "dba"}
+
+    if weighted(from_unit) and weighted(to_unit):
+        return Decimal(str(value))
+    return convert_decimal(value, from_unit, to_unit)
+
+
 def _compare_record_to_acceptance(record_text: str, requirement: str) -> dict[str, Any]:
     acceptance = _acceptance_constraints(requirement)
     if not acceptance["ranges"] and not acceptance["bounds"] and not acceptance["tolerances"]:
@@ -1765,14 +1965,14 @@ def _compare_record_to_acceptance(record_text: str, requirement: str) -> dict[st
         return {"decision": "manual", "reason_code": "record_acceptance_value_not_parsed", "acceptance": acceptance}
     try:
         for bound in acceptance["bounds"]:
-            converted = convert_decimal(parsed.value, parsed.unit, bound["unit"])
+            converted = _acceptance_convert(parsed.value, parsed.unit, bound["unit"])
             limit = Decimal(bound["value"])
             ok = {"<": converted < limit, "<=": converted <= limit, ">": converted > limit, ">=": converted >= limit}[bound["operator"]]
             if not ok:
                 return {"decision": "mismatch", "reason_code": "acceptance_limit_mismatch", "acceptance": acceptance, "observed": str(converted)}
         for interval in acceptance["ranges"]:
-            low = convert_decimal(parsed.value, parsed.unit, interval["lower_unit"])
-            high = convert_decimal(parsed.value, parsed.unit, interval["upper_unit"])
+            low = _acceptance_convert(parsed.value, parsed.unit, interval["lower_unit"])
+            high = _acceptance_convert(parsed.value, parsed.unit, interval["upper_unit"])
             if not (low >= Decimal(interval["lower"]) and high <= Decimal(interval["upper"])):
                 return {"decision": "mismatch", "reason_code": "acceptance_range_mismatch", "acceptance": acceptance, "observed": str(parsed.value)}
         if acceptance["tolerances"]:
@@ -1832,6 +2032,146 @@ def _native_measurement_candidate(record_text: str) -> str | None:
     return normalized if bare else None
 
 
+_HANDWRITTEN_NUMBER_RE = re.compile(
+    r"(?<![\d.])(?P<comparator><=|>=|[<>≤≥＜＞])?\s*(?P<number>\d+(?:\.\d+)?)(?![\d.])"
+)
+_COMPARATOR_ASCII = {"＜": "<", "＞": ">", "≤": "<=", "≥": ">="}
+
+
+def _channel_numbers(texts: Iterable[str]) -> list[str]:
+    values: list[str] = []
+    for text in texts:
+        for match in _HANDWRITTEN_NUMBER_RE.finditer(display_text(text)):
+            comparator = match.group("comparator") or ""
+            values.append(f"{_COMPARATOR_ASCII.get(comparator, comparator)}{match.group('number')}")
+    return values
+
+
+def _channel_value(values: Sequence[str]) -> str | None:
+    """A channel yields a value only when every number it read is the same."""
+
+    distinct = set(values)
+    return next(iter(distinct)) if len(distinct) == 1 else None
+
+
+def accept_handwritten_number(channel_values: Mapping[str, Sequence[str]]) -> tuple[str | None, str]:
+    """Accept a number read identically by at least two independent channels.
+
+    Agreed rule (a): of Apple Vision, Tesseract and the iOS handwriting layer,
+    at least two must read the same value.  A channel that read several
+    different numbers abstains.  A third channel reading something else does
+    not block two agreeing channels, but two competing agreed values do.
+    """
+
+    singles = [
+        value
+        for values in channel_values.values()
+        if (value := _channel_value(values)) is not None
+    ]
+    support = Counter(singles)
+    agreed = [value for value, count in support.items() if count >= 2]
+    if len(agreed) == 1:
+        return agreed[0], "handwriting_two_channel_agreement"
+    if len(support) > 1 and not agreed:
+        return None, "handwriting_channels_disagree"
+    return None, "handwriting_not_read_by_two_channels"
+
+
+def _hidden_text_in(rect: fitz.Rect, chars: Sequence[tuple[str, Sequence[float]]]) -> str:
+    text: list[str] = []
+    for char, bbox in chars:
+        box = fitz.Rect(bbox)
+        centre = fitz.Point((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2)
+        if rect.contains(centre):
+            text.append(char)
+    return "".join(text)
+
+
+_FOOTER_LABELS = ("环境温湿度", "检测仪器设备", "检测人员")
+
+
+def _measurement_area(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+    """The cell above the printed temperature / instrument / signature block."""
+
+    area = fitz.Rect(rect)
+    for label in _FOOTER_LABELS:
+        for hit in page.search_for(label, clip=rect):
+            if hit.y0 - 1.0 > area.y0 + 6.0:
+                area.y1 = min(area.y1, hit.y0 - 1.0)
+    return area
+
+
+def read_handwritten_number(
+    page: fitz.Page,
+    rect: fitz.Rect,
+    hidden_chars: Sequence[tuple[str, Sequence[float]]] = (),
+) -> dict[str, Any]:
+    """Read a handwritten measured value with every available channel.
+
+    Numbers printed in the cell (such as "见GB 9706.1-2020") are not readings
+    and are removed from every channel.
+    """
+
+    rect = _measurement_area(page, rect)
+    printed = set(_channel_numbers([page.get_text("text", clip=rect)]))
+    channels: dict[str, dict[str, Any]] = {}
+    with tempfile.TemporaryDirectory(prefix="record202-number-") as scratch_dir:
+        image_path = Path(scratch_dir) / "cell.png"
+        render_cell_for_ocr(page, rect, image_path)
+        candidates = local_ocr_candidates(image_path)
+    vision_texts = [str(item.get("text", "")) for item in candidates.get("apple_vision", [])]
+    channels["apple_vision"] = {
+        "status": "unavailable" if "apple_vision_error" in candidates else "available",
+        "texts": vision_texts,
+        "numbers": _channel_numbers(vision_texts),
+    }
+    tesseract_texts = [str(item.get("text", "")) for item in candidates.get("tesseract", [])]
+    channels["tesseract"] = {
+        "status": "available" if tesseract_texts else "no_candidate",
+        "texts": tesseract_texts,
+        "numbers": _channel_numbers(tesseract_texts),
+    }
+    hidden = _hidden_text_in(rect, hidden_chars) if hidden_chars else ""
+    if hidden:
+        channels["ios_handwriting_layer"] = {
+            "status": "available",
+            "texts": [hidden],
+            "numbers": _channel_numbers([hidden]),
+        }
+    for channel in channels.values():
+        channel["numbers"] = [value for value in channel["numbers"] if value not in printed]
+        channel["value"] = _channel_value(channel["numbers"])
+    accepted, reason = accept_handwritten_number(
+        {name: channel["numbers"] for name, channel in channels.items() if channel["status"] == "available"}
+    )
+    return {
+        "accepted_value": accepted,
+        "reason_code": reason,
+        "channels": channels,
+        "area": _rect(rect),
+        "printed_numbers_ignored": sorted(printed),
+    }
+
+
+def _needs_handwritten_number(record_row: Mapping[str, Any], report_group: Sequence[Mapping[str, Any]]) -> bool:
+    """Only cells whose Report value is one measurement and whose Record value
+    is not printed text are read from the handwriting."""
+
+    record_text = str(record_row.get("native_result_text", ""))
+    if not record_row.get("inks") or "表3" in compact(record_text):
+        return False
+    if _native_measurement_candidate(record_text) is not None:
+        return False
+    if any(extract_percentage_values(str(row.get("result", ""))) for row in report_group):
+        return False
+    measurements = [
+        row
+        for row in report_group
+        if _is_report_measurement(str(row.get("result", "")), str(row.get("requirement", "")))
+    ]
+    return len(measurements) == 1
+
+
 def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     report_results = [str(row.get("result", "")) for row in report_group]
     symbol, symbol_error = _resolved_record_symbol(record_row.get("inks", []))
@@ -1843,6 +2183,18 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
         }
     else:
         status_comparison = _compare_symbol_to_report(symbol, report_results)
+        # A cell that also holds handwritten text (remarks, measured values)
+        # can lend a letter loop the shape of a symbol.  Such a cell never
+        # yields a symbol mismatch on its own; it goes to manual review.
+        inks = record_row.get("inks", []) or []
+        symbol_ink_count = 2 if symbol == "×" else 1
+        if status_comparison.get("decision") == "mismatch" and len(inks) - symbol_ink_count >= 3:
+            status_comparison = {
+                "decision": "manual",
+                "expected": status_comparison.get("expected"),
+                "reason_code": "record_cell_has_handwritten_text",
+                "symbol_comparison": status_comparison,
+            }
 
     record_project = compact(str(record_row.get("project", "")))
     report_projects = sorted({compact(str(row.get("project", ""))) for row in report_group if row.get("project")})
@@ -1909,12 +2261,20 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
             )
     elif measurement_rows:
         record_candidate = _native_measurement_candidate(str(record_row.get("native_result_text", "")))
+        record_source = "native_pdf_text"
+        reading = record_row.get("handwriting_reading")
+        if record_candidate is None and isinstance(reading, Mapping) and reading.get("accepted_value"):
+            record_candidate = str(reading["accepted_value"])
+            record_source = "handwriting_two_channel"
         if record_candidate is None or len(measurement_rows) != 1:
             numeric_comparison = {
                 "decision": "manual",
                 "reason_code": "record_measurement_not_uniquely_resolved",
                 "report_values": [value for value, _ in measurement_rows],
             }
+            if isinstance(reading, Mapping):
+                numeric_comparison["record_reading"] = dict(reading)
+                numeric_comparison["reading_reason_code"] = reading.get("reason_code")
         else:
             report_value, report_requirement = measurement_rows[0]
             parsed_record = parse_report_numeric(record_candidate, extract_unit_context(report_requirement))
@@ -1923,7 +2283,10 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
                     "decision": "manual",
                     "reason_code": "record_measurement_not_uniquely_resolved",
                     "report_values": [report_value],
+                    "record_value": record_candidate,
                 }
+                if isinstance(reading, Mapping):
+                    numeric_comparison["record_reading"] = dict(reading)
             else:
                 numeric_comparison = compare_numeric_observation(
                     parsed_record.value,
@@ -1931,8 +2294,15 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
                     report_value,
                     extract_unit_context(report_requirement),
                 ).to_dict()
+                numeric_comparison["record_value"] = record_candidate
+                numeric_comparison["report_values"] = [report_value]
+                numeric_comparison["record_source"] = record_source
+                if isinstance(reading, Mapping) and record_source != "native_pdf_text":
+                    numeric_comparison["record_reading"] = dict(reading)
                 acceptance = _compare_record_to_acceptance(
-                    str(record_row.get("native_result_text", "")),
+                    str(record_row.get("native_result_text", ""))
+                    if record_source == "native_pdf_text"
+                    else record_candidate,
                     report_requirement,
                 )
                 numeric_comparison["acceptance"] = acceptance
@@ -1964,6 +2334,44 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
     }
 
 
+def _number_field_line(page: fitz.Page) -> tuple[str, fitz.Rect | None]:
+    """Read the "编号：…QW 2024 第 3944 号" header line by position.
+
+    Some Records fill the year and serial number in as separate text objects
+    written after the template, so in reading order they appear far from the
+    "编号" label.  Words whose vertical centre lies on the label's line, from
+    the label rightwards, are joined left to right.
+    """
+
+    labels = [fitz.Rect(rect) for rect in page.search_for("编号")]
+    if not labels:
+        return "", None
+    label = min(labels, key=lambda rect: rect.y0)
+    band_top, band_bottom = label.y0 - 3.0, label.y1 + 3.0
+    words = [
+        word
+        for word in page.get_text("words")
+        if band_top <= (word[1] + word[3]) / 2 <= band_bottom and word[2] > label.x0
+    ]
+    if not words:
+        return "", None
+    words.sort(key=lambda word: word[0])
+    text = "".join(str(word[4]) for word in words)
+    bbox = fitz.Rect(words[0][:4])
+    for word in words[1:]:
+        bbox |= fitz.Rect(word[:4])
+    return text, bbox
+
+
+def _record_number_state(page: fitz.Page) -> tuple[dict[str, Any], str, fitz.Rect | None]:
+    line_text, line_bbox = _number_field_line(page)
+    if line_text:
+        state = classify_report_number_field(line_text)
+        if state["state"] == "parsed":
+            return state, line_text, line_bbox
+    return classify_report_number_field(page.get_text("text")), line_text, line_bbox
+
+
 def _number_check(record_doc: fitz.Document, report_doc: fitz.Document) -> dict[str, Any]:
     report_number = extract_report_number(report_doc[0].get_text("text"))
     report_number_text = (
@@ -1971,7 +2379,7 @@ def _number_check(record_doc: fitz.Document, report_doc: fitz.Document) -> dict[
     )
     page_states: list[dict[str, Any]] = []
     for page in record_doc:
-        state = classify_report_number_field(page.get_text("text"))
+        state, line_text, line_bbox = _record_number_state(page)
         parsed = state["number"]
         page_states.append(
             {
@@ -1979,7 +2387,8 @@ def _number_check(record_doc: fitz.Document, report_doc: fitz.Document) -> dict[
                 "pdf_page": page.number + 1,
                 "state": state["state"],
                 "parsed_number": f"QW{parsed[0]}-{parsed[1]}" if parsed else None,
-                "bbox": _rect(number_evidence_rects(page, report_number)[0]),
+                "field_text": line_text,
+                "bbox": _rect(line_bbox if line_bbox is not None else number_evidence_rects(page, report_number)[0]),
             }
         )
     missing = [row["pdf_page"] for row in page_states if row["state"] == "explicit_missing"]
@@ -2086,10 +2495,17 @@ def compare_record_202_documents(
     report_hash_before = sha256_file(report_path)
 
     with fitz.open(record_path) as record_doc, fitz.open(report_path) as report_doc:
+        hidden_handwriting_text = collect_invisible_text(record_doc)
+        record_input_adapter = adapt_flattened_record(record_doc, stroke_geometry="centerline")
+        if record_input_adapter.get("handwriting_source") != "page_vector_strokes":
+            hidden_handwriting_text = {}
         record_rows, extraction = extract_record_202_rows(record_doc)
+        extraction["input_adapter"] = record_input_adapter
         report_rows = extract_report_202_rows(report_doc)
-        report_groups = build_report_202_groups(report_rows)
-        inventory = _record_202_inventory_diagnostics(record_rows, report_groups)
+        item16_split = _item16_split_variant(record_rows)
+        extraction["item16_split_variant"] = item16_split
+        report_groups = build_report_202_groups(report_rows, item16_split)
+        inventory = _record_202_inventory_diagnostics(record_rows, report_groups, item16_split)
         number_check = _number_check(record_doc, report_doc)
         legend_check = _legend_check(record_doc)
         record_structure = _record_202_structure(record_doc)
@@ -2114,12 +2530,17 @@ def compare_record_202_documents(
             record_item_rows = record_by_item.get(item, [])
             record_identity = _item_template_fingerprint(record_item_rows)
             report_identity = _item_template_fingerprint(flat_report_rows)
-            record_identity_ok = record_identity == FROZEN_RECORD_ITEM_IDENTITIES[item]
-            report_identity_ok = report_identity == FROZEN_REPORT_ITEM_IDENTITIES[item]
-            expected_report_rows = EXPECTED_ITEM_ROW_COUNTS[item] + (1 if item == 16 else 0)
+            record_identity_ok = record_identity == FROZEN_RECORD_ITEM_IDENTITIES[item] or (
+                item == 16 and item16_split and record_identity == ITEM16_SPLIT_RECORD_IDENTITY
+            )
+            report_identity_ok = report_identity == FROZEN_REPORT_ITEM_IDENTITIES[item] or (
+                report_identity in REPORT_ITEM_IDENTITY_VARIANTS.get(item, frozenset())
+            )
+            expected_record_rows = _expected_record_rows(item, item16_split)
+            expected_report_rows = _expected_report_rows(item, item16_split)
             count_ok = (
-                len(record_item_rows) == EXPECTED_ITEM_ROW_COUNTS[item]
-                and len(report_groups.get(item, [])) == EXPECTED_ITEM_ROW_COUNTS[item]
+                len(record_item_rows) == expected_record_rows
+                and len(report_groups.get(item, [])) == expected_record_rows
                 and len(flat_report_rows) == expected_report_rows
             )
             item_mapping_state[item] = {
@@ -2158,6 +2579,12 @@ def compare_record_202_documents(
                 and item_mapping_state[item]["valid"]
             )
             if mapping_ok:
+                if _needs_handwritten_number(record_row, report_group):
+                    record_row["handwriting_reading"] = read_handwritten_number(
+                        record_doc[int(record_row["pdf_page"]) - 1],
+                        fitz.Rect(record_row["result_bbox"]),
+                        hidden_handwriting_text.get(int(record_row["pdf_page"]) - 1, ()),
+                    )
                 comparison = _compare_one(record_row, report_group)
                 if not legend_check["validated"]:
                     # A symbol cannot be interpreted before the template legend
@@ -2288,7 +2715,9 @@ def compare_record_202_documents(
                     },
                     "mapping": {
                         "method": (
-                            "frozen_item_parent_clause_occurrence_with_item16_one_to_many"
+                            "frozen_item_parent_clause_occurrence_with_item16_split_variant"
+                            if item == 16 and item16_split
+                            else "frozen_item_parent_clause_occurrence_with_item16_one_to_many"
                             if item == 16 and record_row["logical_row"] == 1
                             else "frozen_item_parent_clause_occurrence_with_item8_structural_exclusion"
                             if item == 8
@@ -2396,7 +2825,7 @@ def compare_record_202_documents(
             **coverage,
             "expected_items": 38,
             "emitted_items": len({row["record"]["item"] for row in body_ledger}),
-            "expected_comparison_units": EXPECTED_COMPARISON_UNITS + EXPECTED_NUMBER_ROWS,
+            "expected_comparison_units": EXPECTED_COMPARISON_UNITS + EXPECTED_NUMBER_ROWS + (1 if item16_split else 0),
             "emitted_comparison_units": len(ledger),
             "decision_counts": {
                 "match": decisions["match"],

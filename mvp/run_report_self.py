@@ -38,6 +38,25 @@ REPORT_SCOPE_RULES: dict[str, tuple[str, ...]] = {
     "S19": ("REPORT-R09",),
     "S20": ("REPORT-R10",),
     "S21": ("REPORT-R11",),
+    "S49": ("REPORT-R12",),
+    "S50": ("REPORT-R13",),
+    "S51": ("REPORT-R14",),
+    "S52": ("REPORT-R15",),
+    "S53": ("REPORT-R16",),
+    "S54": ("REPORT-R17",),
+}
+
+# 依赖样品描述表的范围：报告没有该表时记为不适用。
+SAMPLE_TABLE_SCOPES = frozenset({"S11", "S12", "S13", "S14"})
+
+# 首页规则逐条检查写入 details.checks；每条检查都是一个 Ledger 对象。
+FRONT_RULE_SCOPES: dict[str, str] = {
+    "REPORT-R12": "S49",
+    "REPORT-R13": "S50",
+    "REPORT-R14": "S51",
+    "REPORT-R15": "S52",
+    "REPORT-R16": "S53",
+    "REPORT-R17": "S54",
 }
 
 
@@ -205,11 +224,30 @@ def _build_report_ledger(
         add("REPORT-R10", ("S20",), f"page:{marker.get('pdf_page')}", "pass" if not by_id["REPORT-R10"].get("details", {}).get("errors") else "error", value=marker, page_number=marker.get("pdf_page"))
     for page_state in by_id["REPORT-R11"].get("details", {}).get("page_states", []):
         add("REPORT-R11", ("S21",), f"page:{page_state.get('pdf_page')}", str(page_state.get("status", by_id["REPORT-R11"].get("status", "manual"))), value=page_state, page_number=page_state.get("pdf_page"))
+    for rule_id, scope_id in FRONT_RULE_SCOPES.items():
+        for check in by_id[rule_id].get("details", {}).get("checks", []):
+            location = check.get("location") or {}
+            add(
+                rule_id,
+                (scope_id,),
+                f"check:{check.get('check_id')}",
+                str(check.get("status", "manual")),
+                reason_code=check.get("reason_code"),
+                value=check,
+                location=location,
+                page_number=location.get("pdf_page") or 3,
+            )
     # A discovery failure is itself an accounted manual object.  This keeps a
     # malformed or unsupported template from producing an empty, apparently
     # successful scope bucket.
+    sample_table_found = by_id["REPORT-R02"].get("details", {}).get("sample_table_found", True)
     for scope_id, rule_ids in REPORT_SCOPE_RULES.items():
         if not any(scope_id in item.get("scope_ids", []) for item in ledger):
+            if scope_id in SAMPLE_TABLE_SCOPES:
+                # 报告没有样品描述表，或表中没有该类内容（如没有日期列）时，依赖该表的检查不执行（用户 2026-10-20 确认）。
+                reason = "sample_description_table_absent" if not sample_table_found else "sample_table_has_no_applicable_cells"
+                add(rule_ids[0], (scope_id,), f"scope:{scope_id}:not_applicable", "not_applicable", reason_code=reason, value=None, page_number=3)
+                continue
             add(rule_ids[0], (scope_id,), f"scope:{scope_id}:unresolved", "manual", reason_code="scope_object_discovery_empty", value=None, page_number=1)
     return ledger
 
@@ -317,13 +355,18 @@ def _normalize_findings(
                 ):
                     raise ValueError(f"Report self evidence bbox is invalid: {finding_id}")
                 bbox = fitz.Rect(rect)
+                # Rounded coordinates may exceed the page by float noise (a
+                # whole-page box rounds 841.91998 up to 841.92); allow the same
+                # 0.01 pt tolerance as the Record modes, then clamp.
+                tolerance = 0.01
                 if (
-                    bbox.x0 < page_rect.x0
-                    or bbox.y0 < page_rect.y0
-                    or bbox.x1 > page_rect.x1
-                    or bbox.y1 > page_rect.y1
+                    bbox.x0 < page_rect.x0 - tolerance
+                    or bbox.y0 < page_rect.y0 - tolerance
+                    or bbox.x1 > page_rect.x1 + tolerance
+                    or bbox.y1 > page_rect.y1 + tolerance
                 ):
                     raise ValueError(f"Report self evidence bbox is out of bounds: {finding_id}")
+                bbox = bbox & page_rect
                 evidence_locations.append(
                     {
                         "role": "report",
@@ -343,6 +386,7 @@ def run_report_self(
     *,
     report_path: str | Path,
     output_dir: str | Path,
+    photo_ocr: bool | None = None,
 ) -> dict[str, Any]:
     report = Path(report_path).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
@@ -355,7 +399,10 @@ def run_report_self(
     with fitz.open(report) as document:
         page_rects = [fitz.Rect(page.rect) for page in document]
     try:
-        findings_raw, report_items = report_self_check(source, output)
+        if photo_ocr is None:
+            findings_raw, report_items = report_self_check(source, output)
+        else:
+            findings_raw, report_items = report_self_check(source, output, photo_ocr=photo_ocr)
     except Exception as exc:
         try:
             after_failure = _file_state(report)
@@ -385,6 +432,14 @@ def run_report_self(
             "llm_used": False,
             "agent_used": False,
             "python_version": platform.python_version(),
+            "photo_ocr": next(
+                (
+                    finding.get("details", {}).get("photo_ocr")
+                    for finding in findings
+                    if finding.get("id") == "REPORT-R02"
+                ),
+                None,
+            ),
         },
         "scope": {
             "included": [
@@ -398,6 +453,12 @@ def run_report_self(
                 "Report 新项目序号连续性",
                 "Report 跨页续N标记",
                 "Report 打印页码连续性",
+                "Report 首页检验项目写法",
+                "Report 首页检验依据与检验结论写法",
+                "Report 首页日期格式、日期先后与封面版本",
+                "Report 页眉报告编号、样品编号与总页数",
+                "Report 首页职务、单位名称括号与抽样字段",
+                "Report 首页样品信息与照片页标签（本机 OCR）",
             ],
             "excluded": ["PTR", "GB 9706.1 Record", "GB 9706.202 Record"],
         },

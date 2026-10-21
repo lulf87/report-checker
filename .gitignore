@@ -13,6 +13,7 @@ tmp/
 output/
 mvp/reviews/
 *.pdf
+*.docx
 *.sqlite3
 *.db
 *.png

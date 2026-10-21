@@ -33,7 +33,8 @@ class FullReportNumericAttemptTests(unittest.TestCase):
     def test_2795_numeric_inventory_and_status_counts(self) -> None:
         self.assertEqual(self.result["digit_containing_result_cells"], 64)
         self.assertEqual(self.result["numeric_measurements"], 61)
-        self.assertEqual(self.result["counts"], {"pass": 53, "error": 0, "manual": 8})
+        # 2026-10-20：偏差写法、SI 词头换算和带括号符号的结果已能确定判定。
+        self.assertEqual(self.result["counts"], {"pass": 61, "error": 0, "manual": 0})
         self.assertEqual(
             [(item["sequence"], item["result"]) for item in self.result["excluded_numeric_tokens"]],
             [
@@ -62,29 +63,23 @@ class FullReportNumericAttemptTests(unittest.TestCase):
         self.assertEqual(three_columns["status"], "pass")
         self.assertEqual(three_columns["printed_page"], 41)
 
-    def test_manual_results_are_limited_to_three_conservative_gates(self) -> None:
-        manual = [item for item in self.result["comparisons"] if item["status"] == "manual"]
-        self.assertEqual(
-            Counter(item["reason"] for item in manual),
-            {
-                "numeric_result_has_unconfirmed_suffix": 2,
-                "unit_prefix_conversion_required_but_disabled": 2,
-                "signed_result_may_be_deviation_or_absolute_value": 4,
-            },
-        )
-        self.assertEqual(
-            [(item["pdf_page"], item["sequence"], item["result"]) for item in manual],
-            [
-                (43, 59, "0.05 (&)"),
-                (44, 59, "0.05 (&)"),
-                (102, 152, "300"),
-                (105, 157, "+71"),
-                (105, 157, "+61"),
-                (105, 157, "+0.16"),
-                (105, 157, "+0.099"),
-                (106, 161, "1.1～2.6"),
-            ],
-        )
+    def test_former_manual_results_are_now_decided_with_explicit_reasons(self) -> None:
+        def reason(pdf_page: int, sequence: int, result: str) -> str:
+            item = next(
+                entry for entry in self.result["comparisons"]
+                if entry["pdf_page"] == pdf_page and entry["sequence"] == sequence and entry["result"] == result
+            )
+            self.assertEqual(item["status"], "pass")
+            return item["reason"]
+
+        self.assertEqual(reason(43, 59, "0.05 (&)"), "annotated_value_within_bound")
+        self.assertEqual(reason(102, 152, "300"), "value_in_tolerance")
+        self.assertEqual(reason(105, 157, "+71"), "signed_deviation_within_tolerance")
+        self.assertEqual(reason(105, 157, "+0.099"), "signed_deviation_within_tolerance")
+        self.assertEqual(reason(106, 161, "1.1～2.6"), "range_within_bound")
+        insulation = next(entry for entry in self.result["comparisons"] if entry["pdf_page"] == 106 and entry["sequence"] == 161)
+        self.assertEqual(insulation["criterion"]["converted_from"], "MΩ")
+        self.assertEqual(insulation["criterion"]["value"], "0.005")
 
     def test_percentage_range_and_derived_limits_are_deterministic(self) -> None:
         percentage = self.comparison(100, 7)
@@ -110,6 +105,54 @@ class FullReportNumericAttemptTests(unittest.TestCase):
         self.assertEqual((inclusive["status"], inclusive["reason"]), ("pass", "value_within_bound"))
         self.assertEqual(censored_pass["status"], "pass")
         self.assertEqual((censored_manual["status"], censored_manual["reason"]), ("manual", "censored_result_not_decisive"))
+
+
+class NumericCriterionExtensionTests(unittest.TestCase):
+    def check(self, requirement: str, result: str) -> tuple[str, str]:
+        decision = evaluate_numeric_measurement(requirement, result)
+        return decision["status"], decision["reason"]
+
+    def test_signed_results_are_deviations_only_when_unambiguous(self) -> None:
+        self.assertEqual(self.check("标称值：1700V±100V； 单位：V", "+71"), ("pass", "signed_deviation_within_tolerance"))
+        self.assertEqual(self.check("标称值：1700V±100V； 单位：V", "+171"), ("error", "signed_deviation_exceeds_tolerance"))
+        # 按绝对值理解也可能合格时不猜。
+        self.assertEqual(self.check("标称值：1700V±100V； 单位：V", "+1690")[0], "manual")
+        self.assertEqual(self.check("1.12msec±4μsec 单位：μs", "+0"), ("pass", "signed_deviation_within_tolerance"))
+        self.assertEqual(self.check("允差： ±15ms | @240Ω 单位：ms", "-16～+1"), ("error", "signed_deviation_exceeds_tolerance"))
+        self.assertEqual(self.check("@240Ω | 0.2V：±50mV 单位：mV", "-26"), ("pass", "signed_deviation_within_tolerance"))
+        # “以下要求”不是限值措辞。
+        self.assertEqual(self.check("包括以下要求： ●ESC 波长：785nm ±10nm 单位：nm", "-4")[0], "pass")
+        # 没有标称值也没有“允差/误差”字样时不按偏差处理。
+        self.assertEqual(self.check("±10 单位：V", "+3")[0], "manual")
+
+    def test_percent_deviation_and_asymmetric_tolerance(self) -> None:
+        self.assertEqual(self.check("脉冲宽 度 | 0.9μsec±20%", "-9%"), ("pass", "percent_deviation_within_tolerance"))
+        self.assertEqual(self.check("脉冲宽 度 | 0.9μsec±20%", "-25%"), ("error", "percent_deviation_exceeds_tolerance"))
+        self.assertEqual(self.check("@240Ω | 0.4V～7.5V：+20 %/-25%", "-24%～-14%")[0], "pass")
+        self.assertEqual(self.check("@240Ω | 0.4V～7.5V：+20 %/-25%", "+21%")[0], "error")
+        self.assertEqual(self.check("精度± 1 个或± 10%，取最大值。", "+0%")[0], "pass")
+
+    def test_more_chinese_bound_wording(self) -> None:
+        self.assertEqual(self.check("单个脉冲最大输出能量应小于258mJ。 单位：mJ", "159")[0], "pass")
+        self.assertEqual(self.check("单个脉冲最大输出能量应小于258mJ。 单位：mJ", "258")[0], "error")
+        self.assertEqual(self.check("但不应将声级降到40dB（A 计权）以下。 单位：dB(A)", "41")[0], "pass")
+        self.assertEqual(self.check("但不应将声级降到40dB（A 计权）以下。 单位：dB(A)", "39")[0], "error")
+        self.assertEqual(self.check("最小脉冲幅度应不低于最大脉冲幅度的80%。", "84%")[0], "pass")
+        self.assertEqual(self.check("衰减应在10%内。", "11%")[0], "error")
+        # “不小于”不能被误读为上限“小于”。
+        self.assertEqual(self.check("绝缘电阻应不小于5MΩ 单位：MΩ", "6")[0], "pass")
+
+    def test_si_prefix_conversion(self) -> None:
+        self.assertEqual(self.check("绝缘电阻应不小于 5MΩ. 单位：GΩ", "1.1～2.6")[0], "pass")
+        self.assertEqual(self.check("绝缘电阻应不小于 5MΩ. 单位：GΩ", "0.004")[0], "error")
+        self.assertEqual(self.check("声音输出的主要能量应包含在 100Hz~3KHz 的频段内， 单位：Hz", "358")[0], "pass")
+        self.assertEqual(self.check("声音输出的主要能量应包含在 100Hz~3KHz 的频段内， 单位：Hz", "3500")[0], "error")
+
+    def test_annotation_suffix_only_for_upper_bounds(self) -> None:
+        self.assertEqual(self.check("患者漏电流 | CF≤0.05mA", "0.05 (−)"), ("pass", "annotated_value_within_bound"))
+        self.assertEqual(self.check("患者漏电流 | CF≤0.05mA", "0.06 (−)"), ("error", "annotated_value_exceeds_bound"))
+        self.assertEqual(self.check("患者漏电流 | CF≤0.05mA", "0.05 (x)")[0], "manual")
+        self.assertEqual(self.check("绝缘电阻应不小于5MΩ 单位：MΩ", "6 (−)")[0], "manual")
 
 
 if __name__ == "__main__":

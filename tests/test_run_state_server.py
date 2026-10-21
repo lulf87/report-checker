@@ -187,7 +187,7 @@ class RunStateServerTests(unittest.TestCase):
             {
                 "mode": "report_self",
                 "machine_overall_status": "manual",
-                "status_counts": {"pass": 11, "warning": 0, "manual": 1, "error": 0},
+                "status_counts": {"pass": len(REPORT_SELF_RULE_ORDER) - 1, "warning": 0, "manual": 1, "error": 0},
                 "findings": [
                     {
                         "id": rule_id,

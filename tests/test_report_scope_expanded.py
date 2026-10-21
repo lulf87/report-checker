@@ -18,19 +18,20 @@ class ExpandedReportScopeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temporary = tempfile.TemporaryDirectory()
         cls.output = Path(cls.temporary.name) / "expanded-report"
-        cls.result = run_report_self(report_path=REPORT, output_dir=cls.output)
+        # 关闭照片 OCR，验证“没有识别引擎时不伪造通过”的契约。
+        cls.result = run_report_self(report_path=REPORT, output_dir=cls.output, photo_ocr=False)
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls.temporary.cleanup()
 
-    def test_twelve_rules_are_called_by_the_formal_report_only_runner(self) -> None:
-        self.assertEqual(len(REPORT_SELF_RULE_ORDER), 12)
+    def test_eighteen_rules_are_called_by_the_formal_report_only_runner(self) -> None:
+        self.assertEqual(len(REPORT_SELF_RULE_ORDER), 18)
         self.assertEqual([item["id"] for item in self.result["findings"]], list(REPORT_SELF_RULE_ORDER))
         self.assertEqual(MODE_CATALOG["report_self"]["rule_ids"], REPORT_SELF_RULE_ORDER)
         self.assertTrue(all(rule_id in RULE_CATALOG for rule_id in REPORT_SELF_RULE_ORDER))
-        self.assertEqual(self.result["coverage"]["planned"], 12)
-        self.assertEqual(self.result["coverage"]["completed"], 12)
+        self.assertEqual(self.result["coverage"]["planned"], 18)
+        self.assertEqual(self.result["coverage"]["completed"], 18)
         self.assertEqual(self.result["coverage"]["missing"], [])
 
     def test_ocr_dependency_is_explicit_and_never_fabricated_as_a_pass(self) -> None:
@@ -57,9 +58,12 @@ class ExpandedReportScopeTests(unittest.TestCase):
     def test_scope_ledger_has_all_report_scope_objects_and_locations(self) -> None:
         self.assertEqual(self.result["schema_version"], "report-self-1.1")
         scope = self.result["scope_coverage"]
-        self.assertEqual(scope["scope_ids"], [f"S{number:02d}" for number in range(9, 22)])
+        self.assertEqual(
+            scope["scope_ids"],
+            [f"S{number:02d}" for number in (*range(9, 22), *range(49, 55))],
+        )
         self.assertTrue(scope["conserved"])
-        self.assertEqual(len(scope["entries"]), 13)
+        self.assertEqual(len(scope["entries"]), 19)
         self.assertTrue(all(item["eligible"] == item["accounted"] for item in scope["entries"]))
         self.assertGreaterEqual(len(self.result["ledger"]), 12)
         self.assertTrue(
@@ -88,8 +92,15 @@ class ExpandedReportScopeTests(unittest.TestCase):
             analysis = analyze_report_photo_rules(SAMPLE_CONFIGS[sample].report, None, None)
             with self.subTest(sample=sample):
                 self.assertEqual(len(analysis["sample_rows"]), count)
+                has_dates = any(
+                    row["fields"].get("生产日期") or row["fields"].get("失效日期") for row in analysis["sample_rows"]
+                )
                 for rule_id in ("REPORT-R02", "REPORT-R03", "REPORT-R04", "REPORT-R05", "REPORT-R06"):
                     finding = next(item for item in analysis["findings"] if item["id"] == rule_id)
+                    if rule_id == "REPORT-R03" and not has_dates:
+                        # 样品描述表没有日期列时不执行日期比对（2026-10-20 确认）。
+                        self.assertEqual(finding["details"]["comparisons"], [])
+                        continue
                     key = {"REPORT-R02": "objects", "REPORT-R03": "comparisons", "REPORT-R04": "cell_checks", "REPORT-R05": "objects", "REPORT-R06": "objects"}[rule_id]
                     self.assertGreaterEqual(len(finding["details"][key]), count)
                     self.assertEqual(

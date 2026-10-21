@@ -329,6 +329,12 @@ class RunStateRequestHandler(CapabilityRequestHandler):
     def _dispatch(self) -> tuple[HTTPStatus, Any]:
         path = urlsplit(self.path).path
         if path == "/api/v1/session":
+            # The token used to be fixed for the server's lifetime, so a
+            # workbench left running past 8 hours could never upload again.
+            # Issue a fresh token once the current one has expired.
+            if datetime.now(timezone.utc) >= self.server.csrf_expires_at:
+                self.server.csrf_token = uuid4().hex
+                self.server.csrf_expires_at = datetime.now(timezone.utc) + timedelta(hours=8)
             return HTTPStatus.OK, {
                 "csrf_token": self.server.csrf_token,
                 "session_id": self.server.session_id,

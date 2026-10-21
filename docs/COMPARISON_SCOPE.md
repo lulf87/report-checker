@@ -55,6 +55,12 @@
 | S19 | 正式项目序号连续、无重复、无漏项 | confirmed | `REPORT-R09` / validated |
 | S20 | 跨页项目正确使用“续 N”标记 | confirmed | `REPORT-R10` / validated |
 | S21 | 打印页码和“共 N 页第 M 页”连续完整 | confirmed | `REPORT-R11` / validated |
+| S49 | 首页“检验项目”写法：区间用“～”、分隔用“、”；连续条款≥3条写区间、<3条逐条列举；除外条款按生物相容性、可用性、电磁兼容性顺序；不得写全性能/全项目/2.性能；标准编号年代号带连字符 | confirmed（2026-10-20） | `REPORT-R12` / validated |
+| S50 | 首页“检验依据”“检验结论”：产品技术要求全称、“及变更对比表”、标准名称后加“标准”、委托方与生产单位不一致时写“提供”、有除外或仅检时写“所检项目”、依据与结论一致、公司名称与委托方一致（含全/半角括号） | confirmed（2026-10-20） | `REPORT-R13` / validated |
+| S51 | 到样日期、检验日期、签发日期写作“YYYY年M月D日”且不补零；日期先后；已签发报告的封面版本与签发日期对应的生效版本一致（草稿不判断版本） | confirmed（2026-10-20） | `REPORT-R14` / validated |
+| S52 | 每页页眉报告编号与封面一致；页眉和首页样品编号与报告编号对应；打印总页数等于 PDF 页数减去封面和注意事项页 | confirmed（2026-10-20） | `REPORT-R15` / validated |
+| S53 | 职务为“授权签字人”；同一单位名称括号全/半角一致；送样/抽样标记与抽样字段内部一致（不核对合同和抽样单） | confirmed（2026-10-20） | `REPORT-R16` / validated |
+| S54 | 首页样品名称、型号规格、产品编号/批号、生产日期、生产单位、委托方及地址能在照片页标签（或铭牌）中找到；首页写“见…栏”或“/”时不执行；照片文字由本机 OCR 识别 | confirmed（2026-10-20） | `REPORT-R17` / validated |
 
 ### C. GB 9706.1 Record + Report（S22–S35）
 
@@ -99,7 +105,7 @@
 
 | 模式 | 状态 | 本矩阵关系 |
 | --- | --- | --- |
-| `report_self` | enabled | S09–S21，以及 S01–S08 |
+| `report_self` | enabled | S09–S21、S49–S54，以及 S01–S08 |
 | `report_ptr` | disabled (`PTR_NOT_VALIDATED`) | 不纳入本次范围确认 |
 | `report_record_9706_1` | enabled | S22–S34，以及 S01–S08；S35 保留规则 ID 但按当前范围记为 `not_applicable` |
 | `report_record_9706_202` | enabled | S36–S47，以及 S01–S08 |

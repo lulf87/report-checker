@@ -5,12 +5,14 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 try:
     import pymupdf as fitz
 except ImportError:
     import fitz
+
+from mvp.photo_ocr import FIELD_KEYS, build_record, normalize_text
 
 
 SAMPLE_COLUMNS = ("序号", "部件名称", "规格型号", "序列号/批号", "生产日期", "失效日期", "备注")
@@ -19,7 +21,9 @@ SAMPLE_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "序号": ("序号", "编号", "项目序号"),
     "部件名称": ("部件名称", "名称", "样品名称", "项目名称"),
     "规格型号": ("规格型号", "型号", "型号规格", "物料编码/型号规格", "组件号", "组件编号"),
-    "序列号/批号": ("序列号/批号", "批号/序列号", "序列号", "批号", "产品编号/批号"),
+    "序列号/批号": (
+        "序列号/批号", "批号/序列号", "批次号/序列号", "序列号/批次号", "序列号", "批号", "批次号", "产品编号/批号",
+    ),
     "生产日期": ("生产日期", "生产日期/有效期", "生产日期（年月日）"),
     "失效日期": ("失效日期", "有效期至", "有效日期"),
     "备注": ("备注", "说明", "其他说明"),
@@ -265,15 +269,19 @@ def _text_lines(page: fitz.Page) -> list[tuple[str, list[float]]]:
     return lines
 
 
+# 标题以这些词结尾时是标签照片；“中文标”是标题换行后被截断的“中文标签”。
+_LABEL_TITLE_SUFFIX_RE = re.compile(r"\s*(?:中文标签样张|标签样张|中文标签|中文标|标签|铭牌)\s*$")
+_ORIENTATION_SUFFIX_RE = re.compile(r"\s*(?:正面|背面|左面|右面|侧面|反面|顶面|底面)\s*$")
+
+
 def _photo_subject(title: str) -> tuple[str, str]:
     subject = re.sub(r"^№\s*\d+\s*", "", title).strip()
-    if "中文标签样张" in subject or "标签样张" in subject:
+    if "标签样张" in subject:
         return subject.replace("中文标签样张", "").replace("标签样张", "").strip(), "label"
-    for suffix in PHOTO_ORIENTATIONS:
-        if compact_layout(subject).endswith(suffix):
-            subject = subject[: -len(suffix)].strip()
-            break
-    if "软件版本" in compact_layout(subject):
+    if _LABEL_TITLE_SUFFIX_RE.search(subject):
+        return _LABEL_TITLE_SUFFIX_RE.sub("", subject).strip(), "label"
+    subject = _ORIENTATION_SUFFIX_RE.sub("", subject).strip()
+    if "版本" in compact_layout(subject):
         return subject, "other"
     return subject, "object"
 
@@ -376,19 +384,39 @@ def load_ocr_records(path: Path | str | None) -> tuple[list[dict[str, Any]], lis
         if not isinstance(item, dict) or not isinstance(item.get("pdf_page"), int):
             diagnostics.append(f"OCR派生文件第{item_index + 1}项缺少有效pdf_page")
             continue
-        ocr = item.get("ocr")
-        if not isinstance(ocr, dict) or not isinstance(ocr.get("lines"), list):
-            diagnostics.append(f"OCR派生文件第{item_index + 1}项缺少有效ocr.lines")
-            lines: list[dict[str, Any]] = []
-            backend = None
+        channel_items: dict[str, list[dict[str, Any]]] = {}
+        if isinstance(item.get("channels"), dict):
+            # 新格式：每个识别引擎一份独立读数。
+            for name, channel in item["channels"].items():
+                items = channel.get("items") if isinstance(channel, dict) else None
+                if isinstance(items, list):
+                    channel_items[str(name)] = [entry for entry in items if isinstance(entry, dict) and entry.get("text")]
+            lines = [entry for items in channel_items.values() for entry in items]
+            backend = "+".join(channel_items) or None
         else:
-            lines = [line for line in ocr["lines"] if isinstance(line, dict) and line.get("text")]
-            backend = ocr.get("backend")
+            ocr = item.get("ocr")
+            if not isinstance(ocr, dict) or not isinstance(ocr.get("lines"), list):
+                diagnostics.append(f"OCR派生文件第{item_index + 1}项缺少有效ocr.lines")
+                lines = []
+                backend = None
+            else:
+                lines = [line for line in ocr["lines"] if isinstance(line, dict) and line.get("text")]
+                backend = ocr.get("backend")
+            channel_items[str(backend or "ocr")] = [
+                {"text": line.get("text"), "confidence": line.get("confidence"), "bbox": None} for line in lines
+            ]
         all_text = "".join(display_text(line.get("text")) for line in lines)
+        image_index = item.get("image_index") or _image_index_from_path(item.get("path"))
         record = {
-            "pdf_page": item["pdf_page"],
-            "image_index": item.get("image_index") or _image_index_from_path(item.get("path")),
-            "path": item.get("path"),
+            **build_record(
+                pdf_page=item["pdf_page"],
+                image_index=image_index,
+                channels=channel_items,
+                title=item.get("title"),
+                kind=item.get("kind"),
+                image_sha256=item.get("image_sha256"),
+                path=item.get("path"),
+            ),
             "backend": backend,
             "lines": lines,
             "all_text": all_text,
@@ -445,7 +473,26 @@ def associate_rows_to_photos(
             ):
                 entry["association_method"] = "unique_device_prefix_or_optional_suffix"
                 fallback.append(entry)
-        associations[row["sequence"]] = exact or fallback
+        prefixed: list[dict[str, Any]] = []
+        if not exact and not fallback and len(name) >= 4:
+            # 标题写成“部件名称 + 组成部分”（如“消化道脉冲电场消融仪 主机”）时，按最长的唯一名称前缀关联。
+            for source_entry in entries:
+                segments = _name_segments(source_entry["subject"])
+                for segment in segments:
+                    if not segment.startswith(name) or segment == name:
+                        continue
+                    longer = [
+                        other for other in rows
+                        if other is not row
+                        and len(compact_layout(other["fields"]["部件名称"])) > len(name)
+                        and segment.startswith(compact_layout(other["fields"]["部件名称"]))
+                    ]
+                    if not longer:
+                        entry = dict(source_entry)
+                        entry["association_method"] = "unique_row_name_prefix"
+                        prefixed.append(entry)
+                        break
+        associations[row["sequence"]] = exact or fallback or prefixed
     return associations
 
 
@@ -603,180 +650,374 @@ def _with_locations(
     return comparison
 
 
+# ---------------------------------------------------------------------------
+# 报告值与照片页 OCR 文本比对（2026-10-20）
+#
+# 判定口径：
+# * 报告值（去掉排版空白、全/半角统一后）出现在任一识别引擎读出的照片文字中 → 一致；
+# * 序列号/批号、日期这类含义明确的字段，两路引擎读出同一个不同的值 → 不一致；
+# * 其余情况（只有一路、读不全、两路不一致）→ 人工复核，并列出候选值；
+# * 样品描述表没有该列或单元格为空 → 不执行（不适用）；报告填“/”时，照片标签上也没有该字段值才算一致。
+# ---------------------------------------------------------------------------
+
+OcrLookup = Callable[[Mapping[str, Any]], "Mapping[str, Any] | None"]
+STRICT_LABEL_FIELDS = ("序列号/批号", "生产日期", "失效日期")
+MIN_SEARCH_LENGTH = 3
+PLACEHOLDERS = {"/", "／", "见实物"}
+
+
+def _clean_report_value(field: str, value: Any) -> str:
+    text = normalize_text(value)
+    for key in sorted(FIELD_KEYS.get(field, ()), key=len, reverse=True):
+        key_text = normalize_text(key)
+        if text.upper().startswith(key_text.upper()) and text[len(key_text):len(key_text) + 1] == ":":
+            text = text[len(key_text) + 1:]
+            break
+    if field == "部件名称":
+        text = re.sub(r"\(可选\)$", "", text)
+    return text
+
+
+def _records_for(
+    entries: Sequence[Mapping[str, Any]], lookup: OcrLookup
+) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    pairs: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+    for entry in entries:
+        record = lookup(entry)
+        if record is not None and record.get("channels"):
+            pairs.append((entry, record))
+    return pairs
+
+
+def _has_text(pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> bool:
+    return any(payload.get("text") for _entry, record in pairs for payload in record["channels"].values())
+
+
+def _channels(pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> list[str]:
+    return sorted({channel for _entry, record in pairs for channel in record["channels"]})
+
+
+def _keyed_candidates(
+    field: str, pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]
+) -> dict[str, list[str]]:
+    candidates: dict[str, list[str]] = {}
+    for _entry, record in pairs:
+        for channel, payload in record["channels"].items():
+            for value in (payload.get("keyed") or {}).get(field, []):
+                bucket = candidates.setdefault(channel, [])
+                if value not in bucket:
+                    bucket.append(value)
+    return candidates
+
+
+def _agreed_value(candidates: Mapping[str, Sequence[str]]) -> str | None:
+    """Return the single value read identically by at least two OCR channels."""
+
+    sets = [set(values) for values in candidates.values() if values]
+    if len(sets) < 2 or any(len(values) != 1 for values in sets):
+        return None
+    union = set().union(*sets)
+    return next(iter(union)) if len(union) == 1 else None
+
+
+def compare_with_photo_text(
+    field: str,
+    report_value: Any,
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    strict: bool | None = None,
+) -> dict[str, Any]:
+    """Search one report value in every OCR channel of the associated photos."""
+
+    strict = field in STRICT_LABEL_FIELDS if strict is None else strict
+    expected = _clean_report_value(field, report_value)
+    base: dict[str, Any] = {
+        "report_value": report_value,
+        "observed_value": None,
+        "ocr_channels": _channels(pairs),
+        "candidates": {},
+        "photo_location": photo_location(pairs[0][0]) if pairs else None,
+    }
+    if not pairs:
+        return {**base, "status": "manual", "reason_code": "photo_ocr_not_available"}
+    if not _has_text(pairs):
+        return {**base, "status": "manual", "reason_code": "photo_ocr_text_empty"}
+    candidates = _keyed_candidates(field, pairs)
+    base["candidates"] = candidates
+    minimum = 2 if re.search(r"[\u4e00-\u9fff]", expected) else MIN_SEARCH_LENGTH
+    if len(expected) < minimum:
+        return {**base, "status": "manual", "reason_code": "report_value_too_short_for_text_search"}
+    hits = [
+        (entry, channel)
+        for entry, record in pairs
+        for channel, payload in record["channels"].items()
+        if expected in (payload.get("text") or "") or expected in (payload.get("text_columns") or "")
+    ]
+    if hits:
+        return {
+            **base,
+            "status": "pass",
+            "reason_code": "photo_text_contains_report_value",
+            "observed_value": display_text(report_value),
+            "matched_channels": sorted({channel for _entry, channel in hits}),
+            "photo_location": photo_location(hits[0][0]),
+        }
+    if field in NAME_FIELDS:
+        parts = _name_parts(expected)
+        if len(parts) >= 2:
+            for entry, record in pairs:
+                for channel, payload in record["channels"].items():
+                    texts = [(payload.get("text") or "").upper(), (payload.get("text_columns") or "").upper()]
+                    if all(any(part.upper() in text for text in texts) for part in parts):
+                        return {
+                            **base,
+                            "status": "pass",
+                            "reason_code": "name_parts_found_in_photo_text",
+                            "observed_value": display_text(report_value),
+                            "matched_channels": [channel],
+                            "photo_location": photo_location(entry),
+                        }
+    agreed = _agreed_value(candidates) if strict else None
+    if agreed is not None:
+        return {
+            **base,
+            "status": "error",
+            "reason_code": "two_ocr_channels_agree_label_differs",
+            "observed_value": agreed,
+        }
+    return {**base, "status": "manual", "reason_code": "report_value_not_found_in_photo_text"}
+
+
+# 中英文并列的单位名称（如“示例医疗公司 Example Surgical, Inc.”）在标签上常前后颠倒；
+# 中文段和英文段分别能在同一路识别文字中找到即视为一致，英文段不区分大小写。
+NAME_FIELDS = ("生产单位", "委托方")
+
+
+def _name_parts(value: str) -> list[str]:
+    parts = re.findall(r"[\u4e00-\u9fff（）()]+|[A-Za-z0-9.,&'\-]+", value)
+    return [part for part in parts if len(part) >= 3]
+
+
+def compare_placeholder_with_photo(
+    field: str,
+    report_value: Any,
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
+) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "report_value": report_value,
+        "observed_value": None,
+        "ocr_channels": _channels(pairs),
+        "candidates": {},
+        "photo_location": photo_location(pairs[0][0]) if pairs else None,
+    }
+    if not pairs:
+        return {**base, "status": "manual", "reason_code": "photo_ocr_not_available"}
+    if not _has_text(pairs):
+        return {**base, "status": "manual", "reason_code": "photo_ocr_text_empty"}
+    candidates = _keyed_candidates(field, pairs)
+    filled = {
+        channel: [value for value in values if value not in PLACEHOLDERS]
+        for channel, values in candidates.items()
+    }
+    base["candidates"] = candidates
+    if any(filled.values()):
+        return {**base, "status": "manual", "reason_code": "report_placeholder_but_photo_has_value"}
+    return {**base, "status": "pass", "reason_code": "report_placeholder_and_photo_has_no_value"}
+
+
+_DATE_PARSE_PATTERNS = (
+    r"(\d{4})-(\d{1,2})-(\d{1,2})",
+    r"(\d{4})\.(\d{1,2})\.(\d{1,2})",
+    r"(\d{4})/(\d{1,2})/(\d{1,2})",
+    r"(\d{4})(\d{2})(\d{2})",
+    r"(\d{4})年(\d{1,2})月(\d{1,2})日",
+)
+
+
+def _parse_any_date(value: Any) -> tuple[int, int, int] | None:
+    text = normalize_text(value)
+    for pattern in _DATE_PARSE_PATTERNS:
+        if match := re.fullmatch(pattern, text):
+            try:
+                parsed = datetime(*(int(part) for part in match.groups()))
+            except ValueError:
+                return None
+            return parsed.year, parsed.month, parsed.day
+    return None
+
+
+def compare_date_with_photo(
+    field: str,
+    report_value: Any,
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Date value and writing format must both match the label (R03)."""
+
+    result = compare_with_photo_text(field, report_value, pairs, strict=False)
+    result.update(report_format=date_format(str(report_value)), label_value=None, label_format=None)
+    if result["status"] == "pass":
+        result.update(
+            reason_code="date_value_and_format_found_in_photo_text",
+            label_value=display_text(report_value),
+            label_format=result["report_format"],
+        )
+        return result
+    agreed = _agreed_value(result.get("candidates") or {})
+    if agreed is None:
+        return result
+    report_date, label_date = _parse_any_date(report_value), _parse_any_date(agreed)
+    result.update(label_value=agreed, label_format=date_format(agreed), observed_value=agreed)
+    if report_date is None or label_date is None:
+        return result
+    if report_date == label_date:
+        result.update(status="error", reason_code="date_format_differs_from_label")
+    else:
+        result.update(status="error", reason_code="date_value_differs_from_label")
+    return result
+
+
+def _not_stated(report_value: Any) -> dict[str, Any]:
+    return {
+        "status": "not_applicable",
+        "report_value": report_value,
+        "observed_value": None,
+        "reason_code": "report_cell_blank_or_column_absent",
+    }
+
+
 def _r02_objects(
     rows: Sequence[Mapping[str, Any]],
-    identity: Mapping[str, Mapping[str, Any]],
     label_associations: Mapping[int, Sequence[Mapping[str, Any]]],
-    label_ocr_by_key: Mapping[tuple[int, int], Mapping[str, Any]],
+    lookup: OcrLookup,
 ) -> list[dict[str, Any]]:
     objects: list[dict[str, Any]] = []
     for row in rows:
         applicable, not_applicable_reason = photo_scope(row)
+        base = {
+            "sequence": row["sequence"],
+            "name": row["fields"]["部件名称"],
+            "report_location": row["locations"]["部件名称"],
+        }
         if not applicable:
-            objects.append(
-                {
-                    "sequence": row["sequence"],
-                    "name": row["fields"]["部件名称"],
-                    "status": "not_applicable",
-                    "reason_code": not_applicable_reason,
-                    "field_comparisons": [],
-                    "report_location": row["locations"]["部件名称"],
-                    "photo_locations": [],
-                }
-            )
+            objects.append({**base, "status": "not_applicable", "reason_code": not_applicable_reason, "field_comparisons": [], "photo_locations": []})
             continue
         entries = list(label_associations.get(row["sequence"], []))
         if not entries:
-            objects.append(
-                {
-                    "sequence": row["sequence"],
-                    "name": row["fields"]["部件名称"],
-                    "status": "error",
-                    "reason_code": "chinese_label_photo_missing",
-                    "field_comparisons": [],
-                    "report_location": row["locations"]["部件名称"],
-                    "photo_locations": [],
-                }
-            )
+            objects.append({**base, "status": "error", "reason_code": "chinese_label_photo_missing", "field_comparisons": [], "photo_locations": []})
             continue
-        entry = entries[0]
-        ocr = _ocr_for_entry(entry, label_ocr_by_key)
-        if ocr is None:
-            objects.append(
-                {
-                    "sequence": row["sequence"],
-                    "name": row["fields"]["部件名称"],
-                    "status": "manual",
-                    "reason_code": "label_photo_found_but_ocr_record_missing",
-                    "field_comparisons": [],
-                    "report_location": row["locations"]["部件名称"],
-                    "photo_locations": [photo_location(entry)],
-                }
-            )
+        pairs = _records_for(entries, lookup)
+        if not pairs:
+            objects.append({
+                **base,
+                "status": "manual",
+                "reason_code": "label_photo_found_but_ocr_record_missing",
+                "field_comparisons": [],
+                "photo_locations": [photo_location(entry) for entry in entries],
+            })
             continue
-
         comparisons: list[dict[str, Any]] = []
         for field in ("部件名称", "规格型号", "序列号/批号", "生产日期"):
-            result = _field_comparison(row["fields"][field], ocr["fields"].get(field))
+            expected = row["fields"][field]
+            normalized = compact_layout(expected)
+            if not normalized:
+                result = _not_stated(expected)
+            elif normalized in PLACEHOLDERS:
+                result = compare_placeholder_with_photo(field, expected, pairs)
+            elif field == "生产日期":
+                result = compare_date_with_photo(field, expected, pairs)
+            else:
+                result = compare_with_photo_text(field, expected, pairs)
             result["field"] = field
             result["report_location"] = row["locations"][field]
-            result["photo_location"] = photo_location(entry)
+            result["photo_location"] = result.get("photo_location") or photo_location(entries[0])
             comparisons.append(result)
-
-        all_ocr = compact_layout(ocr.get("all_text"))
-        for field in ("委托方", "委托方地址"):
-            report_field = identity.get(field)
-            expected = display_text(report_field.get("value")) if report_field else ""
-            if not expected:
-                status, reason = "manual", "report_identity_field_not_resolved"
-            elif compact_layout(expected) in all_ocr:
-                status, reason = "pass", "exact_substring_after_layout_whitespace_only"
-            else:
-                status, reason = "manual", "single_ocr_source_identity_field_not_resolved"
-            comparisons.append(
-                {
-                    "field": field,
-                    "status": status,
-                    "report_value": expected or None,
-                    "observed_value": None if status == "manual" else expected,
-                    "reason_code": reason,
-                    "report_location": report_field.get("location") if report_field else None,
-                    "photo_location": photo_location(entry),
-                }
-            )
-        objects.append(
-            {
-                "sequence": row["sequence"],
-                "name": row["fields"]["部件名称"],
-                "status": _status_from(item["status"] for item in comparisons),
-                "reason_code": "field_comparisons_completed",
-                "field_comparisons": comparisons,
-                "report_location": row["locations"]["部件名称"],
-                "photo_locations": [photo_location(entry)],
-                "ocr_backend": ocr.get("backend"),
-            }
-        )
+        objects.append({
+            **base,
+            "status": _status_from(item["status"] for item in comparisons),
+            "reason_code": "field_comparisons_completed",
+            "field_comparisons": comparisons,
+            "photo_locations": [photo_location(entry) for entry in entries],
+            "ocr_backend": "+".join(_channels(pairs)),
+        })
     return objects
 
 
 def _r03_dates(
     rows: Sequence[Mapping[str, Any]],
     label_associations: Mapping[int, Sequence[Mapping[str, Any]]],
-    label_ocr_by_key: Mapping[tuple[int, int], Mapping[str, Any]],
+    lookup: OcrLookup,
 ) -> list[dict[str, Any]]:
     comparisons: list[dict[str, Any]] = []
-    date_fields = ["生产日期"]
-    if any(compact_layout(row["fields"].get("失效日期")) for row in rows):
-        date_fields.append("失效日期")
+    date_fields = [
+        field for field in ("生产日期", "失效日期")
+        if any(compact_layout(row["fields"].get(field)) for row in rows)
+    ]
     for row in rows:
         applicable, not_applicable_reason = photo_scope(row)
         entries = list(label_associations.get(row["sequence"], []))
         for field in date_fields:
+            expected = row["fields"].get(field, "")
+            normalized = compact_layout(expected)
             if not applicable:
                 comparison = {
                     "status": "not_applicable",
-                    "report_value": row["fields"].get(field, ""),
+                    "report_value": expected,
                     "label_value": None,
-                    "report_format": date_format(row["fields"].get(field, "")),
+                    "report_format": date_format(expected),
                     "label_format": None,
                     "reason_code": not_applicable_reason,
                 }
-                comparisons.append(_with_locations(comparison, row, field, None))
-                comparisons[-1].update(sequence=row["sequence"], name=row["fields"]["部件名称"], field=field)
-                continue
-            if not entries:
-                comparison = compare_date_text(row["fields"].get(field, ""), None)
+                photo = None
+            elif not normalized:
+                comparison = {**_not_stated(expected), "label_value": None, "report_format": None, "label_format": None}
+                photo = None
+            elif not entries:
+                comparison = compare_date_text(expected, None)
                 comparison["reason_code"] = "chinese_label_photo_missing"
-                comparisons.append(_with_locations(comparison, row, field, None))
-                comparisons[-1].update(sequence=row["sequence"], name=row["fields"]["部件名称"], field=field)
-                continue
-            entry = entries[0]
-            ocr = _ocr_for_entry(entry, label_ocr_by_key)
-            observed = None
-            confidence = None
-            if ocr is not None and ocr["fields"].get(field) is not None:
-                observed_field = ocr["fields"][field]
-                observed = observed_field["value"]
-                confidence = observed_field.get("confidence")
-            comparison = compare_date_text(row["fields"].get(field, ""), observed)
-            comparison["ocr_confidence"] = confidence
-            comparisons.append(_with_locations(comparison, row, field, entry))
-            comparisons[-1].update(sequence=row["sequence"], name=row["fields"]["部件名称"], field=field)
+                photo = None
+            else:
+                pairs = _records_for(entries, lookup)
+                if normalized in PLACEHOLDERS:
+                    comparison = compare_placeholder_with_photo(field, expected, pairs)
+                    comparison.update(label_value=None, report_format=None, label_format=None)
+                else:
+                    comparison = compare_date_with_photo(field, expected, pairs)
+                photo = entries[0]
+            location = comparison.pop("photo_location", None)
+            comparison["report_location"] = row["locations"].get(field)
+            comparison["photo_location"] = location or (photo_location(photo) if photo is not None else None)
+            comparison.update(sequence=row["sequence"], name=row["fields"]["部件名称"], field=field)
+            comparisons.append(comparison)
     return comparisons
 
 
-def _observed_values_for_field(
-    field: str,
-    entries: Sequence[Mapping[str, Any]],
-    ocr_by_key: Mapping[tuple[int, int], Mapping[str, Any]],
-) -> list[str]:
-    observed: list[str] = []
+def _caption_matches(name: str, entries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    target = compact_layout(name)
     for entry in entries:
-        if field == "部件名称":
-            observed.append(entry["subject"])
-        record = _ocr_for_entry(entry, ocr_by_key)
-        if record is None:
-            continue
-        ocr_field = record["fields"].get(field)
-        if ocr_field is not None:
-            observed.append(display_text(ocr_field["value"]))
-        if field == "备注":
-            observed.extend(display_text(line.get("text")) for line in record.get("lines", []))
-    return observed
+        if target and target in _name_segments(entry.get("subject", "")):
+            return entry
+    return None
 
 
 def _r04_cells(
     rows: Sequence[Mapping[str, Any]],
-    all_associations: Mapping[int, Sequence[Mapping[str, Any]]],
-    all_ocr_by_key: Mapping[tuple[int, int], Mapping[str, Any]],
+    label_associations: Mapping[int, Sequence[Mapping[str, Any]]],
+    object_associations: Mapping[int, Sequence[Mapping[str, Any]]],
+    lookup: OcrLookup,
 ) -> list[dict[str, Any]]:
+    """Every non-blank sample-description cell must be found on the associated photos."""
+
     checks: list[dict[str, Any]] = []
     for row in rows:
         applicable, not_applicable_reason = photo_scope(row)
-        entries = list(all_associations.get(row["sequence"], []))
+        label_entries = list(label_associations.get(row["sequence"], []))
+        object_entries = list(object_associations.get(row["sequence"], []))
+        entries = [*label_entries, *object_entries]
         for field in CHECKED_SAMPLE_COLUMNS:
             expected = row["fields"][field]
-            if not expected and field not in {"生产日期", "失效日期"}:
+            normalized = compact_layout(expected)
+            if not normalized:
+                # 样品描述表没有该列或该格为空：不执行。
                 continue
             base = {
                 "sequence": row["sequence"],
@@ -787,50 +1028,160 @@ def _r04_cells(
                 "photo_locations": [photo_location(entry) for entry in entries],
             }
             if not applicable:
-                base.update(status="not_applicable", observed_values=[], reason_code=not_applicable_reason)
-                checks.append(base)
+                checks.append({**base, "status": "not_applicable", "observed_values": [], "reason_code": not_applicable_reason})
                 continue
-            if not expected and field in {"生产日期", "失效日期"}:
-                base.update(status="manual", observed_values=[], reason_code="report_date_not_stated")
-                checks.append(base)
+            if field == "备注":
+                checks.append({**base, "status": "not_applicable", "observed_values": [], "reason_code": "remark_not_compared_with_photo"})
                 continue
             if not entries:
-                base.update(status="error", observed_values=[], reason_code="no_associated_photo_evidence")
-                checks.append(base)
+                checks.append({**base, "status": "error", "observed_values": [], "reason_code": "no_associated_photo_evidence"})
+                continue
+            if field == "部件名称" and (caption := _caption_matches(expected, entries)) is not None:
+                checks.append({
+                    **base,
+                    "status": "pass",
+                    "observed_values": [caption.get("subject")],
+                    "reason_code": "photo_caption_matches_report_value",
+                    "photo_location": photo_location(caption),
+                })
                 continue
 
-            observed = _observed_values_for_field(field, entries, all_ocr_by_key)
-            expected_compact = compact_layout(expected)
-            matched = any(expected_compact == compact_layout(value) for value in observed)
-            if matched:
-                base.update(
-                    status="pass",
-                    observed_values=observed,
-                    reason_code="exact_after_layout_whitespace_only",
-                )
-            elif expected_compact == "/":
-                if field in {"序列号/批号", "生产日期"} and any(
-                    compact_layout(value) == "见实物" for value in observed
-                ):
-                    reason = "report_placeholder_photo_refers_to_physical_object"
-                else:
-                    reason = "placeholder_content_not_reliably_localized"
-                base.update(status="manual", observed_values=observed, reason_code=reason)
-            elif observed:
-                # OCR-only disagreement does not directly become an error.
-                base.update(
-                    status="manual",
-                    observed_values=observed,
-                    reason_code="single_ocr_source_did_not_find_exact_content",
-                )
-            else:
-                base.update(
-                    status="manual",
-                    observed_values=[],
-                    reason_code="associated_photo_found_but_content_not_resolved",
-                )
-            checks.append(base)
+            def compare(pairs):
+                if normalized in PLACEHOLDERS:
+                    return compare_placeholder_with_photo(field, expected, pairs)
+                return compare_with_photo_text(field, expected, pairs, strict=field == "序列号/批号")
+
+            result = compare(_records_for(label_entries, lookup))
+            if result["status"] != "pass" and object_entries:
+                # 铭牌常拍在实物照片上：标签照片里找不到时，再识别该对象的实物照片。
+                result = compare(_records_for(entries, lookup))
+            observed = [result["observed_value"]] if result.get("observed_value") else []
+            checks.append({
+                **base,
+                "status": result["status"],
+                "observed_values": observed,
+                "reason_code": result["reason_code"],
+                "candidates": result.get("candidates") or {},
+                "ocr_channels": result.get("ocr_channels") or [],
+                "photo_location": result.get("photo_location"),
+            })
     return checks
+
+
+# ---------------------------------------------------------------------------
+# REPORT-R17：首页样品信息与照片页标签
+# ---------------------------------------------------------------------------
+
+PAGE3_PHOTO_FIELDS: tuple[tuple[str, str], ...] = (
+    ("样品名称", "部件名称"),
+    ("型号规格", "规格型号"),
+    ("产品编号/批号", "序列号/批号"),
+    ("生产日期", "生产日期"),
+    ("生产单位", "生产单位"),
+    ("委托方", "委托方"),
+    ("委托方地址", "委托方地址"),
+)
+R17_RULE_TEXT = (
+    "首页样品名称、型号规格、产品编号/批号、生产日期、生产单位、委托方及地址应能在照片页标签（或铭牌）中找到；"
+    "首页写“见…栏”或为“/”时不执行；只有一路识别或读不全时转人工"
+)
+
+
+def page3_photo_finding(
+    document: fitz.Document,
+    photos: Sequence[Mapping[str, Any]],
+    lookup: OcrLookup,
+    *,
+    ocr_available: bool,
+) -> dict[str, Any]:
+    from mvp.report_front_rules import extract_page3_fields
+
+    checks: list[dict[str, Any]] = []
+    fields = extract_page3_fields(document[2]) if document.page_count >= 3 else {}
+    # 首页信息不需要按对象关联：标题含“标签/铭牌”的照片（包括无对象名的“中文标签样张”）都算标签照片。
+    label_entries = [
+        entry for entry in photos
+        if entry.get("kind") == "label" or re.search(r"标签|铭牌", compact_layout(entry.get("title")))
+    ]
+    object_entries = [entry for entry in photos if entry.get("kind") == "object" and entry not in label_entries]
+    for index, (name, key_field) in enumerate(PAGE3_PHOTO_FIELDS, start=1):
+        field = fields.get(name)
+        value = (field or {}).get("value", "")
+        location = {
+            "document_role": "report",
+            "pdf_page": 3,
+            "rect": (field or {}).get("rect"),
+            "source": f"report_page3_{name}",
+        }
+        check = {"check_id": f"R17-{index:02d}", "field": name, "observed": value, "expected": None, "location": location}
+        normalized = compact_layout(value)
+        if field is None:
+            checks.append({**check, "status": "manual", "reason_code": "field_not_located", "message": f"第三页未定位到“{name}”"})
+            continue
+        if not normalized or normalized in PLACEHOLDERS:
+            checks.append({**check, "status": "not_applicable", "reason_code": "report_field_blank", "message": f"首页“{name}”为空或“/”，不与照片页比对"})
+            continue
+        if normalized.startswith("见"):
+            checks.append({**check, "status": "not_applicable", "reason_code": "report_refers_to_other_section", "message": f"首页“{name}”写“{display_text(value)}”，由样品描述表核对"})
+            continue
+        if not ocr_available:
+            checks.append({**check, "status": "manual", "reason_code": "photo_ocr_not_available", "message": f"本机没有可用的照片识别引擎，请人工核对首页“{name}”与照片页标签"})
+            continue
+
+        def compare(pairs):
+            if name == "生产日期":
+                return compare_date_with_photo(key_field, value, pairs)
+            return compare_with_photo_text(key_field, value, pairs, strict=False)
+
+        result = compare(_records_for(label_entries, lookup))
+        if result["status"] != "pass" and object_entries:
+            result = compare(_records_for([*label_entries, *object_entries], lookup))
+        text = display_text(value)
+        if result["status"] == "pass":
+            message = f"首页{name}“{text}”在照片页找到"
+        elif result["status"] == "error":
+            message = f"两路识别一致读出照片页{name}为“{result.get('observed_value')}”，与首页“{text}”不一致"
+        else:
+            candidates = "；".join(
+                f"{channel}：{'、'.join(values[:3])}" for channel, values in (result.get("candidates") or {}).items() if values
+            )
+            message = f"照片页未找到首页{name}“{text}”，请人工核对" + (f"（识别到的候选：{candidates}）" if candidates else "")
+        checks.append({
+            **check,
+            "status": result["status"],
+            "reason_code": result["reason_code"],
+            "message": message,
+            "candidates": result.get("candidates") or {},
+            "ocr_channels": result.get("ocr_channels") or [],
+            "photo_location": result.get("photo_location"),
+        })
+
+    counts = {key: sum(item["status"] == key for item in checks) for key in ("pass", "manual", "error", "not_applicable")}
+    status = _status_from(item["status"] for item in checks)
+    problems = [item for item in checks if item["status"] in {"error", "manual"}]
+    if problems:
+        head = "；".join(item["message"] for item in problems[:2])
+        prefix = []
+        if counts["error"]:
+            prefix.append(f"{counts['error']}处不一致")
+        if counts["manual"]:
+            prefix.append(f"{counts['manual']}处需人工复核")
+        summary = f"{'、'.join(prefix)}：{head}" + (f"等{len(problems)}处" if len(problems) > 2 else "")
+    else:
+        summary = f"首页样品信息在照片页均找到（{counts['pass']}项一致，{counts['not_applicable']}项不适用）"
+    evidence: list[dict[str, Any]] = []
+    for item in problems:
+        for location in (item.get("location"), item.get("photo_location")):
+            if location and isinstance(location.get("pdf_page"), int) and location.get("rect"):
+                evidence.append({"pdf_page": location["pdf_page"], "rects": [location["rect"]], "source": location.get("source", "report")})
+    return {
+        "id": "REPORT-R17",
+        "title": "首页样品信息与照片页标签",
+        "status": status,
+        "summary": summary,
+        "details": {"checks": checks, "counts": counts, "rule": R17_RULE_TEXT},
+        "evidence": evidence,
+    }
 
 
 def _presence_checks(
@@ -935,8 +1286,14 @@ def analyze_report_photo_rules(
     report_pdf: Path | str,
     label_ocr_json: Path | str | None,
     object_ocr_json: Path | str | None = None,
+    *,
+    ocr_provider: Any = None,
 ) -> dict[str, Any]:
-    """Run R02-R06 from the PDF plus already-produced, reproducible OCR JSON."""
+    """Run R02-R06 and R17 from the PDF plus photo OCR.
+
+    OCR comes either from ``ocr_provider`` (live local OCR, see ``mvp.photo_ocr``)
+    or from already-produced, reproducible OCR JSON files.
+    """
 
     report_path = Path(report_pdf)
     with fitz.open(report_path) as document:
@@ -944,31 +1301,29 @@ def analyze_report_photo_rules(
         identity, identity_diagnostics = parse_report_identity(document)
         photos, photo_diagnostics = parse_photo_entries(document)
 
-    label_ocr, label_ocr_diagnostics = load_ocr_records(label_ocr_json)
-    object_ocr, object_ocr_diagnostics = load_ocr_records(object_ocr_json)
-    label_ocr_by_key = {
-        key: record for record in label_ocr if (key := _record_key(record)) is not None
-    }
-    object_ocr_by_key = {
-        key: record for record in object_ocr if (key := _record_key(record)) is not None
-    }
-    all_ocr_by_key = {**object_ocr_by_key, **label_ocr_by_key}
+        label_ocr, label_ocr_diagnostics = load_ocr_records(label_ocr_json)
+        object_ocr, object_ocr_diagnostics = load_ocr_records(object_ocr_json)
+        json_records = {
+            key: record
+            for record in [*object_ocr, *label_ocr]
+            if (key := _record_key(record)) is not None
+        }
+        if ocr_provider is not None and getattr(ocr_provider, "available", False):
+            lookup: OcrLookup = ocr_provider.record_for
+            ocr_available = True
+        else:
+            lookup = lambda entry: _ocr_for_entry(entry, json_records)  # noqa: E731
+            ocr_available = bool(json_records)
 
-    label_photos = [entry for entry in photos if entry["kind"] == "label"]
-    object_photos = [entry for entry in photos if entry["kind"] == "object"]
-    label_associations = associate_rows_to_photos(rows, label_photos)
-    object_associations = associate_rows_to_photos(rows, object_photos)
-    all_associations = {
-        row["sequence"]: [
-            *object_associations.get(row["sequence"], []),
-            *label_associations.get(row["sequence"], []),
-        ]
-        for row in rows
-    }
+        label_photos = [entry for entry in photos if entry["kind"] == "label"]
+        object_photos = [entry for entry in photos if entry["kind"] == "object"]
+        label_associations = associate_rows_to_photos(rows, label_photos)
+        object_associations = associate_rows_to_photos(rows, object_photos)
 
-    r02_objects = _r02_objects(rows, identity, label_associations, label_ocr_by_key)
-    r03_dates = _r03_dates(rows, label_associations, label_ocr_by_key)
-    r04_cells = _r04_cells(rows, all_associations, all_ocr_by_key)
+        r02_objects = _r02_objects(rows, label_associations, lookup)
+        r03_dates = _r03_dates(rows, label_associations, lookup)
+        r04_cells = _r04_cells(rows, label_associations, object_associations, lookup)
+        r17 = page3_photo_finding(document, photos, lookup, ocr_available=ocr_available)
     r05_objects = _presence_checks(
         rows,
         object_associations,
@@ -988,7 +1343,7 @@ def analyze_report_photo_rules(
             "{pass}个对象字段一致，{manual}个待人工复核，{error}个缺少可核对中文标签，{not_applicable}个不适用",
             details_key="objects",
             additional_details={
-                "rule": "仅忽略排版空白；OCR单源差异不直接判错；法律角色不自动合并；未使用或非实物条目保留为不适用",
+                "rule": "样品描述表的名称、型号、序列号/批号、生产日期须能在该对象的中文标签照片中找到；仅忽略排版空白和全/半角；两路识别一致读出不同的序列号/批号或日期才判不一致，其余差异转人工；表中无该列或为空不执行；未使用或非实物条目不适用",
                 "identity_fields": identity,
             },
         ),
@@ -1010,7 +1365,7 @@ def analyze_report_photo_rules(
             "{pass}个非序号单元格找到可靠证据，{manual}个待人工复核，{error}个未找到关联照片证据，{not_applicable}个不适用",
             details_key="cell_checks",
             additional_details={
-                "rule": "样品描述中除序号外的每个非空单元格均纳入；明确未使用或非实物条目记录为不适用，实物条目按照片证据核对",
+                "rule": "样品描述中除序号、备注外的每个非空单元格须能在该对象的标签或实物照片中找到；空单元格和不存在的列不执行；明确未使用或非实物条目记录为不适用",
             },
         ),
         _finding(
@@ -1035,10 +1390,17 @@ def analyze_report_photo_rules(
         ),
     ]
 
+    sample_table_found = bool(rows)
+    for finding in findings:
+        finding["details"]["sample_table_found"] = sample_table_found
+    ocr_records = ocr_provider.records() if ocr_provider is not None and getattr(ocr_provider, "available", False) else []
     return {
         "report_pdf": str(report_path),
-        "rules_attempted": ["R02", "R03", "R04", "R05", "R06"],
+        "rules_attempted": ["R02", "R03", "R04", "R05", "R06", "R17"],
         "findings": findings,
+        "page3_photo_finding": r17,
+        "sample_table_found": sample_table_found,
+        "ocr_records": ocr_records,
         "sample_rows": rows,
         "photo_entries": photos,
         "diagnostics": {

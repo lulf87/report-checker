@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from collections import Counter
 import html
 import importlib
 import json
@@ -649,6 +650,36 @@ def _write_atomic(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
+def _declare_rule_execution_states(
+    mode: str,
+    findings: Sequence[Mapping[str, Any]],
+    ledger: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Explicit state per planned rule: findings -> succeeded, none -> not_applicable."""
+
+    from mvp.capabilities import MODE_CATALOG
+
+    finding_counts = Counter(str(item.get("rule_id") or "") for item in findings)
+    ledger_counts = Counter(str(item.get("rule_id") or "") for item in ledger)
+    states: dict[str, dict[str, Any]] = {}
+    for rule_id in MODE_CATALOG[mode]["rule_ids"]:
+        if finding_counts[rule_id]:
+            states[rule_id] = {"state": "succeeded"}
+        elif ledger_counts[rule_id]:
+            states[rule_id] = {
+                "state": "not_applicable",
+                "reason_code": "recorded_in_coverage_ledger",
+                "reason_detail": {"ledger_entries": ledger_counts[rule_id]},
+            }
+        else:
+            states[rule_id] = {
+                "state": "not_applicable",
+                "reason_code": "no_applicable_object_in_input",
+                "reason_detail": {"ledger_entries": 0},
+            }
+    return states
+
+
 def run_full_records(
     *,
     mode: str,
@@ -705,6 +736,9 @@ def run_full_records(
 
     findings = payload.get("findings", [])
     ledger = payload["ledger"]
+    if not payload.get("rule_execution_states"):
+        payload = dict(payload)
+        payload["rule_execution_states"] = _declare_rule_execution_states(mode, findings, ledger)
     counts = _finding_status_counts(findings)
     ledger_counts = _ledger_status_counts(ledger)
     result = dict(payload)

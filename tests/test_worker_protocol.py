@@ -28,8 +28,8 @@ def _report_self_result() -> dict:
         "mode": "report_self",
         "lifecycle_status": "succeeded",
         "machine_overall_status": "error",
-        "status_counts": {"pass": 11, "warning": 0, "manual": 0, "error": 1},
-        "coverage": {"planned": 12, "completed": 12},
+        "status_counts": {"pass": len(REPORT_SELF_RULE_ORDER) - 1, "warning": 0, "manual": 0, "error": 1},
+        "coverage": {"planned": len(REPORT_SELF_RULE_ORDER), "completed": len(REPORT_SELF_RULE_ORDER)},
         "findings": findings,
     }
 

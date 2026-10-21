@@ -69,9 +69,9 @@ class ReportSelfRunnerTests(unittest.TestCase):
 
             self.assertEqual(result["mode"], "report_self")
             self.assertEqual(result["machine_overall_status"], "error")
-            self.assertEqual(result["status_counts"], {"pass": 11, "warning": 0, "manual": 0, "error": 1})
-            self.assertEqual(result["coverage"]["planned"], 12)
-            self.assertEqual(result["coverage"]["completed"], 12)
+            self.assertEqual(result["status_counts"], {"pass": len(REPORT_SELF_RULE_ORDER) - 1, "warning": 0, "manual": 0, "error": 1})
+            self.assertEqual(result["coverage"]["planned"], len(REPORT_SELF_RULE_ORDER))
+            self.assertEqual(result["coverage"]["completed"], len(REPORT_SELF_RULE_ORDER))
             self.assertEqual([item["role"] for item in result["files"]], ["report"])
             self.assertTrue(result["source_integrity"][0]["unchanged"])
             self.assertTrue(all(item["id"].startswith("REPORT-") for item in result["findings"]))
@@ -86,10 +86,13 @@ class ReportSelfRunnerTests(unittest.TestCase):
     def test_four_real_reports_keep_the_frozen_baseline(self) -> None:
         root = Path(__file__).resolve().parents[1]
         expected = {
-            "1347": {"pass": 8, "warning": 0, "manual": 4, "error": 0},
-            "1539": {"pass": 8, "warning": 0, "manual": 4, "error": 0},
-            "2795": {"pass": 7, "warning": 0, "manual": 4, "error": 1},
-            "2948": {"pass": 7, "warning": 0, "manual": 4, "error": 1},
+            # R12～R16（2026-10-20）：2795 的检验项目“（除生物相容性，电磁兼容性）”用了逗号。
+            # 照片 OCR 关闭，结果与本机装了哪些识别引擎无关；R17 因此为人工复核。
+            # 1347、2948 的样品描述表没有日期列，R03 不执行。
+            "1347": {"pass": 14, "warning": 0, "manual": 4, "error": 0},
+            "1539": {"pass": 13, "warning": 0, "manual": 5, "error": 0},
+            "2795": {"pass": 12, "warning": 0, "manual": 4, "error": 2},
+            "2948": {"pass": 13, "warning": 0, "manual": 4, "error": 1},
         }
         with tempfile.TemporaryDirectory() as temporary:
             for sample, counts in expected.items():
@@ -97,11 +100,12 @@ class ReportSelfRunnerTests(unittest.TestCase):
                     result = run_report_self(
                         report_path=root / SAMPLE_CONFIGS[sample].report,
                         output_dir=Path(temporary) / sample,
+                        photo_ocr=False,
                     )
                     self.assertEqual(result["mode"], "report_self")
                     self.assertEqual(result["status_counts"], counts)
-                    self.assertEqual(result["coverage"]["planned"], 12)
-                    self.assertEqual(result["coverage"]["completed"], 12)
+                    self.assertEqual(result["coverage"]["planned"], len(REPORT_SELF_RULE_ORDER))
+                    self.assertEqual(result["coverage"]["completed"], len(REPORT_SELF_RULE_ORDER))
                     self.assertTrue(all(item["unchanged"] for item in result["source_integrity"]))
 
 

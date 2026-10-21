@@ -24,6 +24,7 @@ try:
 except ImportError:
     import fitz
 
+from mvp.record_flattened import adapt_flattened_record
 from mvp.checker import (
     accepted_numeric_candidate,
     compact,
@@ -238,6 +239,8 @@ def _native_status_box_groups(page: fitz.Page) -> list[dict[str, Any]]:
             for span in line.get("spans", []):
                 for character in span.get("chars", []):
                     glyph = character.get("c")
+                    if glyph == "£" and "Wingdings" in str(span.get("font") or ""):
+                        glyph = "\uf0a3"
                     bbox = fitz.Rect(character.get("bbox"))
                     # The three conformance columns begin at x=412.7.  This x
                     # guard excludes the three power-source option boxes on p9.
@@ -1542,6 +1545,18 @@ def _mapping_edges(
                 for target in segment
                 if source_text and source_text in report_texts[target]
             ]
+            # Row order bounds from the rows already paired around this one.
+            # Record and Report keep the same order, so a source row lying
+            # between two paired rows belongs between their Report rows.
+            paired = [
+                (edge_source, edge_target)
+                for edge_source, edge_target, _, _ in edges
+                if edge_source is not None and edge_target is not None
+            ]
+            lower = max((t for s, t in paired if s < source), default=-1)
+            upper = min((t for s, t in paired if s > source), default=len(report_rows))
+            source_lower = max((s for s, _ in paired if s < source), default=-1)
+            source_upper = min((s for s, _ in paired if s > source), default=len(source_rows))
             if len(exact) == 1:
                 selected = exact[0]
             else:
@@ -1556,10 +1571,35 @@ def _mapping_edges(
                     and _leading_requirement_marker(report_rows[target].requirement_raw)
                     == source_marker
                 ]
-                if len(marker_free) == 1:
+                # The same sentence can occur several times in one clause
+                # (8.5.1.3: "——符合GB 4943.1 对绝缘配合的要求" twice); the
+                # copy between the neighbouring pairs is the counterpart.
+                ordered_exact = [target for target in exact if target in remaining_report and lower < target < upper]
+                ordered_free = [target for target in free if lower < target < upper]
+                unpaired_in_gap = [
+                    index for index in range(source_lower + 1, source_upper) if index in remaining_source
+                ]
+                if len(ordered_exact) == 1:
+                    selected = ordered_exact[0]
+                elif len(marker_free) == 1:
                     selected = marker_free[0]
                 elif len(free) == 1:
                     selected = free[0]
+                elif ordered_free and source in unpaired_in_gap and len(ordered_free) == len(unpaired_in_gap):
+                    # The gap holds as many unpaired Record rows as free
+                    # Report rows: pair them in order.
+                    selected = ordered_free[unpaired_in_gap.index(source)]
+                elif (
+                    not source_marker
+                    and not ordered_free
+                    and lower in segment
+                    and lower != anchor_index
+                    and lower < upper
+                ):
+                    # An unlabelled line after a lettered item (15.5.3 d) is
+                    # followed by "耐压试验的结果"/"爬电距离") continues that
+                    # item rather than the clause heading.
+                    selected = lower
                 else:
                     # A single Report cell represents the remaining source
                     # rows when no continuation cell is available.
@@ -2742,6 +2782,23 @@ def _header_column(extracted: Sequence[Sequence[Any]], token: str) -> int:
     raise ValueError(f"Record numeric table lacks header {token!r}")
 
 
+def _row_with_text(table: fitz.table.Table, tokens: Sequence[str], fallback: int) -> int:
+    """Return the unique row whose text contains every token, else ``fallback``.
+
+    Table rows shift when a handwritten stroke crosses a border (the table
+    finder then adds a row) or when an export draws borders differently, so
+    fixed row numbers are only a fallback.
+    """
+
+    wanted = [compact(token) for token in tokens]
+    matches = [
+        index
+        for index, row in enumerate(table.extract())
+        if all(token in compact(" ".join(display_text(cell) for cell in row)) for token in wanted)
+    ]
+    return matches[0] if len(matches) == 1 else fallback
+
+
 def _body_numeric_cells(
     document: fitz.Document,
     page_identity: Mapping[int, tuple[int | None, int]],
@@ -2761,7 +2818,7 @@ def _body_numeric_cells(
             page,
             table,
             table_index=table_index,
-            row_index=9,
+            row_index=_row_with_text(table, ("额定电压", "4.11"), 9),
             cell_index=2,
             block="4.11",
             page_identity=page_identity,
@@ -2777,7 +2834,10 @@ def _body_numeric_cells(
         (index, item) for index, item in enumerate(tables)
         if _table_contains(item, "9.6.2.1") and item.row_count > 14
     )
-    for row_index, unit, sound_kind in ((13, "dB(A)", "audible"), (14, "dB(C)", "impulse")):
+    for row_index, unit, sound_kind in (
+        (_row_with_text(table, ("听觉报警信号",), 13), "dB(A)", "audible"),
+        (_row_with_text(table, ("脉冲或撞击声能",), 14), "dB(C)", "impulse"),
+    ):
         result["9.6"].append(
             _measurement_cell(
                 page,
@@ -3711,14 +3771,25 @@ def _record_identity_evidence(page: fitz.Page) -> list[dict[str, Any]]:
     line_candidates: list[fitz.Rect] = []
     for drawing in page.get_drawings():
         for item in drawing.get("items", []):
-            if not item or item[0] != "l":
+            if not item:
                 continue
-            start, end = item[1], item[2]
-            x0, x1 = sorted((float(start.x), float(end.x)))
-            y0, y1 = float(start.y), float(end.y)
+            if item[0] == "l":
+                start, end = item[1], item[2]
+                x0, x1 = sorted((float(start.x), float(end.x)))
+                y0, y1 = float(start.y), float(end.y)
+            elif item[0] == "re" and "f" in (drawing.get("type") or ""):
+                # Flattened exports (iOS 27) draw the underline as a thin
+                # filled bar; use its centre line.
+                bar = fitz.Rect(item[1])
+                if bar.height > 1.5:
+                    continue
+                x0, x1 = float(bar.x0), float(bar.x1)
+                y0 = y1 = (float(bar.y0) + float(bar.y1)) / 2
+            else:
+                continue
             if (
                 abs(y0 - y1) <= 0.5
-                and 180.0 <= x0 <= 200.0
+                and 178.0 <= x0 <= 200.0
                 and x1 - x0 >= 280.0
                 and 195.0 <= y0 <= 340.0
             ):
@@ -4712,7 +4783,9 @@ def run_record_61_full(
         raise ValueError(f"Report sequence 118 must have one physical row, got {len(report_118)}")
 
     with fitz.open(record_path) as record_document, fitz.open(report_path) as report_document:
+        record_input_adapter = adapt_flattened_record(record_document)
         record_status_rows, extraction = extract_record_61_status_rows(record_document)
+        extraction["input_adapter"] = record_input_adapter
         known_numeric_target_ids = _numeric_report_target_row_ids(report_body_rows)
         numeric_sequence_clauses: dict[int, str] = {}
         numeric_sequence_conflicts: set[int] = set()

@@ -102,7 +102,7 @@
     .results-workspace > .findings-card, .results-workspace > .comparison-card { margin-top: 0; min-width: 0; }
     .results-workspace:has(.comparison-card.visible) > .findings-card { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
     .results-workspace:has(.comparison-card.visible) .findings { max-height: calc(100vh - 196px); overflow: auto; padding-right: 2px; }
-    .comparison-card { display: none; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; scroll-margin-top: 16px; }
+    .comparison-card { display: none; grid-template-rows: auto auto auto minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; scroll-margin-top: 16px; }
     .comparison-card.visible { display: grid; min-height: 760px; }
     .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0; padding: 14px 16px 7px; }
     .comparison-head h2 { margin: 0; font-size: 18px; }
@@ -112,6 +112,31 @@
     .brief-detail { display: flex; max-height: 104px; flex-direction: column; gap: 3px; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .brief-evidence-link { width: fit-content; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-size: 11px; text-align: left; text-decoration: underline; cursor: pointer; }
     .brief-evidence-link:hover { color: var(--ink); }
+    .check-details { margin: 0 16px 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .check-details[hidden] { display: none; }
+    .check-details > summary { display: flex; align-items: center; gap: 8px; padding: 8px 11px; font-weight: 750; cursor: pointer; list-style: none; }
+    .check-details > summary::-webkit-details-marker { display: none; }
+    .check-details > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+    .check-details[open] > summary::before { transform: rotate(90deg); }
+    .check-count { color: var(--muted); font-size: 12px; font-weight: 500; }
+    .check-scroll { max-height: 260px; overflow: auto; border-top: 1px solid var(--line); }
+    .check-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.45; }
+    .check-table th { position: sticky; top: 0; z-index: 1; padding: 6px 8px; color: var(--muted); background: var(--soft); font-weight: 650; text-align: left; white-space: nowrap; }
+    .check-table td { padding: 6px 8px; border-top: 1px solid #e7eef0; vertical-align: top; word-break: break-word; }
+    .check-table tbody tr { cursor: pointer; }
+    .check-table tbody tr:hover td { background: #f7fbfb; }
+    .check-table tbody tr.is-active td { background: var(--teal-soft); }
+    .check-table .check-label { font-weight: 650; color: var(--ink); }
+    .check-table .check-sub, .check-table .check-note { display: block; color: var(--muted); font-size: 11px; }
+    .check-table .check-value { color: var(--ink); }
+    .check-table .check-empty { color: #8b979f; }
+    .loc-chip { display: inline-block; margin: 2px 4px 0 0; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--teal); background: #fff; font-size: 11px; line-height: 18px; }
+    .loc-chip:hover { border-color: var(--teal); background: var(--teal-soft); }
+    .check-result { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .check-result.pass { color: var(--pass); background: var(--pass-soft); }
+    .check-result.error { color: var(--error); background: var(--error-soft); }
+    .check-result.manual, .check-result.warning { color: var(--manual); background: var(--manual-soft); }
+    .check-result.info { color: var(--muted); background: var(--soft); }
     .pdf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; min-height: 0; height: 100%; margin: 0 16px 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }
     .pdf-grid.single-pane { grid-template-columns: 1fr; }
     .pdf-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #dbe2e7; }
@@ -253,6 +278,15 @@
         <div class="brief-copy"><div class="brief-title">请在上方 Finding 列表选择一项</div><div class="brief-detail">运行完成后显示 Report 与 Record 原始文件</div></div>
         <span class="finding-id">—</span>
       </div>
+      <details class="check-details" id="check-details" open hidden>
+        <summary>核对明细 <span class="check-count" id="check-count"></span></summary>
+        <div class="check-scroll">
+          <table class="check-table">
+            <thead><tr><th style="width:24%">检查内容</th><th style="width:30%" id="check-col-a">Report</th><th style="width:34%" id="check-col-b">对照</th><th style="width:12%">结果</th></tr></thead>
+            <tbody id="check-rows"></tbody>
+          </table>
+        </div>
+      </details>
       <div class="pdf-grid">
         <article class="pdf-pane" data-pane-role="report" data-finding-status="manual" aria-label="Report 原始 PDF">
           <div class="pdf-toolbar">
@@ -397,7 +431,7 @@
       return file;
     }
 
-    async function apiJson(path, options = {}) {
+    async function apiJson(path, options = {}, retried = false) {
       const method = String(options.method || "GET").toUpperCase();
       const headers = new Headers(options.headers || {});
       if (method !== "GET" && method !== "HEAD") {
@@ -414,6 +448,12 @@
       try { payload = await response.json(); } catch (_) { payload = null; }
       if (!response.ok) {
         const error = payload?.error;
+        // The local session token expires after 8 hours: fetch a new one
+        // and retry the request once instead of failing.
+        if (!retried && response.status === 403 && ["CSRF_TOKEN_EXPIRED", "CSRF_VALIDATION_FAILED"].includes(error?.code)) {
+          csrfToken = null;
+          return apiJson(path, options, true);
+        }
         throw new Error(error?.message || `状态 API 请求失败（HTTP ${response.status}）。`);
       }
       return payload;
@@ -458,6 +498,7 @@
     function setComparisonMessage(message) {
       comparisonBrief.querySelector(".brief-title").textContent = message;
       comparisonBrief.querySelector(".brief-detail").textContent = "运行完成后选择 Finding 可查看原始文件证据。";
+      document.getElementById("check-details").hidden = true;
       comparisonBrief.querySelector(".finding-id").textContent = "—";
     }
 
@@ -525,7 +566,7 @@
         title.textContent = item.title || item.rule_id || "核对结果";
         const detail = document.createElement("div");
         detail.className = "finding-detail";
-        detail.textContent = item.summary || item.details?.comparison?.reason_code || "—";
+        detail.textContent = listSummary(item);
         copy.append(id, title, detail);
         const evidence = document.createElement("span");
         evidence.className = "finding-id";
@@ -568,6 +609,334 @@
       });
     }
 
+    // ---- 核对明细：把每条结果的比对内容整理成“检查内容 / 两侧的值与位置 / 结果”表格 ----
+    const CHECK_RESULT_LABELS = Object.freeze({ pass: "一致", match: "一致", error: "不一致", mismatch: "不一致", manual: "待复核", warning: "警示", not_applicable: "不适用", excluded: "范围外", info: "信息" });
+    const REASON_TEXT = Object.freeze({
+      photo_text_contains_report_value: "照片识别文字中找到报告值",
+      name_parts_found_in_photo_text: "名称各部分均在照片中找到",
+      date_value_and_format_found_in_photo_text: "日期值和格式都与标签一致",
+      associated_photo_found: "找到关联照片",
+      value_within_bound: "实测值在限值内",
+      photo_ocr_not_available: "本机没有照片识别引擎",
+      record_report_status_match: "Record 符号与 Report 结果对应",
+      status_result_matched: "Record 勾选与 Report 结果对应",
+      paired_field_difference: "文字不完全相同（仅供参考，不影响结论）",
+      paired_field_unresolved: "一侧缺少该字段（仅供参考）",
+      project_name_match: "项目名称相同",
+      project_name_alias_match: "项目名称为已登记的等价写法",
+      TABLE3_OUT_OF_SCOPE: "数值在表3中，不在本模式范围",
+      record_cell_has_handwritten_text: "格内还有手写文字，转人工复核",
+      record_status_symbol_conflict: "格内找到不止一个可能的符号，无法确定",
+      record_status_symbol_not_found: "格内没有找到可识别的状态符号",
+      record_ink_geometry_unresolved: "笔画形状无法判断是哪种符号",
+      requirement_identity_abnormal: "该项的版式与已知模板不一致",
+      record_report_status_mismatch: "Record 符号与 Report 结果不对应",
+      status_result_mismatch: "Record 勾选与 Report 结果不对应",
+      merged_record_status_group_mismatch: "Report 合并行的结果与 Record 多行勾选不一致",
+      record_status_blank: "Record 状态栏没有勾",
+      status_box_blank: "Record 状态栏没有勾",
+      single_ink_column_resolved: "勾落在唯一一个状态框内",
+      record_measurement_not_uniquely_resolved: "手写数值无法唯一识别",
+      record_measurement_position_unresolved: "手写数值的位置无法确定",
+      record_percentage_occurrence_not_dual_recognised: "百分比手写值两路识别不一致",
+      report_mapping_missing: "Report 中没有对应行",
+      parent_clause_mismatch: "父条款不一致",
+      project_name_difference: "项目名称不同",
+      project_name_not_uniquely_resolved: "项目名称无法唯一确定",
+      field_comparisons_completed: "各字段已核对",
+      associated_photo_found_by_caption: "按照片标题找到关联照片",
+      date_format_differs_from_label: "日期格式与标签不一致",
+      date_value_differs_from_label: "日期值与标签不一致",
+      two_ocr_channels_agree_label_differs: "两路识别一致，但与报告值不同",
+      report_placeholder_but_photo_has_value: "报告填“/”，但标签上有值",
+      acceptance_criterion_not_resolved: "接受标准是文字描述，无法自动计算",
+      value_outside_bound: "实测值超出限值",
+      numeric_value_matched: "实测值与 Report 数值相同",
+      numeric_value_mismatch: "实测值与 Report 数值不同",
+      acceptance_limit_matched: "实测值满足标准限值",
+      acceptance_limit_mismatch: "实测值不满足标准限值",
+      acceptance_unit_conversion_unresolved: "单位无法换算，转人工",
+      handwriting_two_channel_agreement: "两路识别读数相同",
+      handwriting_not_read_by_two_channels: "没有两路识别读到同一个数",
+      handwriting_channels_disagree: "各路识别读数不同",
+      record_ink_cross_row_ambiguous: "笔画跨到相邻行，无法确定属于哪一行",
+      record_202_legend_unverified: "Record 末页符号图例未通过核对"
+    });
+    const CHANNEL_NAMES = Object.freeze({ apple_vision: "Apple Vision", tesseract: "Tesseract", ios_handwriting_layer: "iOS 手写识别层" });
+    function readingNote(reading) {
+      if (!reading || !reading.channels) return "";
+      const parts = Object.entries(reading.channels).map(([name, channel]) => {
+        const label = CHANNEL_NAMES[name] || name;
+        if (channel.status === "unavailable") return `${label}：本机不可用`;
+        const numbers = Array.isArray(channel.numbers) ? [...new Set(channel.numbers)] : [];
+        return `${label}：${numbers.length ? numbers.join("、") : "未读到数字"}`;
+      });
+      return parts.join("；");
+    }
+
+    function textOf(value) {
+      if (value === null || value === undefined || value === "") return "";
+      if (Array.isArray(value)) return value.map(textOf).filter(Boolean).join(" / ");
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+    function clip(value, limit = 90) {
+      const text = textOf(value).replace(/\s+/g, " ").trim();
+      return text.length > limit ? `${text.slice(0, limit)}…` : text;
+    }
+    function toLoc(location, role, label) {
+      if (!location) return null;
+      const bbox = location.bbox || location.rect;
+      const page = Number(location.pdf_page);
+      if (!Number.isInteger(page) || page < 1 || !validBbox(bbox)) return null;
+      return { role: role || location.document_role || location.role || "report", pdf_page: page, bbox: bbox.map(Number), semantic_role: label || location.source || "证据" };
+    }
+    function side(text, loc, title = "") { return { text: textOf(text), loc, title }; }
+    function reasonText(item) {
+      if (!item) return "";
+      return item.message || REASON_TEXT[item.reason_code] || REASON_TEXT[item.reason] || item.reason_code || item.reason || "";
+    }
+    function normStatus(status) {
+      const value = String(status || "info");
+      if (value === "match") return "pass";
+      if (value === "mismatch") return "error";
+      return value;
+    }
+
+    function selfCheckRows(finding) {
+      const d = finding.details || {};
+      const id = String(finding.rule_id || finding.id || "").split("@")[0];
+      const rows = [];
+      if (id === "REPORT-R01" && Array.isArray(d.comparisons)) {
+        d.comparisons.forEach(c => rows.push({ label: c.field, sub: "第三页 ↔ 首页",
+          a: side(c.page3, toLoc(c.page3_location, "report", "第三页")),
+          b: side(c.cover, toLoc(c.cover_location, "report", "首页"), "首页"),
+          status: c.match ? "pass" : "error" }));
+        const missing = new Set(d.missing_page3_fields || []);
+        (d.required_page3_fields || []).forEach(field => {
+          const raw = (d.page3_locations || {})[field];
+          const nums = typeof raw === "string" ? (raw.match(/-?\d+(?:\.\d+)?/g) || []).map(Number) : (Array.isArray(raw) ? raw : []);
+          const loc = nums.length === 4 ? toLoc({ pdf_page: 3, rect: nums }, "report", "第三页") : null;
+          rows.push({ label: field, sub: "第三页必填字段",
+            a: side((d.page3_fields || {})[field], loc), b: side("应已填写", null, "规则"),
+            status: missing.has(field) ? "error" : "pass" });
+        });
+      } else if (id === "REPORT-R02" && Array.isArray(d.objects)) {
+        d.objects.forEach(o => {
+          const fcs = Array.isArray(o.field_comparisons) && o.field_comparisons.length ? o.field_comparisons : [o];
+          fcs.forEach(fc => rows.push({ label: `${o.sequence ?? ""}. ${o.name || ""}`, sub: fc.field || "",
+            a: side(fc.report_value ?? o.name, toLoc(fc.report_location || o.report_location, "report", "样品描述")),
+            b: side(fc.observed_value || clip(Object.values(fc.candidates || {}).flat(), 60), toLoc(fc.photo_location, "report", "照片"), fc.photo_location?.photo_number ? `照片 №${fc.photo_location.photo_number}` : "照片"),
+            status: fc.status || o.status, note: reasonText(fc) }));
+        });
+      } else if (id === "REPORT-R03" && Array.isArray(d.comparisons)) {
+        d.comparisons.forEach(c => rows.push({ label: c.field || "日期", sub: c.report_format ? `格式 ${c.report_format}` : "",
+          a: side(c.report_value, toLoc(c.report_location, "report", "样品描述")),
+          b: side(c.label_value || c.observed_value, toLoc(c.photo_location, "report", "照片"), c.photo_location?.photo_number ? `照片 №${c.photo_location.photo_number}` : "标签"),
+          status: c.status, note: reasonText(c) }));
+      } else if (id === "REPORT-R04" && Array.isArray(d.cell_checks)) {
+        d.cell_checks.forEach(c => {
+          const photo = (c.photo_locations || [])[0] || c.photo_location;
+          rows.push({ label: `${c.sequence ?? ""}. ${c.name || ""}`, sub: c.field || "",
+            a: side(c.report_value, toLoc(c.report_location, "report", "样品描述")),
+            b: side(c.observed_value || c.matched_value || "", toLoc(photo, "report", "照片"), photo?.photo_number ? `照片 №${photo.photo_number}` : "照片"),
+            status: c.status, note: reasonText(c) });
+        });
+      } else if ((id === "REPORT-R05" || id === "REPORT-R06") && Array.isArray(d.objects)) {
+        d.objects.forEach(o => {
+          const photo = (o.photo_locations || [])[0];
+          rows.push({ label: `${o.sequence ?? ""}. ${o.name || ""}`, sub: id === "REPORT-R05" ? "实物照片" : "中文标签照片",
+            a: side(o.name, toLoc(o.report_location, "report", "样品描述")),
+            b: side((o.photo_numbers || []).length ? `照片 №${o.photo_numbers.join("、")}` : "", toLoc(photo, "report", "照片"), "照片页"),
+            status: o.status, note: reasonText(o) });
+        });
+      } else if (id === "REPORT-R07" && Array.isArray(d.item_checks)) {
+        d.item_checks.forEach(c => rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+          a: side(`${(c.results || []).length} 行结果：${clip(c.results, 60)}`, null),
+          b: side(`应为“${c.expected}”，实际“${c.actual}”`, toLoc(c.location, "report", "单项结论"), "单项结论"),
+          status: c.status }));
+      } else if (id === "REPORT-R07-B" && Array.isArray(d.comparisons)) {
+        d.comparisons.forEach(c => rows.push({ label: `序号 ${c.sequence ?? ""}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+          a: side(c.result, toLoc({ pdf_page: c.pdf_page, rect: c.result_rect }, "report", "检验结果")),
+          b: side(c.criterion?.source || clip(c.requirement, 80), null, "接受标准"),
+          status: c.status, note: reasonText(c) }));
+      } else if (id === "REPORT-R08" && Array.isArray(d.items)) {
+        d.items.forEach(c => rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+          a: side(c.missing_fields?.length ? `缺少：${c.missing_fields.join("、")}` : "项目、条款、要求、结果、单项结论均已填写", toLoc(c.location, "report", "检验结果")),
+          b: side("", null), status: c.status }));
+      } else if (id === "REPORT-R09") {
+        const got = d.new_sequence_order || [];
+        rows.push({ label: "新项目序号", a: side(got.length ? `${got[0]}–${got[got.length - 1]}（共 ${got.length} 个）` : "未识别", null),
+          b: side((d.expected_sequence_order || []).length ? `应从 1 连续到 ${d.expected_sequence_order.length}` : "", null, "规则"),
+          status: (d.errors || []).length ? "error" : "pass", note: (d.errors || []).join("；") });
+      } else if (id === "REPORT-R10" && Array.isArray(d.first_markers_by_page)) {
+        d.first_markers_by_page.forEach(m => rows.push({ label: `PDF 第 ${m.pdf_page} 页`, sub: "表格首项",
+          a: side(Array.isArray(m.first_marker) ? (m.first_marker[0] === "new" ? `新项目 ${m.first_marker[1]}` : `续 ${m.first_marker[1]}`) : textOf(m.first_marker), toLoc({ pdf_page: m.pdf_page, rect: [0, 0, 1, 1] }, "report", "页面")),
+          b: side("", null), status: "pass" }));
+        (d.errors || []).forEach(e => rows.push({ label: "跨页标注", a: side(e, null), b: side("", null), status: "error" }));
+      } else if (id === "REPORT-R11" && Array.isArray(d.page_states)) {
+        d.page_states.forEach(p => rows.push({ label: `PDF 第 ${p.pdf_page} 页`, sub: "页脚页码",
+          a: side(`第 ${p.printed_page ?? "?"} 页 / 共 ${p.printed_total ?? "?"} 页`, null), b: side("", null), status: p.status }));
+      } else if (Array.isArray(d.checks)) {
+        d.checks.forEach(c => {
+          const otherLoc = toLoc(c.photo_location || c.reference_location || c.expected_location, "report", "对照");
+          const otherTitle = c.photo_location?.photo_number ? `照片 №${c.photo_location.photo_number}` : (c.expected ? "应为" : "");
+          rows.push({ label: c.field || c.check_id, sub: c.check_id || "",
+            a: side(c.observed, toLoc(c.location, "report", c.field || "报告")),
+            b: side(c.expected ?? (c.photo_location ? "照片中找到" : ""), otherLoc, otherTitle),
+            status: c.status, note: c.message || reasonText(c) });
+        });
+      }
+      return rows;
+    }
+
+    function recordCheckRows(finding, recordRole) {
+      const d = finding.details || {};
+      const c = d.comparison || {};
+      const locs = Array.isArray(finding.evidence) ? finding.evidence : [];
+      const reportLoc = toLoc(locs.find(item => item.role === "report"), "report", "Report");
+      const recordLoc = toLoc(locs.find(item => item.role === recordRole), recordRole, "Record");
+      const rows = [];
+      const hasComparison = Object.keys(c).length > 0;
+      if (hasComparison) {
+        const fieldResult = (c.field_comparisons || {}).result;
+        const recordValue = c.record_symbol ?? c.record_status ?? fieldResult?.record_value ?? c.normalized_record_value ?? c.record_value ?? null;
+        const reportValue = c.report_result_physical ?? c.report_result ?? (d.report_results ? d.report_results.join(" / ") : null) ?? c.observed ?? c.expected;
+        const AGGREGATION = { physical_report_result: "Report 单行结果", split_report_rows_aggregated: "Report 多行合并后比较", merged_record_status_group: "Record 多行勾选合并后比较" };
+        rows.push({ label: c.record_symbol !== undefined ? "状态符号" : "勾选结果",
+          sub: c.result_aggregation ? (AGGREGATION[c.result_aggregation] || c.result_aggregation) : "",
+          a: side(reportValue, reportLoc), b: side(recordValue ?? "（未识别）", recordLoc),
+          status: normStatus(c.status?.decision || c.decision || finding.status), note: reasonText(c.status || c) });
+        Object.entries(c.field_comparisons || {}).forEach(([name, fc]) => {
+          if (name === "result") return;
+          const label = { project: "检验项目", clause: "条款", requirement: "标准要求", suggestion: "建议", condition: "建议/观察记录" }[name] || name;
+          rows.push({ label, sub: "辅助核对",
+            a: side(clip(fc.report_value ?? fc.report, 120), reportLoc), b: side(clip(fc.record_value ?? fc.record, 120), recordLoc),
+            status: fc.decision === "match" ? "pass" : "info", note: reasonText(fc) });
+        });
+        if (c.project && typeof c.project === "object") {
+          rows.push({ label: "检验项目", sub: "名称核对",
+            a: side((c.project.report_projects || []).join(" / "), reportLoc), b: side(c.project.record_project, recordLoc),
+            status: normStatus(c.project.decision), note: reasonText(c.project) });
+        }
+        if (c.numeric && typeof c.numeric === "object") {
+          const n = c.numeric;
+          const source = n.record_source === "handwriting_two_channel" ? "手写，两路识别一致" : n.record_source === "native_pdf_text" ? "PDF 文字" : "";
+          const notes = [reasonText(n)];
+          if (n.acceptance && n.acceptance.decision && n.acceptance.decision !== "not_applicable") notes.push(reasonText(n.acceptance));
+          const reading = readingNote(n.record_reading);
+          if (reading) notes.push(reading);
+          rows.push({ label: "实测数值", sub: source,
+            a: side((n.report_values || []).join(" / ") || n.report_value, reportLoc),
+            b: side(n.record_value ?? n.record_values ?? (n.record_reading ? "（手写，未能确定）" : ""), recordLoc),
+            status: normStatus(n.decision), note: notes.filter(Boolean).join("。") });
+        }
+      }
+      if (!rows.length && Array.isArray(d.page_states)) {
+        const reportNumberLoc = toLoc({ pdf_page: d.report_pdf_page, bbox: d.report_bbox }, "report", "Report 首页编号");
+        const STATE_TEXT = { explicit_missing: "（空白）", malformed: "（格式无法识别）", unreadable_or_unsupported: "（无法读取）" };
+        d.page_states.forEach(state => {
+          const value = state.parsed_number || STATE_TEXT[state.state] || state.state;
+          const ok = state.state === "parsed" && state.parsed_number === d.report_number;
+          rows.push({ label: `第 ${state.pdf_page} 页 报告编号`, sub: "页眉“编号”",
+            a: side(d.report_number || "（未读到）", reportNumberLoc),
+            b: side(value, toLoc(state, recordRole, `Record 第 ${state.pdf_page} 页编号`)),
+            status: ok ? "pass" : state.state === "unreadable_or_unsupported" ? "manual" : "error",
+            note: ok ? "编号相同" : state.state === "explicit_missing" ? "编号空白" : state.state === "parsed" ? "编号不同" : "" });
+        });
+      }
+      if (!rows.length) {
+        locs.forEach((location, index) => {
+          const loc = toLoc(location, location.role, location.semantic_role);
+          if (!loc) return;
+          const isRecord = location.role === recordRole;
+          rows.push({ label: `证据 ${index + 1}`, sub: location.semantic_role || "",
+            a: side(isRecord ? "" : "见高亮位置", isRecord ? null : loc), b: side(isRecord ? "见高亮位置" : "", isRecord ? loc : null),
+            status: normStatus(finding.status), note: index === 0 ? (finding.summary || "") : "" });
+        });
+      }
+      return rows;
+    }
+
+    function listSummary(item) {
+      const d = item.details || {};
+      const c = d.comparison || {};
+      if (c.record_symbol !== undefined && Array.isArray(d.report_results)) {
+        const where = d.record_item ? `项目${d.record_item}第${d.record_logical_row}行：` : "";
+        const value = c.numeric && c.numeric.record_value ? ` ${c.numeric.record_value}` : "";
+        return `${where}Record ${c.record_symbol || "未识别"}${value} ↔ Report ${d.report_results.join(" / ") || "—"}`;
+      }
+      return item.summary || c.reason_code || "—";
+    }
+
+    async function focusCheckRow(row, which) {
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      const status = normStatus(row.status) === "info" ? "pass" : normStatus(row.status);
+      const reportLocs = [row.a.loc, row.b.loc].filter(loc => loc && loc.role === "report");
+      const recordLocs = [row.a.loc, row.b.loc].filter(loc => loc && meta.recordRole && loc.role === meta.recordRole);
+      if (which) {
+        const loc = row[which].loc;
+        if (!loc) return;
+        if (loc.role === "report") await reportPane.setFinding(status, [loc]);
+        else await recordPane.setFinding(status, [loc]);
+        return;
+      }
+      if (reportLocs.length) await reportPane.setFinding(status, reportLocs);
+      if (recordLocs.length) await recordPane.setFinding(status, recordLocs);
+    }
+
+    function renderCheckDetails(finding) {
+      const box = document.getElementById("check-details");
+      const body = document.getElementById("check-rows");
+      const meta = MODE_META[activeMode] || MODE_META.self;
+      const rows = meta.recordRole ? recordCheckRows(finding, meta.recordRole) : selfCheckRows(finding);
+      body.replaceChildren();
+      document.getElementById("check-col-a").textContent = meta.recordRole ? "Report（位置 · 内容）" : "报告中的位置 · 内容";
+      document.getElementById("check-col-b").textContent = meta.recordRole ? "Record（位置 · 内容）" : "对照对象（首页 / 照片 / 规则）";
+      if (!rows.length) { box.hidden = true; return; }
+      const order = { error: 0, manual: 1, warning: 2, pass: 3, info: 4 };
+      rows.sort((x, y) => (order[normStatus(x.status)] ?? 5) - (order[normStatus(y.status)] ?? 5));
+      const counts = rows.reduce((acc, row) => { const key = normStatus(row.status); acc[key] = (acc[key] || 0) + 1; return acc; }, {});
+      document.getElementById("check-count").textContent = `${rows.length} 项` + Object.entries(counts).filter(([key]) => key !== "info").map(([key, n]) => ` · ${CHECK_RESULT_LABELS[key] || key} ${n}`).join("");
+      const cell = (sideValue, key, row) => {
+        const td = document.createElement("td");
+        if (sideValue.title) { const t = document.createElement("span"); t.className = "check-sub"; t.textContent = sideValue.title; td.append(t); }
+        const v = document.createElement("span");
+        v.className = sideValue.text ? "check-value" : "check-empty";
+        v.textContent = sideValue.text ? clip(sideValue.text, 140) : "—";
+        if (sideValue.text && sideValue.text.length > 140) v.title = sideValue.text;
+        td.append(v);
+        if (sideValue.loc) {
+          const chip = document.createElement("button");
+          chip.type = "button"; chip.className = "loc-chip";
+          chip.textContent = `${sideValue.loc.role === "report" ? (meta.recordRole ? "Report" : "报告") : "Record"} 第 ${sideValue.loc.pdf_page} 页`;
+          chip.addEventListener("click", event => { event.stopPropagation(); setActive(); focusCheckRow(row, key); });
+          td.append(document.createElement("br"), chip);
+        }
+        return td;
+      };
+      let tr;
+      function setActive() { body.querySelectorAll("tr.is-active").forEach(el => el.classList.remove("is-active")); tr.classList.add("is-active"); }
+      rows.forEach(row => {
+        const current = document.createElement("tr");
+        tr = current;
+        const label = document.createElement("td");
+        const l = document.createElement("span"); l.className = "check-label"; l.textContent = row.label || "—"; label.append(l);
+        if (row.sub) { const s = document.createElement("span"); s.className = "check-sub"; s.textContent = row.sub; label.append(s); }
+        const result = document.createElement("td");
+        const badge = document.createElement("span");
+        const key = normStatus(row.status);
+        badge.className = `check-result ${key}`;
+        badge.textContent = key === "info" ? "参考" : (CHECK_RESULT_LABELS[key] || key);
+        result.append(badge);
+        if (row.note) { const n = document.createElement("span"); n.className = "check-note"; n.textContent = row.note; result.append(n); }
+        current.append(label, cell(row.a, "a", row), cell(row.b, "b", row), result);
+        current.addEventListener("click", () => { body.querySelectorAll("tr.is-active").forEach(el => el.classList.remove("is-active")); current.classList.add("is-active"); focusCheckRow(row); });
+        body.append(current);
+      });
+      box.hidden = false;
+    }
+
     async function showFindingComparison(finding) {
       if (!finding || !activeRun) return;
       const token = ++comparisonToken;
@@ -588,6 +957,7 @@
       badge.textContent = STATUS_LABELS[status] || status;
       comparisonBrief.querySelector(".brief-title").textContent = finding.title || finding.rule_id || "核对结果";
       renderFindingBrief(finding, reportLocations);
+      renderCheckDetails(finding);
       comparisonBrief.querySelector(".finding-id").textContent = finding.id || "—";
       if (!reportDocument) {
         clearPane(reportPane, "缺少 Report 文档信息。");

@@ -110,9 +110,10 @@ class FullReportPhoto2795IntegrationTests(unittest.TestCase):
         self.assertEqual(
             {rule: findings[rule]["status"] for rule in findings},
             {
-                "REPORT-R02": "manual",
-                "REPORT-R03": "manual",
-                "REPORT-R04": "manual",
+                # 2026-10-20 起按“报告值能否在照片识别文字中找到”判定，2795 的 Vision 识别结果全部可确认。
+                "REPORT-R02": "pass",
+                "REPORT-R03": "pass",
+                "REPORT-R04": "pass",
                 "REPORT-R05": "pass",
                 "REPORT-R06": "pass",
             },
@@ -130,25 +131,35 @@ class FullReportPhoto2795IntegrationTests(unittest.TestCase):
             self.assertEqual(missing, [])
             self.assertEqual(not_applicable, [6, 7, 12, 13, 15, 17, 19, 20, 21])
 
-    def test_r02_and_r03_preserve_ocr_uncertainty(self) -> None:
+    def test_r02_and_r03_use_report_values_found_in_photo_text(self) -> None:
         findings = {item["id"]: item for item in self.analysis["findings"]}
         r02_objects = findings["REPORT-R02"]["details"]["objects"]
         self.assertEqual(
             {status: sum(item["status"] == status for item in r02_objects) for status in ("pass", "manual", "error")},
-            {"pass": 7, "manual": 5, "error": 0},
+            {"pass": 12, "manual": 0, "error": 0},
         )
         self.assertEqual(
             sum(item["status"] == "not_applicable" for item in r02_objects),
             9,
         )
         r03 = findings["REPORT-R03"]["details"]["comparisons"]
-        self.assertEqual(sum(item["status"] == "pass" for item in r03), 7)
-        self.assertEqual(sum(item["status"] == "manual" for item in r03), 5)
+        self.assertEqual(sum(item["status"] == "pass" for item in r03), 12)
+        self.assertEqual(sum(item["status"] == "manual" for item in r03), 0)
         self.assertEqual(sum(item["status"] == "not_applicable" for item in r03), 9)
         placeholders = [
-            item for item in r03 if item["reason_code"] == "date_not_stated_on_both_sides"
+            item for item in r03 if item["reason_code"] == "report_placeholder_and_photo_has_no_value"
         ]
         self.assertEqual([item["sequence"] for item in placeholders], [10, 11, 14, 16, 18])
+
+    def test_page3_fields_are_found_on_label_photos(self) -> None:
+        r17 = self.analysis["page3_photo_finding"]
+        self.assertEqual(r17["status"], "pass")
+        statuses = {item["field"]: item["status"] for item in r17["details"]["checks"]}
+        self.assertEqual(statuses["样品名称"], "pass")
+        self.assertEqual(statuses["生产单位"], "pass")
+        self.assertEqual(statuses["委托方地址"], "pass")
+        # 首页写“见‘样品描述’栏”的字段由样品描述表核对。
+        self.assertEqual(statuses["型号规格"], "not_applicable")
 
     def test_every_issue_has_a_real_report_or_photo_coordinate(self) -> None:
         for finding in self.analysis["findings"]:

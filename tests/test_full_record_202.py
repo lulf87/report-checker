@@ -93,7 +93,8 @@ class FullRecord202Tests(unittest.TestCase):
 
     def test_status_clustering_reduces_manual_rows_on_all_frozen_samples(self) -> None:
         expected_decisions = {
-            "1539": {"match": 165, "manual": 10},
+            # 2026-10-21: item 10 row 22 is a hooked tick, now recognised.
+            "1539": {"match": 166, "manual": 9},
             "2795": {"match": 158, "manual": 13, "mismatch": 4},
             "2948": {"match": 159, "manual": 15, "mismatch": 1},
         }
@@ -123,7 +124,7 @@ class FullRecord202Tests(unittest.TestCase):
                         for key in ink
                     )
                 )
-        self.assertEqual(manual_total, 38)
+        self.assertEqual(manual_total, 37)
 
     def test_five_frozen_open_triangles_are_resolved_without_global_relaxation(self) -> None:
         expected = {

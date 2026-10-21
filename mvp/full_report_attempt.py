@@ -285,6 +285,183 @@ def _public_criterion(criterion: dict[str, Any] | None) -> dict[str, Any] | None
     }
 
 
+
+# ---------------------------------------------------------------------------
+# 2026-10-20 扩充：偏差写法、SI 词头换算和更多中文限值措辞。
+# 只在语义唯一时自动判定；有歧义的写法仍转人工。
+# ---------------------------------------------------------------------------
+
+_SI_PREFIX = {
+    "n": Decimal("1e-9"), "μ": Decimal("1e-6"), "µ": Decimal("1e-6"), "u": Decimal("1e-6"),
+    "m": Decimal("1e-3"), "": Decimal(1), "k": Decimal(1000), "K": Decimal(1000),
+    "M": Decimal("1e6"), "G": Decimal("1e9"),
+}
+_SI_BASES = ("Hz", "Ω", "V", "A", "s", "J", "W")
+# 结果后面带一个括号符号（如“0.05 (−)”）时，只在上限判定中按绝对值比较。
+_ANNOTATION_SUFFIXES = {"(-)", "(+)", "(&)", "(－)", "(＋)", "(−)"}
+
+
+def _unit_factor(unit: str | None) -> tuple[str, Decimal] | None:
+    if unit is None:
+        return None
+    value = unit.replace("sec", "s").replace("（", "(").replace("）", ")")
+    value = re.sub(r"\(.*\)$", "", value)
+    for base in sorted(_SI_BASES, key=len, reverse=True):
+        if value.endswith(base):
+            prefix = value[: -len(base)]
+            if prefix in _SI_PREFIX:
+                return base, _SI_PREFIX[prefix]
+    return None
+
+
+def _convert(value: Decimal, unit: str | None, target: str | None) -> Decimal | None:
+    """Convert ``value`` from ``unit`` to ``target`` within one SI base unit."""
+
+    if not unit or not target or unit == target:
+        return value
+    source, goal = _unit_factor(unit), _unit_factor(target)
+    if source is None or goal is None or source[0] != goal[0]:
+        return None
+    return value * source[1] / goal[1]
+
+
+def _result_values(parsed: dict[str, Any]) -> list[Decimal]:
+    return [parsed["low"], parsed["high"]] if parsed["kind"] == "range" else [parsed["value"]]
+
+
+def _interval_decision(parsed: dict[str, Any], low: Decimal, high: Decimal, reason: str, criterion: dict[str, Any]) -> dict[str, Any] | None:
+    if parsed["kind"] == "scalar" and parsed.get("operator") != "=":
+        return None
+    values = _result_values(parsed)
+    passed = all(low <= value <= high for value in values)
+    return {
+        "status": "pass" if passed else "error",
+        "reason": f"{reason}_within_tolerance" if passed else f"{reason}_exceeds_tolerance",
+        "criterion": _public_criterion(criterion),
+    }
+
+
+def _has_bound_words(text: str) -> bool:
+    if any(word in text for word in (*UPPER_WORDS, *LOWER_WORDS, "低于", "小于", "大于", "高于")):
+        return True
+    # “以下要求”不是限值；“40dB 以下”才是。
+    return bool(re.search(r"\d+(?:\.\d+)?[A-Za-zµμΩ%°()（）]*以(?:下|上)", text))
+
+
+_TOLERANCE_WORDS = ("允差", "允许误差", "误差", "精度", "偏差")
+
+
+def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """Results written as deviations from a nominal value with a ± tolerance."""
+
+    if _has_bound_words(text):
+        return None
+    if parsed.get("unit") == "%":
+        percent_tolerances = {Decimal(value) for value in re.findall(r"±(\d+(?:\.\d+)?)%", text)}
+        asymmetric = re.search(r"\+(\d+(?:\.\d+)?)%/[-－](\d+(?:\.\d+)?)%|[-－](\d+(?:\.\d+)?)%/\+(\d+(?:\.\d+)?)%", text)
+        if asymmetric and not percent_tolerances:
+            if asymmetric.group(1) is not None:
+                high, low = Decimal(asymmetric.group(1)), -Decimal(asymmetric.group(2))
+            else:
+                low, high = -Decimal(asymmetric.group(3)), Decimal(asymmetric.group(4))
+            criterion = {"kind": "interval", "low": low, "high": high, "unit": "%", "source": asymmetric.group(0)}
+            return _interval_decision(parsed, low, high, "percent_deviation", criterion)
+        if not percent_tolerances:
+            return None
+        if len(percent_tolerances) > 1 and not re.search(r"取(?:最)?大值?", text):
+            return None
+        tolerance = max(percent_tolerances)
+        criterion = {"kind": "interval", "low": -tolerance, "high": tolerance, "unit": "%", "source": f"±{tolerance}%"}
+        return _interval_decision(parsed, -tolerance, tolerance, "percent_deviation", criterion)
+
+    if parsed.get("unit") is not None:
+        return None
+    signed = re.fullmatch(r"[+-]\d+(?:\.\d+)?(?:～[+-]\d+(?:\.\d+)?)?", _normalized_math(result_text))
+    if not signed:
+        return None
+    tolerances = list(re.finditer(r"±(?P<t>\d+(?:\.\d+)?)(?![\d.])(?P<tu>[A-Za-zµμΩ]*)(?![%\d])", text))
+    if len({(match.group("t"), match.group("tu")) for match in tolerances}) != 1:
+        return None
+    match = tolerances[0]
+    nominal = re.search(
+        r"(?<![\d.])(?P<c>\d+(?:\.\d+)?)(?P<cu>[A-Za-zµμΩ]*)[:：]?$",
+        text[: match.start()],
+    )
+    tolerance_unit = match.group("tu") or (nominal.group("cu") if nominal else "") or None
+    target = _declared_unit(text) or tolerance_unit
+    tolerance = _convert(_parse_number(match.group("t")), tolerance_unit, target)
+    if tolerance is None:
+        return None
+    values = _result_values(parsed)
+    if nominal is not None:
+        center_unit = nominal.group("cu") or match.group("tu") or None
+        center = _convert(_parse_number(nominal.group("c")), center_unit, target)
+        if center is None:
+            return None
+        # 带正负号的结果只有在“按绝对值理解不可能合格”时才按偏差处理，避免两种理解都说得通。
+        if any(abs(value) >= center - tolerance for value in values):
+            return None
+    elif not any(word in text for word in _TOLERANCE_WORDS):
+        return None
+    criterion = {"kind": "interval", "low": -tolerance, "high": tolerance, "unit": target, "source": match.group(0)}
+    return _interval_decision(parsed, -tolerance, tolerance, "signed_deviation", criterion)
+
+
+def _extra_criterion(text: str) -> dict[str, Any] | None:
+    units = rf"(?:{_NUMERIC_UNITS}|mJ|J|A|W|dB)"
+    patterns = (
+        (rf"(?:不应|应不|不得|不)低于[^0-9。；;]*?(\d+(?:\.\d+)?)({units})?", "lower", True),
+        (rf"不应[^。；;]*?降到?(\d+(?:\.\d+)?)({units})?[^。；;]*?以下", "lower", True),
+        (rf"(?<!不)(?<!不应)(?<!应不)小于(\d+(?:\.\d+)?)({units})?", "upper", False),
+        (rf"(?<!不)(?<!不应)(?<!应不)低于(\d+(?:\.\d+)?)({units})?", "upper", False),
+    )
+    for pattern, kind, inclusive in patterns:
+        if match := re.search(pattern, text):
+            return {
+                "kind": kind,
+                "value": _parse_number(match.group(1)),
+                "inclusive": inclusive,
+                "unit": match.group(2) or _declared_unit(text),
+                "source": match.group(0),
+            }
+    if match := re.search(r"应?在(\d+(?:\.\d+)?)%(?:以)?内", text):
+        bound = _parse_number(match.group(1))
+        return {"kind": "interval", "low": -bound, "high": bound, "unit": "%", "source": match.group(0)}
+    if match := re.search(
+        r"(?:包含在|在)(\d+(?:\.\d+)?)([A-Za-zµμΩ]+)～(\d+(?:\.\d+)?)([A-Za-zµμΩ]+)的?(?:频段|范围)",
+        text,
+    ):
+        target = _declared_unit(text) or match.group(4)
+        low = _convert(_parse_number(match.group(1)), match.group(2), target)
+        high = _convert(_parse_number(match.group(3)), match.group(4), target)
+        if low is not None and high is not None:
+            return {"kind": "interval", "low": low, "high": high, "unit": target, "source": match.group(0)}
+    return None
+
+
+def _criterion_in_result_unit(criterion: dict[str, Any], text: str, parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the criterion expressed in the result unit, or ``None`` if units cannot be reconciled."""
+
+    result_unit = "%" if parsed.get("unit") == "%" else _declared_unit(text)
+    criterion_unit = criterion.get("unit")
+    if result_unit == "%" or criterion_unit == "%":
+        return criterion if result_unit == criterion_unit else None
+    if not criterion_unit or not result_unit or criterion_unit == result_unit:
+        return criterion
+    if criterion_unit.startswith("dB") and result_unit.startswith("dB"):
+        return criterion
+    converted = dict(criterion)
+    for key in ("value", "low", "high"):
+        if key in converted:
+            value = _convert(converted[key], criterion_unit, result_unit)
+            if value is None:
+                return None
+            converted[key] = value
+    converted["unit"] = result_unit
+    converted["converted_from"] = criterion_unit
+    return converted
+
+
 def evaluate_numeric_measurement(requirement: str, result_text: str) -> dict[str, Any]:
     """Evaluate one Report result against its acceptance text.
 
@@ -296,8 +473,29 @@ def evaluate_numeric_measurement(requirement: str, result_text: str) -> dict[str
         return {"status": "manual", "reason": "unsupported_numeric_result_syntax", "criterion": None}
     parsed = _parse_result(result_text)
 
+    text = _normalized_math(requirement)
     if parsed.get("suffix"):
+        criterion = _criterion_from_requirement(requirement)
+        if (
+            _compact(parsed["suffix"]) in _ANNOTATION_SUFFIXES
+            and criterion is not None
+            and criterion["kind"] == "upper"
+            and parsed["operator"] == "="
+            and (criterion := _criterion_in_result_unit(criterion, text, parsed)) is not None
+        ):
+            value = abs(parsed["value"])
+            bound = criterion["value"]
+            passed = value <= bound if criterion["inclusive"] else value < bound
+            return {
+                "status": "pass" if passed else "error",
+                "reason": "annotated_value_within_bound" if passed else "annotated_value_exceeds_bound",
+                "criterion": _public_criterion(criterion),
+            }
         return {"status": "manual", "reason": "numeric_result_has_unconfirmed_suffix", "criterion": None}
+
+    deviation = _deviation_decision(text, result_text, parsed)
+    if deviation is not None:
+        return deviation
 
     nominal_tolerance = re.search(
         r"(?P<center>\d+(?:\.\d+)?)(?P<u>[A-Za-zµμ]+)±(?P<t>\d+(?:\.\d+)?)(?P=u)",
@@ -315,14 +513,21 @@ def evaluate_numeric_measurement(requirement: str, result_text: str) -> dict[str
             "criterion": None,
         }
 
-    if _unit_scale_conflict(requirement):
-        return {
-            "status": "manual",
-            "reason": "unit_prefix_conversion_required_but_disabled",
-            "criterion": None,
-        }
-
     criterion = _criterion_from_requirement(requirement)
+    if criterion is None:
+        criterion = _extra_criterion(text)
+    if _unit_scale_conflict(requirement) or (criterion is not None and criterion.get("unit") != _declared_unit(text)):
+        # 限值和结果单位不同（如 MΩ 与 GΩ、Hz 与 kHz）时按 SI 词头换算；无法换算才转人工。
+        converted = _criterion_in_result_unit(criterion, text, parsed) if criterion is not None else None
+        if converted is None:
+            if _unit_scale_conflict(requirement):
+                return {
+                    "status": "manual",
+                    "reason": "unit_prefix_conversion_required_but_disabled",
+                    "criterion": None,
+                }
+        else:
+            criterion = converted
     public_criterion = _public_criterion(criterion)
     if criterion is None:
         return {"status": "manual", "reason": "acceptance_criterion_not_resolved", "criterion": None}
