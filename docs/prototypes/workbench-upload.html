@@ -190,6 +190,65 @@
       .pdf-pane { min-height: 620px; }
       .pdf-pane + .pdf-pane { border-top: 1px solid var(--line); border-left: 0; }
     }
+
+    /* ---- 上传区：步骤、模式卡片、拖放框 ---- */
+    .step-title { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; font-size: 15px; }
+    .step-title + .mode-cards { margin-bottom: 20px; }
+    .step-no { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: #fff; background: var(--teal); font-size: 12px; font-weight: 800; }
+    .mode-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .mode-card { display: grid; align-content: start; gap: 6px; min-height: 124px; padding: 12px 13px; border: 1.5px solid var(--line); border-radius: 9px; color: var(--ink); background: #fff; text-align: left; }
+    .mode-card:hover:not(:disabled) { border-color: #8fbcc2; }
+    .mode-card[aria-checked="true"] { border-color: var(--teal); background: var(--teal-soft); box-shadow: inset 0 0 0 1px var(--teal); }
+    .mode-card:disabled { cursor: not-allowed; opacity: .55; background: var(--soft); }
+    .mode-name { font-weight: 800; font-size: 14px; }
+    .mode-desc { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .mode-need { margin-top: auto; color: var(--teal); font-size: 12px; font-weight: 700; }
+    .drop-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .dropzone { display: grid; gap: 4px; min-height: 96px; padding: 14px 16px; border: 1.5px dashed #9fbcc2; border-radius: 9px; background: var(--soft); cursor: pointer; font-size: 13px; font-weight: 400; }
+    .dropzone:hover, .dropzone.drag-over { border-color: var(--teal); background: var(--teal-soft); }
+    .dropzone.has-file { border-style: solid; border-color: #9fc7b0; background: var(--pass-soft); }
+    .dropzone.is-wrong { border-style: solid; border-color: #e3a3a3; background: var(--error-soft); }
+    .drop-title { color: var(--ink); font-size: 14px; font-weight: 800; }
+    .drop-hint { color: var(--muted); font-size: 12px; }
+    .drop-file { color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
+    .drop-file:empty { display: none; }
+    .drop-file .ok { color: var(--pass); font-weight: 700; }
+    .drop-file .bad { color: var(--error); font-weight: 700; }
+    .drop-file .warn { color: var(--manual); font-weight: 700; }
+    .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .file-check { margin-top: 10px; padding: 10px 12px; border-radius: 7px; font-size: 13px; }
+    .file-check[hidden] { display: none; }
+    .file-check.error { color: var(--error); background: var(--error-soft); }
+    .file-check.warning { color: var(--manual); background: var(--manual-soft); }
+    .file-check label { display: inline-flex; gap: 6px; align-items: center; margin-top: 6px; color: var(--ink); font-size: 12px; font-weight: 400; }
+    .advanced { margin-top: 14px; color: var(--muted); font-size: 13px; }
+    .advanced summary { width: fit-content; cursor: pointer; }
+    .advanced .grid { margin-top: 10px; }
+    .primary.big { min-width: 150px; min-height: 42px; font-size: 15px; }
+    /* ---- 进度与错误 ---- */
+    .status-card[hidden] { display: none; }
+    .progress-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 14px 0 12px; padding: 0; list-style: none; counter-reset: step; }
+    .progress-steps li { position: relative; padding: 7px 8px 7px 30px; border-radius: 6px; color: var(--muted); background: var(--soft); font-size: 12px; font-weight: 700; counter-increment: step; }
+    .progress-steps li::before { content: counter(step); position: absolute; left: 8px; top: 50%; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #fff; background: #aac0c5; font-size: 10px; transform: translateY(-50%); }
+    .progress-steps li.done { color: var(--pass); background: var(--pass-soft); }
+    .progress-steps li.done::before { content: "✓"; background: var(--pass); }
+    .progress-steps li.active { color: var(--teal); background: var(--teal-soft); }
+    .progress-steps li.active::before { background: var(--teal); animation: pulse 1.2s ease-in-out infinite; }
+    .progress-steps li.failed { color: var(--error); background: var(--error-soft); }
+    .progress-steps li.failed::before { content: "!"; background: var(--error); }
+    @keyframes pulse { 50% { opacity: .45; } }
+    .tech-line { margin: 8px 0 0; color: #8aa0a6; font-size: 11px; }
+    .tech-line span { font-family: ui-monospace, Menlo, monospace; }
+    .problem-box { display: grid; gap: 6px; }
+    .problem-box .p-title { font-weight: 800; }
+    .problem-box ul { margin: 0; padding-left: 18px; }
+    .problem-box details { color: var(--muted); font-size: 12px; }
+    .problem-box pre { max-height: 160px; margin: 6px 0 0; padding: 8px; overflow: auto; border-radius: 6px; background: #fff; white-space: pre-wrap; word-break: break-all; }
+    .problem-box .copy-tech { margin-left: 8px; padding: 1px 8px; border: 1px solid currentColor; border-radius: 5px; color: inherit; background: transparent; font-size: 12px; }
+    @media (max-width: 900px) {
+      .mode-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .drop-grid, .progress-steps { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -197,73 +256,115 @@
     <header class="header">
       <div>
         <h1>报告核对工具</h1>
-        <p class="subtitle">上传 Report 与 Record，选择检测模式并查看运行状态和 Finding。</p>
+        <p class="subtitle">选择要核对的内容，放入 PDF，程序会逐项比对并标出有问题的位置。所有文件只在本机处理。</p>
       </div>
-      <span class="local-badge">仅连接本机服务</span>
+      <span class="local-badge" title="文件不会上传到互联网">仅在本机运行</span>
     </header>
 
     <section class="card setup-card" aria-labelledby="setup-title">
-      <h2 id="setup-title" class="sr-only">上传并启动检测</h2>
+      <h2 id="setup-title" class="step-title"><span class="step-no">1</span>选择核对内容</h2>
+      <div class="mode-cards" id="mode-cards" role="radiogroup" aria-label="核对内容">
+        <button type="button" class="mode-card" role="radio" data-mode="self" aria-checked="true">
+          <span class="mode-name">报告自检</span>
+          <span class="mode-desc">只看检验报告本身：首页、样品描述、照片、结论、页码等是否一致、是否漏填</span>
+          <span class="mode-need">需要：检验报告</span>
+        </button>
+        <button type="button" class="mode-card" role="radio" data-mode="record61" aria-checked="false">
+          <span class="mode-name">报告 ↔ GB 9706.1 原始记录</span>
+          <span class="mode-desc">逐条比对原始记录的勾选、数值与报告的检验结果</span>
+          <span class="mode-need">需要：检验报告 + 9706.1 原始记录</span>
+        </button>
+        <button type="button" class="mode-card" role="radio" data-mode="record202" aria-checked="false">
+          <span class="mode-name">报告 ↔ GB 9706.202 原始记录</span>
+          <span class="mode-desc">逐条比对表 2 原始记录的 √ △ × / 与报告的检验结果</span>
+          <span class="mode-need">需要：检验报告 + 9706.202 原始记录（表 2）</span>
+        </button>
+        <button type="button" class="mode-card" role="radio" data-mode="ptr" aria-checked="false" aria-disabled="true" disabled>
+          <span class="mode-name">报告 ↔ 产品技术要求</span>
+          <span class="mode-desc">暂未开放</span>
+        </button>
+      </div>
+
       <form id="upload-form" data-role="upload-form">
-        <div class="grid">
+        <select id="mode-select" data-role="mode-select" class="sr-only" tabindex="-1" aria-hidden="true">
+          <option value="self">Report 自检</option>
+          <option value="record61">Report + GB 9706.1 Record</option>
+          <option value="record202">Report + GB 9706.202 Record</option>
+          <option value="ptr" disabled>Report + PTR（暂未启用）</option>
+        </select>
+        <span class="sr-only" id="mode-note"></span>
+
+        <h2 class="step-title"><span class="step-no">2</span>放入 PDF 文件</h2>
+        <div class="drop-grid">
           <div class="field">
-            <label for="api-base">状态 API 地址</label>
-            <input id="api-base" type="url" value="" inputmode="url" autocomplete="off" placeholder="自动使用 http://127.0.0.1:8767">
-            <span class="hint">页面由其他端口提供时，API 仍保持本机 8767 端口。</span>
-          </div>
-          <div class="field">
-            <label for="case-name">任务名称（可选）</label>
-            <input id="case-name" type="text" maxlength="120" placeholder="例如：2026-10-03 报告核对">
-          </div>
-          <div class="field full">
-            <label for="mode-select">检测模式</label>
-            <select id="mode-select" data-role="mode-select">
-              <option value="self">Report 自检</option>
-              <option value="record61">Report + GB 9706.1 Record</option>
-              <option value="record202">Report + GB 9706.202 Record</option>
-              <option value="ptr" disabled>Report + PTR（暂未启用）</option>
-            </select>
-            <span class="mode-note" id="mode-note">Report 自检只需要上传 Report。</span>
-          </div>
-          <div class="field">
-            <label for="report-file">Report PDF</label>
-            <input id="report-file" data-role="report-file" type="file" accept="application/pdf,.pdf" required>
-            <span class="hint">必选。文件在本机状态服务完成 PDF 预检后才会创建 Document。</span>
+            <label class="dropzone" id="report-drop" for="report-file" data-drop-for="report-file">
+              <span class="drop-title">检验报告 PDF</span>
+              <span class="drop-hint">把文件拖到这里，或点击选择</span>
+              <span class="drop-file" id="report-file-info"></span>
+            </label>
+            <input id="report-file" data-role="report-file" class="file-input" type="file" accept="application/pdf,.pdf" required>
           </div>
           <div class="field" id="record-field" hidden>
-            <label id="record-file-label" for="record-file">Record PDF</label>
-            <input id="record-file" data-role="record-file" type="file" accept="application/pdf,.pdf">
-            <span class="hint" id="record-file-hint">9706.1 与 9706.202 模式必选，角色按所选模式提交。</span>
+            <label class="dropzone" id="record-drop" for="record-file" data-drop-for="record-file">
+              <span class="drop-title" id="record-file-label">原始记录 PDF</span>
+              <span class="drop-hint" id="record-file-hint">把文件拖到这里，或点击选择</span>
+              <span class="drop-file" id="record-file-info"></span>
+            </label>
+            <input id="record-file" data-role="record-file" class="file-input" type="file" accept="application/pdf,.pdf">
           </div>
         </div>
+        <div class="file-check" id="file-check" hidden></div>
+
+        <details class="advanced">
+          <summary>高级设置</summary>
+          <div class="grid">
+            <div class="field">
+              <label for="case-name">任务名称（可选，方便以后查找）</label>
+              <input id="case-name" type="text" maxlength="120" placeholder="例如：QW2024-3944 自检">
+            </div>
+            <div class="field">
+              <label for="api-base">本机服务地址（一般不用改）</label>
+              <input id="api-base" type="url" value="" inputmode="url" autocomplete="off" placeholder="自动使用 http://127.0.0.1:8767">
+            </div>
+          </div>
+        </details>
+
         <div class="actions">
-          <button class="secondary" id="reset-form" type="button">清空选择</button>
-          <button class="primary" id="submit-upload" data-role="run-submit" type="submit">上传并开始核对</button>
+          <button class="secondary" id="reset-form" type="button">清空</button>
+          <button class="primary big" id="submit-upload" data-role="run-submit" type="submit">开始核对</button>
         </div>
       </form>
       <div class="message" id="form-message" role="status" aria-live="polite"></div>
     </section>
 
-    <section class="card status-card" aria-labelledby="status-title">
+    <section class="card status-card" id="status-card" aria-labelledby="status-title" hidden>
       <div class="status-head">
         <div>
-          <h2 id="status-title">当前运行</h2>
-          <p id="status-message" class="subtitle">尚未启动任务。</p>
+          <h2 id="status-title">核对进度</h2>
+          <div id="status-message" class="subtitle">尚未开始。</div>
         </div>
         <span class="status-label" id="run-status">未开始</span>
       </div>
-      <div class="meta" aria-label="运行信息">
-        <div class="meta-item"><span class="meta-key">模式</span><span class="meta-value" id="run-mode">—</span></div>
-        <div class="meta-item"><span class="meta-key">Run ID</span><span class="meta-value" id="run-id">—</span></div>
-        <div class="meta-item"><span class="meta-key">Finding 数量</span><span class="meta-value" id="run-count">—</span></div>
+      <ol class="progress-steps" id="progress-steps" aria-label="核对步骤">
+        <li data-step="upload">上传文件</li>
+        <li data-step="queue">排队</li>
+        <li data-step="check">逐项核对</li>
+        <li data-step="collect">整理结果</li>
+        <li data-step="done">完成</li>
+      </ol>
+      <div class="meta" aria-label="本次核对">
+        <div class="meta-item"><span class="meta-key">核对内容</span><span class="meta-value" id="run-mode">—</span></div>
+        <div class="meta-item"><span class="meta-key">已用时间</span><span class="meta-value" id="run-elapsed">—</span></div>
+        <div class="meta-item"><span class="meta-key">结果条数</span><span class="meta-value" id="run-count">—</span></div>
       </div>
+      <p class="tech-line">任务编号 <span id="run-id">—</span></p>
     </section>
 
     <div class="results-workspace" id="results-workspace">
       <aside class="card findings-card" aria-labelledby="findings-title">
         <div class="findings-toolbar">
           <h2 id="findings-title">问题列表</h2>
-          <div class="filters" id="finding-filters" aria-label="Finding 状态筛选">
+          <div class="filters" id="finding-filters" aria-label="按结果筛选">
             <button class="filter" type="button" data-status="all" aria-pressed="true">全部 <span>0</span></button>
             <button class="filter" type="button" data-status="error" aria-pressed="false">问题 <span>0</span></button>
             <button class="filter" type="button" data-status="manual" aria-pressed="false">待复核 <span>0</span></button>
@@ -271,20 +372,20 @@
             <button class="filter" type="button" data-status="pass" aria-pressed="false">一致 <span>0</span></button>
           </div>
         </div>
-        <ol class="findings" id="findings" aria-live="polite"><li class="empty">运行成功后显示 Finding。</li></ol>
+        <ol class="findings" id="findings" aria-live="polite"><li class="empty">核对完成后在这里显示结果。</li></ol>
       </aside>
 
       <section class="card comparison-card" id="comparison-card" aria-labelledby="comparison-title">
       <div class="comparison-head">
         <div>
           <h2 id="comparison-title">原始文件比对</h2>
-          <p class="subtitle">选择 Finding 后自动定位证据页，并在 PDF 中高亮对应范围。</p>
+          <p class="subtitle">点左边的一条结果，这里会打开对应页面并标出位置。</p>
         </div>
         <span class="hint" id="comparison-mode-label">—</span>
       </div>
       <div class="comparison-brief" id="comparison-brief" aria-live="polite">
         <span class="finding-status manual">未选择</span>
-        <div class="brief-copy"><div class="brief-title">请在上方 Finding 列表选择一项</div><div class="brief-detail">运行完成后显示 Report 与 Record 原始文件</div></div>
+        <div class="brief-copy"><div class="brief-title">请在左边选择一条结果</div><div class="brief-detail">核对完成后显示原始文件</div></div>
         <span class="finding-id">—</span>
       </div>
       <details class="check-details" id="check-details" open hidden>
@@ -346,10 +447,10 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc = "./vendor/pdfjs/pdf.worker.min.mjs";
 
     const MODE_META = Object.freeze({
-      self: { apiMode: "report_self", label: "Report 自检", recordRole: null, note: "Report 自检只需要上传 Report。" },
+      self: { apiMode: "report_self", label: "报告自检", recordRole: null, note: "报告自检只需要检验报告。" },
       ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", inputField: "ptr_document_id", documentLabel: "PTR", disabled: true, note: "PTR 检查尚未启用（PTR_NOT_VALIDATED）。" },
-      record61: { apiMode: "report_record_9706_1", label: "Report + GB 9706.1 Record", recordRole: "record_9706_1", inputField: "record_document_id", documentLabel: "Record", note: "需要同时上传 Report 与 9706.1 Record。" },
-      record202: { apiMode: "report_record_9706_202", label: "Report + GB 9706.202 Record", recordRole: "record_9706_202", inputField: "record_document_id", documentLabel: "Record", note: "需要同时上传 Report 与 9706.202 Record。" }
+      record61: { apiMode: "report_record_9706_1", label: "报告 ↔ GB 9706.1 原始记录", recordRole: "record_9706_1", inputField: "record_document_id", documentLabel: "GB 9706.1 原始记录", recordKind: "record61", note: "需要检验报告和 GB 9706.1 原始记录。" },
+      record202: { apiMode: "report_record_9706_202", label: "报告 ↔ GB 9706.202 原始记录", recordRole: "record_9706_202", inputField: "record_document_id", documentLabel: "GB 9706.202 原始记录（表 2）", recordKind: "record202", note: "需要检验报告和 GB 9706.202 原始记录（表 2）。" }
     });
     const STATUS_LABELS = Object.freeze({ pass: "一致", warning: "警示", manual: "待复核", error: "问题" });
 
@@ -376,6 +477,13 @@
     const comparisonCard = document.getElementById("comparison-card");
     const comparisonModeLabel = document.getElementById("comparison-mode-label");
     const comparisonBrief = document.getElementById("comparison-brief");
+    const modeCards = document.getElementById("mode-cards");
+    const statusCard = document.getElementById("status-card");
+    const progressSteps = document.getElementById("progress-steps");
+    const runElapsed = document.getElementById("run-elapsed");
+    const fileCheck = document.getElementById("file-check");
+    const fileInfo = { report: document.getElementById("report-file-info"), record: document.getElementById("record-file-info") };
+    const dropZones = { report: document.getElementById("report-drop"), record: document.getElementById("record-drop") };
 
     let csrfToken = null;
     let activeFindings = [];
@@ -411,24 +519,180 @@
 
     function updateModeFields() {
       const mode = MODE_META[modeSelect.value] || MODE_META.self;
+      if (mode.disabled) {
+        modeSelect.value = "self";
+        return updateModeFields();
+      }
       const needsRecord = Boolean(mode.recordRole);
       recordField.hidden = !needsRecord;
       recordFile.required = needsRecord;
-      const documentLabel = mode.documentLabel || "Record";
-      recordFileLabel.textContent = `${documentLabel} PDF`;
-      recordFileHint.textContent = mode.recordRole === "ptr"
-        ? "PTR 模式使用 ptr_document_id 角色槽；能力启用后才允许创建 Run。"
-        : "9706.1 与 9706.202 模式必选，角色按所选模式提交。";
+      recordFileLabel.textContent = `${mode.documentLabel || "原始记录"} PDF`;
       modeNote.textContent = mode.note;
-      if (!needsRecord) recordFile.value = "";
-      if (mode.disabled) {
-        modeSelect.value = "self";
-        setMessage("PTR 检查尚未启用（PTR_NOT_VALIDATED）。请选择已启用模式。", "error");
+      if (!needsRecord) { recordFile.value = ""; fileState.record = null; renderFileInfo("record"); }
+      modeCards.querySelectorAll("[data-mode]").forEach(card => card.setAttribute("aria-checked", String(card.dataset.mode === modeSelect.value)));
+      if (fileState.record) { fileState.record.expected = mode.recordKind; renderFileInfo("record"); }
+      renderFileCheck();
+    }
+
+    // ---- 文件检查：读取前两页文字，判断是检验报告还是哪一种原始记录 ----
+    const KIND_NAMES = Object.freeze({ report: "检验报告", record61: "GB 9706.1 原始记录", record202: "GB 9706.202 原始记录（表 2）", record: "原始记录", unknown: "无法识别的文件" });
+    const fileState = { report: null, record: null };
+    let overrideFileCheck = false;
+
+    async function inspectPdf(file) {
+      const info = { name: file.name, size: file.size, pages: null, kind: "unknown", number: null };
+      try {
+        const task = pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+        const doc = await task.promise;
+        info.pages = doc.numPages;
+        let text = "";
+        for (let page = 1; page <= Math.min(2, doc.numPages); page += 1) {
+          const content = await (await doc.getPage(page)).getTextContent();
+          text += content.items.map(item => item.str || "").join("");
+        }
+        await task.destroy();
+        const flat = text.replace(/\s+/g, "");
+        if (/原始记录/.test(flat)) info.kind = /9706\.202/.test(flat) ? "record202" : /9706\.1-20\d\d/.test(flat) ? "record61" : "record";
+        else if (/检验报告/.test(flat) && /报告编号/.test(flat)) info.kind = "report";
+        const number = flat.match(/QW(\d{4})第?(\d{1,5})号/);
+        if (number) info.number = `QW${number[1]}-${number[2]}`;
+      } catch (error) {
+        info.error = /password|encrypt/i.test(String(error?.name || error?.message)) ? "encrypted" : "unreadable";
+      }
+      return info;
+    }
+
+    function formatSize(bytes) {
+      return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    }
+
+    function renderFileInfo(slot) {
+      const state = fileState[slot];
+      const box = fileInfo[slot];
+      const zone = dropZones[slot];
+      zone.classList.remove("has-file", "is-wrong");
+      box.replaceChildren();
+      if (!state) return;
+      const name = document.createElement("div");
+      name.textContent = `${state.name} · ${formatSize(state.size)}${state.pages ? ` · ${state.pages} 页` : ""}`;
+      const verdict = document.createElement("div");
+      if (state.checking) {
+        verdict.textContent = "正在读取…";
+      } else if (state.error) {
+        verdict.className = "bad";
+        verdict.textContent = state.error === "encrypted" ? "这份 PDF 有密码保护，程序打不开" : "这份 PDF 打不开，可能已损坏";
+        zone.classList.add("is-wrong");
+      } else if (state.kind === state.expected) {
+        verdict.className = "ok";
+        verdict.textContent = `✓ 识别为${KIND_NAMES[state.kind]}${state.number ? `（${state.number}）` : ""}`;
+        zone.classList.add("has-file");
+      } else if (state.kind === "unknown") {
+        verdict.className = "warn";
+        verdict.textContent = `没认出这是什么文件，请确认是${KIND_NAMES[state.expected]}`;
+      } else {
+        verdict.className = "bad";
+        verdict.textContent = `这像是${KIND_NAMES[state.kind]}，不是${KIND_NAMES[state.expected]}`;
+        zone.classList.add("is-wrong");
+      }
+      box.append(name, verdict);
+    }
+
+    function filesSwapped() {
+      const report = fileState.report;
+      const record = fileState.record;
+      return Boolean(report && record && !report.checking && !record.checking
+        && report.kind === record.expected && record.kind === "report");
+    }
+
+    function fileProblems() {
+      const problems = [];
+      const warnings = [];
+      if (filesSwapped()) {
+        return { problems: ["检验报告和原始记录放反了：左边放的是原始记录，右边放的是检验报告。"], warnings: [], swapped: true };
+      }
+      for (const slot of ["report", "record"]) {
+        const state = fileState[slot];
+        if (!state || state.checking) continue;
+        if (state.error) problems.push(`${KIND_NAMES[state.expected]}：${state.error === "encrypted" ? "PDF 有密码保护，请导出一份没有密码的 PDF" : "PDF 打不开，请用 PDF 阅读器确认文件能正常打开"}`);
+        else if (state.kind !== state.expected && state.kind !== "unknown") {
+          const swapped = slot === "report" ? "原始记录放到了检验报告的位置" : (state.kind === "report" ? "检验报告放到了原始记录的位置" : "原始记录的种类和所选核对内容不一致");
+          problems.push(`看起来${swapped}：这份文件是${KIND_NAMES[state.kind]}，这里需要${KIND_NAMES[state.expected]}。`);
+        } else if (state.kind === "unknown") warnings.push(`没认出“${state.name}”是什么文件，请确认它是${KIND_NAMES[state.expected]}。`);
+      }
+      const report = fileState.report;
+      const record = fileState.record;
+      if (report?.number && record?.number && report.number !== record.number) {
+        warnings.push(`报告编号对不上：检验报告是 ${report.number}，原始记录上是 ${record.number}，请确认是同一份报告的记录。`);
+      }
+      return { problems, warnings };
+    }
+
+    function renderFileCheck() {
+      const { problems, warnings } = fileProblems();
+      fileCheck.replaceChildren();
+      if (!problems.length && !warnings.length) { fileCheck.hidden = true; overrideFileCheck = false; return; }
+      fileCheck.hidden = false;
+      fileCheck.className = `file-check ${problems.length ? "error" : "warning"}`;
+      [...problems, ...warnings].forEach(text => { const line = document.createElement("div"); line.textContent = text; fileCheck.append(line); });
+      if (filesSwapped()) {
+        const swap = document.createElement("button");
+        swap.type = "button";
+        swap.className = "secondary";
+        swap.style.marginTop = "8px";
+        swap.textContent = "对调两个文件";
+        swap.addEventListener("click", swapFiles);
+        fileCheck.append(swap);
+        return;
+      }
+      if (problems.length) {
+        const label = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = overrideFileCheck;
+        box.addEventListener("change", () => { overrideFileCheck = box.checked; });
+        label.append(box, document.createTextNode("我确认文件没有放错，仍然开始核对"));
+        fileCheck.append(label);
       }
     }
 
+    function swapFiles() {
+      const reportPicked = reportFile.files?.[0];
+      const recordPicked = recordFile.files?.[0];
+      if (!reportPicked || !recordPicked) return;
+      const toReport = new DataTransfer();
+      toReport.items.add(recordPicked);
+      const toRecord = new DataTransfer();
+      toRecord.items.add(reportPicked);
+      reportFile.files = toReport.files;
+      recordFile.files = toRecord.files;
+      const reportState = fileState.record;
+      const recordState = fileState.report;
+      fileState.report = { ...reportState, expected: "report" };
+      fileState.record = { ...recordState, expected: MODE_META[modeSelect.value]?.recordKind || "record" };
+      overrideFileCheck = false;
+      renderFileInfo("report");
+      renderFileInfo("record");
+      renderFileCheck();
+      setMessage("");
+    }
+
+    async function onFileChosen(slot) {
+      const input = slot === "report" ? reportFile : recordFile;
+      const file = input.files?.[0];
+      overrideFileCheck = false;
+      if (!file) { fileState[slot] = null; renderFileInfo(slot); renderFileCheck(); return; }
+      const expected = slot === "report" ? "report" : (MODE_META[modeSelect.value]?.recordKind || "record");
+      fileState[slot] = { name: file.name, size: file.size, checking: true, expected, kind: "unknown" };
+      renderFileInfo(slot);
+      const info = await inspectPdf(file);
+      if (input.files?.[0] !== file) return;
+      fileState[slot] = { ...info, expected };
+      renderFileInfo(slot);
+      renderFileCheck();
+    }
+
     function validatePdf(file, label) {
-      if (!file) throw new Error(`请选择 ${label} PDF。`);
+      if (!file) throw new Error(`请放入${label} PDF。`);
       const filename = String(file.name || "").toLowerCase();
       const type = String(file.type || "").toLowerCase();
       if (type && type !== "application/pdf" && !filename.endsWith(".pdf")) {
@@ -440,19 +704,103 @@
       return file;
     }
 
+    function apiError(code, message, extra = {}) {
+      const error = new Error(message);
+      error.code = code;
+      Object.assign(error, extra);
+      return error;
+    }
+
+    async function fetchOrExplain(url, options) {
+      try {
+        return await fetch(url, options);
+      } catch (cause) {
+        throw apiError("NETWORK", String(cause?.message || cause), { url });
+      }
+    }
+
+    // ---- 把错误翻译成：出了什么事 / 可以怎么做 / 技术信息 ----
+    const ERROR_HELP = [
+      [["NETWORK"], "连不上本机的核对服务",
+        ["确认“启动报告核对工具”的终端窗口还开着。", "如果已经关了：在访达里双击“启动报告核对工具.command”，等窗口里出现“端口 8767 已启动”后，刷新本页再试。"]],
+      [["CSRF_TOKEN_EXPIRED", "CSRF_VALIDATION_FAILED", "CROSS_SITE_REQUEST_BLOCKED"], "页面停留时间太长，需要刷新",
+        ["刷新本页，重新选择文件后再开始核对。"]],
+      [["ENCRYPTED_PDF_UNSUPPORTED"], "PDF 有密码保护，程序打不开",
+        ["用 PDF 阅读器导出（或打印成）一份没有密码的 PDF，再上传。"]],
+      [["INVALID_PDF", "EMPTY_PDF", "EMPTY_DOCUMENT", "INVALID_UPLOAD", "INVALID_DOCUMENT_FILENAME"], "这个文件不是有效的 PDF，或者是空文件",
+        ["用 PDF 阅读器打开确认能正常显示，再重新上传。"]],
+      [["DOCUMENT_TOO_LARGE"], "文件太大（超过 500 MB）", ["请压缩或拆分后再上传。"]],
+      [["PDF_TOO_MANY_PAGES"], "文件页数太多（超过 2000 页）", ["请确认选的是正确的文件。"]],
+      [["MODE_DISABLED", "UNSUPPORTED_MODE", "NO_EXECUTABLE_RULES"], "这种核对暂时还不能用", ["请选择其他核对内容。"]],
+      [["WORKER_TIMEOUT"], "核对时间超过 1 小时，被自动停止",
+        ["文件可能特别大，或者格式比较特殊。", "请把这份文件和下面的技术信息发给开发者。"]],
+      [["RUN_INTERRUPTED_ON_RESTART", "SERVER_CLOSED", "USER_CANCELLED", "USER_CANCEL_REQUESTED"], "核对被中断了",
+        ["可能是核对过程中关掉了工具窗口。请重新开始核对。"]],
+    ];
+    function explainError(error) {
+      const code = String(error?.code || "");
+      for (const [codes, title, advice] of ERROR_HELP) {
+        if (codes.includes(code)) return { title, advice, code, detail: String(error?.message || "") };
+      }
+      if (/^WORKER|^RULE_|^PUBLISH|^COORDINATOR|^RUN_|^RULE/.test(code)) {
+        return {
+          title: "核对过程中程序出错，没有得到结果",
+          advice: ["这通常是遇到了程序还不认识的报告格式，不是你的操作问题。", "请把这份文件和下面的技术信息发给开发者（点“复制技术信息”）。"],
+          code, detail: String(error?.message || ""),
+        };
+      }
+      return {
+        title: "出了点问题",
+        advice: ["请刷新页面后再试一次。", "如果还是不行，请把下面的技术信息发给开发者。"],
+        code, detail: String(error?.message || error || ""),
+      };
+    }
+    function problemBox(error, context = "") {
+      const info = explainError(error);
+      const box = document.createElement("div");
+      box.className = "problem-box";
+      const title = document.createElement("div");
+      title.className = "p-title";
+      title.textContent = `${context ? `${context}：` : ""}${info.title}`;
+      const list = document.createElement("ul");
+      info.advice.forEach(text => { const li = document.createElement("li"); li.textContent = text; list.append(li); });
+      const tech = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "技术信息";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "copy-tech";
+      copy.textContent = "复制技术信息";
+      const techText = [`时间：${new Date().toLocaleString("zh-CN")}`, `代码：${info.code || "（无）"}`, `说明：${info.detail}`, activeRun?.id ? `任务编号：${activeRun.id}` : "", `核对内容：${MODE_META[modeSelect.value]?.label || ""}`].filter(Boolean).join("\n");
+      copy.addEventListener("click", async event => {
+        event.preventDefault();
+        try { await navigator.clipboard.writeText(techText); copy.textContent = "已复制"; } catch (_) { copy.textContent = "复制失败，请手动选择"; }
+      });
+      summary.append(copy);
+      const pre = document.createElement("pre");
+      pre.textContent = techText;
+      tech.append(summary, pre);
+      box.append(title, list, tech);
+      return box;
+    }
+    function showProblem(error, context = "") {
+      formMessage.replaceChildren(problemBox(error, context));
+      formMessage.className = "message error";
+    }
+
     async function apiJson(path, options = {}, retried = false) {
       const method = String(options.method || "GET").toUpperCase();
       const headers = new Headers(options.headers || {});
       if (method !== "GET" && method !== "HEAD") {
         if (!csrfToken) {
-          const sessionResponse = await fetch(apiUrl("/api/v1/session"), { cache: "no-store" });
+          const sessionResponse = await fetchOrExplain(apiUrl("/api/v1/session"), { cache: "no-store" });
           const session = await sessionResponse.json();
           if (!sessionResponse.ok || !session.csrf_token) throw new Error("状态 API 会话初始化失败。 ");
           csrfToken = session.csrf_token;
         }
         headers.set("X-CSRF-Token", csrfToken);
       }
-      const response = await fetch(apiUrl(path), { ...options, headers, cache: "no-store" });
+      const response = await fetchOrExplain(apiUrl(path), { ...options, headers, cache: "no-store" });
       let payload = null;
       try { payload = await response.json(); } catch (_) { payload = null; }
       if (!response.ok) {
@@ -463,7 +811,7 @@
           csrfToken = null;
           return apiJson(path, options, true);
         }
-        throw new Error(error?.message || `状态 API 请求失败（HTTP ${response.status}）。`);
+        throw apiError(error?.code || `HTTP_${response.status}`, error?.message || `状态 API 请求失败（HTTP ${response.status}）。`, { path, status: response.status });
       }
       return payload;
     }
@@ -506,7 +854,7 @@
 
     function setComparisonMessage(message) {
       comparisonBrief.querySelector(".brief-title").textContent = message;
-      comparisonBrief.querySelector(".brief-detail").textContent = "运行完成后选择 Finding 可查看原始文件证据。";
+      comparisonBrief.querySelector(".brief-detail").textContent = "核对完成后，点一条结果即可查看原始文件。";
       document.getElementById("check-details").hidden = true;
       comparisonBrief.querySelector(".finding-id").textContent = "—";
     }
@@ -550,7 +898,7 @@
       if (!visible.length) {
         const empty = document.createElement("li");
         empty.className = "empty";
-        empty.textContent = activeFindings.length ? "当前筛选下没有 Finding。" : "运行成功后显示 Finding。";
+        empty.textContent = activeFindings.length ? "这个筛选下没有结果。" : "核对完成后在这里显示结果。";
         findings.append(empty);
         renderFilters();
         return;
@@ -569,7 +917,7 @@
         const copy = document.createElement("div");
         const id = document.createElement("div");
         id.className = "finding-id";
-        id.textContent = String(item.id || item.rule_id || "未命名 Finding").split("@")[0];
+        id.textContent = String(item.id || item.rule_id || "未命名结果").split("@")[0];
         const title = document.createElement("div");
         title.className = "finding-title";
         title.textContent = item.title || item.rule_id || "核对结果";
@@ -1370,6 +1718,28 @@
       runCount.textContent = activeFindings.length ? String(activeFindings.length) : "—";
     }
 
+    const STEP_ORDER = ["upload", "queue", "check", "collect", "done"];
+    let currentStep = "upload";
+    function setProgress(step, failed = false) {
+      currentStep = step;
+      const index = STEP_ORDER.indexOf(step);
+      progressSteps.querySelectorAll("[data-step]").forEach(item => {
+        const position = STEP_ORDER.indexOf(item.dataset.step);
+        item.classList.toggle("done", position < index || step === "done");
+        item.classList.toggle("active", position === index && step !== "done" && !failed);
+        item.classList.toggle("failed", position === index && failed);
+      });
+    }
+    let clockTimer = null;
+    let clockStart = 0;
+    function formatElapsed(seconds) {
+      return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+    }
+    function tickClock() { runElapsed.textContent = formatElapsed(Math.round((Date.now() - clockStart) / 1000)); }
+    function startClock() { clockStart = Date.now(); clearInterval(clockTimer); tickClock(); clockTimer = setInterval(tickClock, 1000); }
+    function stopClock() { clearInterval(clockTimer); clockTimer = null; tickClock(); }
+    function setStatusText(text) { statusMessage.textContent = text; }
+
     async function loadFindings(run, mode) {
       const payload = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}/findings`);
       activeRun = run;
@@ -1387,18 +1757,20 @@
       selectedFindingId = activeFindings[0]?.id || null;
       renderFindings();
       if (activeFindings[0]) await showFindingComparison(activeFindings[0]);
-      else { comparisonCard.classList.remove("visible"); setComparisonMessage("当前 Run 没有 Finding"); }
+      else { comparisonCard.classList.remove("visible"); setComparisonMessage("这次核对没有结果"); }
     }
 
     async function pollRun(run, mode, token) {
-      for (let attempt = 0; attempt < 720; attempt += 1) {
+      for (let attempt = 0; attempt < 3000; attempt += 1) {
         if (token !== pollToken) return;
         const current = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}`);
         showRun(current, mode);
+        activeRun = current;
         const lifecycle = String(current.lifecycle_status || "");
         if (lifecycle === "succeeded") {
+          setProgress("collect");
+          setStatusText("核对完成，正在整理结果…");
           const overall = String(current.machine_overall_status || current.resolved_overall_status || "manual");
-          const overallLabel = STATUS_LABELS[overall] || overall;
           const overallKind = overall === "error"
             ? "error"
             : overall === "pass"
@@ -1406,21 +1778,37 @@
               : overall === "warning"
                 ? "warning"
                 : "manual";
-          setRunStatus(`已完成 · ${overallLabel}`, overallKind);
-          statusMessage.textContent = "运行完成，以下为服务端发布的 Finding。";
+          const overallText = { error: "发现问题", pass: "全部一致", warning: "有警示", manual: "有待确认项" }[overallKind];
           await loadFindings(current, mode);
+          stopClock();
+          setProgress("done");
+          setRunStatus(`已完成 · ${overallText}`, overallKind);
+          setStatusText("核对完成，结果在下面。");
           return;
         }
         if (["failed", "cancelled", "interrupted"].includes(lifecycle)) {
-          setRunStatus("运行失败", "error");
-          statusMessage.textContent = current.failure?.message || current.reason_message || `Run 进入 ${lifecycle} 状态。`;
+          stopClock();
+          setProgress(currentStep === "queue" ? "queue" : "check", true);
+          setRunStatus("没有完成", "error");
+          const failure = apiError(current.failure?.code || (lifecycle === "interrupted" ? "RUN_INTERRUPTED_ON_RESTART" : "RUN_FAILED"), current.failure?.message || current.reason_message || `任务状态：${lifecycle}`);
+          statusMessage.replaceChildren(problemBox(failure));
           return;
         }
-        setRunStatus(lifecycle === "running" ? "执行中" : "排队中", "running");
-        statusMessage.textContent = current.phase_message || "正在等待状态 API 更新。";
+        if (lifecycle === "running") {
+          setProgress("check");
+          setRunStatus("核对中", "running");
+          const seconds = Math.round((Date.now() - clockStart) / 1000);
+          setStatusText(seconds < 300
+            ? "正在逐项核对。报告越长用时越久，一般需要 1～3 分钟；可以先做别的事，完成后这里会自动更新。"
+            : "比平时久一些，仍在核对中。页数很多或照片很多的报告可能需要更长时间。");
+        } else {
+          setProgress("queue");
+          setRunStatus("排队中", "running");
+          setStatusText("文件已上传，正在等待开始。");
+        }
         await new Promise(resolve => setTimeout(resolve, 1200));
       }
-      throw new Error("等待运行结果超过 12 分钟，请通过状态 API 查看 Run。 ");
+      throw apiError("WORKER_TIMEOUT", "等待结果超过 1 小时");
     }
 
     async function submitUpload(event) {
@@ -1431,17 +1819,36 @@
       let record = null;
       let recordDoc = null;
       try {
-        report = validatePdf(reportFile.files?.[0], "Report");
-        if (mode.recordRole) record = validatePdf(recordFile.files?.[0], "Record");
+        report = validatePdf(reportFile.files?.[0], "检验报告");
+        if (mode.recordRole) record = validatePdf(recordFile.files?.[0], mode.documentLabel || "原始记录");
       } catch (error) {
         setMessage(error.message, "error");
+        return;
+      }
+      if (fileState.report?.checking || fileState.record?.checking) {
+        setMessage("正在读取文件，请稍等一两秒再点“开始核对”。");
+        return;
+      }
+      if (fileProblems().problems.length && !overrideFileCheck) {
+        setMessage("文件好像放错了，请看上面的红色提示。如果确认没错，勾选“仍然开始核对”后再点一次。", "error");
+        fileCheck.scrollIntoView({ behavior: "smooth", block: "center" });
         return;
       }
       submitButton.disabled = true;
       pollToken += 1;
       activeFindings = [];
+      activeRun = null;
       renderFindings();
-      setMessage("正在创建任务…");
+      setMessage("");
+      statusCard.hidden = false;
+      runCount.textContent = "—";
+      runId.textContent = "—";
+      runMode.textContent = mode.label;
+      setProgress("upload");
+      setRunStatus("上传中", "running");
+      setStatusText("正在上传文件…");
+      startClock();
+      statusCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
       try {
         const caseName = caseNameInput.value.trim() || `${report.name} 核对任务`;
         const caseData = await apiJson("/api/v1/cases", {
@@ -1449,22 +1856,21 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: caseName.slice(0, 120), description: "由公开工作台创建" })
         });
-        setMessage("正在上传 Report…");
+        setStatusText(`正在上传检验报告（${formatSize(report.size)}）…`);
         const reportDoc = await uploadDocument(caseData.id, "report", report);
         const inputs = { report_document_id: reportDoc.id };
         if (record) {
-          setMessage("正在上传 Record…");
+          setStatusText(`正在上传原始记录（${formatSize(record.size)}）…`);
           recordDoc = await uploadDocument(caseData.id, mode.recordRole, record);
           inputs[mode.inputField || "record_document_id"] = recordDoc.id;
         }
-        setMessage("正在预检规则计划…");
+        setStatusText("正在准备核对…");
         const preflight = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs:preflight`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mode: mode.apiMode, inputs })
         });
-        if (!preflight.can_create_run) throw new Error(preflight.blocking_issues?.join("、") || "当前模式不可创建 Run。");
-        setMessage("正在排队执行…");
+        if (!preflight.can_create_run) throw apiError("NO_EXECUTABLE_RULES", preflight.blocking_issues?.join("、") || "当前模式不可创建任务。");
         const run = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1474,25 +1880,66 @@
         activeDocuments = { report: { id: reportDoc.id, name: report.name } };
         if (record) activeDocuments[mode.recordRole] = { id: recordDoc.id, name: record.name };
         showRun(run, modeSelect.value);
+        activeRun = run;
+        setProgress("queue");
         setRunStatus("排队中", "running");
-        statusMessage.textContent = "文件已上传，等待 Worker 执行。";
-        setMessage("Run 已创建。", "success");
+        setStatusText("文件已上传，正在等待开始。");
         await pollRun(run, modeSelect.value, pollToken);
       } catch (error) {
-        setMessage(`启动失败：${error?.message || error}`, "error");
-        setRunStatus("启动失败", "error");
-        statusMessage.textContent = "请检查本机状态 API 和上传文件。";
+        stopClock();
+        setProgress(currentStep, true);
+        setRunStatus("没有完成", "error");
+        statusMessage.replaceChildren(problemBox(error, currentStep === "upload" ? "上传没有成功" : ""));
       } finally {
         submitButton.disabled = false;
       }
     }
 
     modeSelect.addEventListener("change", updateModeFields);
+    modeCards.addEventListener("click", event => {
+      const card = event.target.closest("[data-mode]");
+      if (!card || card.disabled) return;
+      modeSelect.value = card.dataset.mode;
+      modeSelect.dispatchEvent(new Event("change"));
+    });
+    modeCards.addEventListener("keydown", event => {
+      if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(event.key)) return;
+      const cards = [...modeCards.querySelectorAll("[data-mode]:not(:disabled)")];
+      const index = cards.findIndex(card => card.dataset.mode === modeSelect.value);
+      const next = cards[(index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : cards.length - 1)) % cards.length];
+      event.preventDefault();
+      next.focus();
+      next.click();
+    });
+    reportFile.addEventListener("change", () => onFileChosen("report"));
+    recordFile.addEventListener("change", () => onFileChosen("record"));
+    Object.entries(dropZones).forEach(([slot, zone]) => {
+      const input = slot === "report" ? reportFile : recordFile;
+      zone.addEventListener("dragover", event => { event.preventDefault(); zone.classList.add("drag-over"); });
+      zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
+      zone.addEventListener("drop", event => {
+        event.preventDefault();
+        zone.classList.remove("drag-over");
+        const file = [...(event.dataTransfer?.files || [])].find(item => /\.pdf$/i.test(item.name) || item.type === "application/pdf");
+        if (!file) { setMessage("请拖入 PDF 文件。", "error"); return; }
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change"));
+      });
+    });
+    // 拖到框外时不要让浏览器直接打开 PDF
+    window.addEventListener("dragover", event => event.preventDefault());
+    window.addEventListener("drop", event => event.preventDefault());
     form.addEventListener("submit", submitUpload);
     resetButton.addEventListener("click", () => {
       pollToken += 1;
       form.reset();
       apiBaseInput.value = "";
+      fileState.report = null;
+      fileState.record = null;
+      renderFileInfo("report");
+      renderFileInfo("record");
       updateModeFields();
       setMessage("");
     });
@@ -1527,7 +1974,7 @@
     if (savedApiBase) apiBaseInput.value = savedApiBase;
     updateModeFields();
     renderFilters();
-    setComparisonMessage("运行完成后选择 Finding");
+    setComparisonMessage("核对完成后选择一条结果");
   </script>
 </body>
 </html>
