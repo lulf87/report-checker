@@ -2119,7 +2119,7 @@ def read_handwritten_number(
     with tempfile.TemporaryDirectory(prefix="record202-number-") as scratch_dir:
         image_path = Path(scratch_dir) / "cell.png"
         render_cell_for_ocr(page, rect, image_path)
-        candidates = local_ocr_candidates(image_path)
+        candidates = local_ocr_candidates(image_path, tesseract="fallback")
     vision_texts = [str(item.get("text", "")) for item in candidates.get("apple_vision", [])]
     channels["apple_vision"] = {
         "status": "unavailable" if "apple_vision_error" in candidates else "available",
@@ -2128,7 +2128,7 @@ def read_handwritten_number(
     }
     tesseract_texts = [str(item.get("text", "")) for item in candidates.get("tesseract", [])]
     channels["tesseract"] = {
-        "status": "available" if tesseract_texts else "no_candidate",
+        "status": "skipped" if candidates.get("tesseract_skipped") else "available" if tesseract_texts else "no_candidate",
         "texts": tesseract_texts,
         "numbers": _channel_numbers(tesseract_texts),
     }
@@ -2152,6 +2152,78 @@ def read_handwritten_number(
         "area": _rect(rect),
         "printed_numbers_ignored": sorted(printed),
     }
+
+
+_SINGLE_READING_ORDER = ("apple_vision", "ios_handwriting_layer", "tesseract")
+
+
+def _single_reading_check(reading: Mapping[str, Any], report_value: str, report_requirement: str) -> dict[str, Any]:
+    """Accept one channel's reading when it reproduces the Report value.
+
+    Apple Vision (or, when it read nothing, the iOS handwriting layer) is
+    compared with the Report at the Report's precision.  Apple Vision often
+    drops a handwritten decimal point ("24.5" -> "245"); against an exact
+    Report value an undotted reading is also tried with the Report's number
+    of decimal places (and one more).  A reading that still differs is a
+    suspected mismatch for a person, never an automatic error.
+    """
+
+    unit_context = extract_unit_context(report_requirement)
+    parsed_report = parse_report_numeric(report_value, unit_context)
+    channels = reading.get("channels") or {}
+    readings = [
+        (name, str(channels[name].get("value")))
+        for name in _SINGLE_READING_ORDER
+        if isinstance(channels.get(name), Mapping)
+        and channels[name].get("status") == "available"
+        and channels[name].get("value")
+    ]
+    if not readings:
+        return {"decision": "manual", "reason_code": "no_single_reading"}
+    if parsed_report is not None and parsed_report.comparator in {">", ">="}:
+        # A handwritten "<" misread as a digit only makes a reading larger,
+        # so one reading cannot prove a "> X" Report value.
+        return {"decision": "manual", "reason_code": "single_reading_cannot_prove_lower_bound"}
+    first_mismatch: dict[str, Any] | None = None
+    for source, value in readings:
+        candidates = [value]
+        if (
+            parsed_report is not None
+            and parsed_report.comparator is None
+            and re.fullmatch(r"\d{2,}", value)
+        ):
+            report_places = len(str(parsed_report.value).split(".", 1)[1]) if "." in str(parsed_report.value) else 0
+            for places in (report_places, report_places + 1):
+                if 0 < places < len(value):
+                    candidates.append(f"{value[:-places]}.{value[-places:]}")
+        for candidate in candidates:
+            parsed = parse_report_numeric(candidate, unit_context)
+            if parsed is None or parsed.comparator is not None:
+                continue
+            comparison = compare_numeric_observation(parsed.value, parsed.unit, report_value, unit_context)
+            if comparison.decision == "match":
+                return {
+                    "decision": "match",
+                    "source": source,
+                    "raw_value": value,
+                    "record_value": candidate,
+                    "decimal_repaired": candidate != value,
+                }
+            if (
+                first_mismatch is None
+                and source == "apple_vision"
+                and candidate == value
+                and comparison.decision == "mismatch"
+            ):
+                first_mismatch = {
+                    "decision": "mismatch",
+                    "source": source,
+                    "raw_value": value,
+                    "record_value": value,
+                    "expected": comparison.expected,
+                    "observed": comparison.observed,
+                }
+    return first_mismatch or {"decision": "manual", "reason_code": "single_reading_not_comparable"}
 
 
 def _needs_handwritten_number(record_row: Mapping[str, Any], report_group: Sequence[Mapping[str, Any]]) -> bool:
@@ -2267,6 +2339,12 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
         if record_candidate is None and isinstance(reading, Mapping) and reading.get("accepted_value"):
             record_candidate = str(reading["accepted_value"])
             record_source = "handwriting_two_channel"
+        single_check: dict[str, Any] | None = None
+        if record_candidate is None and isinstance(reading, Mapping) and len(measurement_rows) == 1:
+            single_check = _single_reading_check(reading, *measurement_rows[0])
+            if single_check["decision"] == "match":
+                record_candidate = single_check["record_value"]
+                record_source = "handwriting_single_reading_report_confirmed"
         if record_candidate is None or len(measurement_rows) != 1:
             numeric_comparison = {
                 "decision": "manual",
@@ -2276,6 +2354,14 @@ def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[s
             if isinstance(reading, Mapping):
                 numeric_comparison["record_reading"] = dict(reading)
                 numeric_comparison["reading_reason_code"] = reading.get("reason_code")
+            if single_check is not None and single_check["decision"] == "mismatch":
+                # One channel read a clear value that does not give the Report
+                # value: either the reading or the Report is wrong.
+                numeric_comparison["reason_code"] = "single_reading_disagrees_with_report"
+                numeric_comparison["suspected_mismatch"] = True
+                numeric_comparison["record_value"] = single_check["record_value"]
+                numeric_comparison["record_source"] = single_check["source"]
+                numeric_comparison["single_reading"] = single_check
         else:
             report_value, report_requirement = measurement_rows[0]
             parsed_record = parse_report_numeric(record_candidate, extract_unit_context(report_requirement))

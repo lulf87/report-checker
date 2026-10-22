@@ -94,6 +94,7 @@
     .finding-status.pass { color: var(--pass); background: var(--pass-soft); }
     .finding-status.manual { color: var(--manual); background: var(--manual-soft); }
     .finding-status.error { color: var(--error); background: var(--error-soft); }
+    .finding-status.suspect { color: #a2461a; background: #fdeee3; }
     .finding-status.warning { color: #735596; background: #f4edfc; }
     .empty { padding: 18px 8px; color: var(--muted); text-align: center; }
     /* Results are a review workspace: findings stay on the left while evidence stays visible on the right. */
@@ -1000,6 +1001,16 @@
       }
       return item._search;
     }
+    // 单路读数与报告对不上：仍是待确认，但单独排在“问题”之后，提醒优先看。
+    function isSuspect(item) {
+      const c = item?.details?.comparison || {};
+      return item?.status === "manual" && Boolean(c.suspected_mismatch || c.numeric?.suspected_mismatch);
+    }
+    function sectionOf(item) { return isSuspect(item) ? "suspect" : item.status; }
+    function badgeOf(item) {
+      return isSuspect(item) ? { cls: "manual suspect", text: "疑似不一致" } : { cls: String(item.status || "manual"), text: STATUS_LABELS[item.status] || item.status };
+    }
+
     function visibleFindings() {
       const query = searchText.trim().toLowerCase();
       return activeFindings.filter(item => matchesFilter(item) && (!query || searchableText(item).includes(query)));
@@ -1056,9 +1067,10 @@
         updateFindingNav();
         return;
       }
-      const SECTION_NAMES = { error: "问题", manual: "需要确认", warning: "警示", pass: "一致" };
-      const statusCount = countStatuses(visible);
-      const sections = new Set(visible.map(item => item.status)).size > 1;
+      const SECTION_NAMES = { error: "问题", suspect: "疑似不一致（单路读数与报告对不上，请优先看）", manual: "需要确认", warning: "警示", pass: "一致" };
+      const statusCount = {};
+      visible.forEach(item => { const key = sectionOf(item); statusCount[key] = (statusCount[key] || 0) + 1; });
+      const sections = new Set(visible.map(sectionOf)).size > 1;
       const chapters = visible.length > 30 && visible.some(item => chapterOf(item));
       let lastSection = null;
       let lastChapter = null;
@@ -1069,9 +1081,9 @@
         findings.append(head);
       };
       visible.forEach(item => {
-        if (sections && item.status !== lastSection) {
-          addHead(`${SECTION_NAMES[item.status] || item.status}（${statusCount[item.status] ?? ""}）`, "section");
-          lastSection = item.status;
+        if (sections && sectionOf(item) !== lastSection) {
+          addHead(`${SECTION_NAMES[sectionOf(item)] || sectionOf(item)}（${statusCount[sectionOf(item)] ?? ""}）`, "section");
+          lastSection = sectionOf(item);
           lastChapter = null;
         }
         if (chapters) {
@@ -1084,10 +1096,10 @@
         row.tabIndex = 0;
         row.setAttribute("role", "button");
         row.setAttribute("aria-current", String((item.id || item.rule_id) === selectedFindingId));
-        const status = String(item.status || "manual");
+        const look = badgeOf(item);
         const badge = document.createElement("span");
-        badge.className = `finding-status ${status}`;
-        badge.textContent = STATUS_LABELS[status] || status;
+        badge.className = `finding-status ${look.cls}`;
+        badge.textContent = look.text;
         const copy = document.createElement("div");
         const title = document.createElement("div");
         title.className = "finding-title";
@@ -1487,6 +1499,8 @@
       report_date_not_stated: "报告没有写日期",
       report_guided_decimal_ocr_matched: "按报告数值引导识别手写小数后一致",
       record_cross_reference_without_report_row: "原始记录这一行只是引用其他条款，报告没有单列，不单独比较",
+      single_reading_disagrees_with_report: "单路读数与报告对不上（疑似不一致）",
+      handwriting_single_reading_report_confirmed: "单路读数与报告一致",
       single_reading_matches_report: "手写读数（取最大值、按报告位数修约）与报告一致",
       stroke_shape_reading_matches_report: "按笔画形状读出“<1”等数值，与报告一致",
       report_placeholder_and_photo_has_no_value: "报告填“/”，标签上也没有该项",
@@ -1701,7 +1715,9 @@
         rows.push({ label: "测量数值", sub: c.aggregation === "maximum_applicable_value" ? "原始记录多格取最大值后比较" : "",
           a: side(reportValue, reportLoc, "报告"), b: side(recordText, recordLoc, "原始记录"),
           status: statusKey, note: reasonText(c),
-          problem: statusKey === "pass" ? "" : `报告写“${textOf(reportValue) || "（空）"}”，${recordSaid}；${statusKey === "error" ? "两边不一致" : "请看原图核对"}` });
+          problem: statusKey === "pass" ? "" : c.suspected_mismatch
+            ? `疑似不一致：报告写“${textOf(reportValue) || "（空）"}”，${recordSaid}（只有一路读数，可能读错，也可能报告写错）`
+            : `报告写“${textOf(reportValue) || "（空）"}”，${recordSaid}；${statusKey === "error" ? "两边不一致" : "请看原图核对"}` });
       } else if (hasComparison) {
         const fieldResult = (c.field_comparisons || {}).result;
         const recordValue = c.record_symbol ?? c.record_status ?? fieldResult?.record_value ?? c.normalized_record_value ?? c.record_value ?? null;
@@ -1731,15 +1747,19 @@
         }
         if (c.numeric && typeof c.numeric === "object") {
           const n = c.numeric;
-          const source = n.record_source === "handwriting_two_channel" ? "手写，两路识别一致" : n.record_source === "native_pdf_text" ? "PDF 文字" : "";
+          const SOURCES = { handwriting_two_channel: "手写，两路识别一致", native_pdf_text: "PDF 文字",
+            handwriting_single_reading_report_confirmed: "手写，单路读数与报告一致", apple_vision: "手写，Apple Vision 读数", ios_handwriting_layer: "手写，iOS 手写识别层" };
+          const source = SOURCES[n.record_source] || "";
           const notes = [reasonText(n)];
           if (n.acceptance && n.acceptance.decision && n.acceptance.decision !== "not_applicable") notes.push(reasonText(n.acceptance));
           const reading = readingNote(n.record_reading);
           if (reading) notes.push(reading);
+          const reportShown = (n.report_values || []).join(" / ") || n.report_value;
           rows.push({ label: "实测数值", sub: source,
-            a: side((n.report_values || []).join(" / ") || n.report_value, reportLoc),
+            a: side(reportShown, reportLoc),
             b: side(n.record_value ?? n.record_values ?? (n.record_reading ? "（手写，未能确定）" : ""), recordLoc),
-            status: normStatus(n.decision), note: notes.filter(Boolean).join("。") });
+            status: normStatus(n.decision), note: notes.filter(Boolean).join("。"),
+            problem: n.suspected_mismatch ? `疑似不一致：报告写“${textOf(reportShown)}”，原始记录手写读作“${n.record_value}”（只有一路读数，可能读错，也可能报告写错）` : "" });
         }
       }
       if (!rows.length && Array.isArray(d.page_states)) {
@@ -1894,10 +1914,10 @@
         if (top > window.innerHeight * 0.6 || top < -40) comparisonCard.scrollIntoView({ behavior: "smooth", block: "start" });
       });
       comparisonModeLabel.textContent = meta.label;
-      const status = String(finding.status || "manual");
+      const look = badgeOf(finding);
       const badge = comparisonBrief.querySelector(".finding-status");
-      badge.className = `finding-status ${status}`;
-      badge.textContent = STATUS_LABELS[status] || status;
+      badge.className = `finding-status ${look.cls}`;
+      badge.textContent = look.text;
       comparisonBrief.querySelector(".brief-title").textContent = displayTitle(finding);
       updateFindingNav();
       renderFindingBrief(finding);
@@ -2202,6 +2222,12 @@
         // makes the filter and renderer independent of the transport DTO name.
         status: item.status || item.machine_status || "manual"
       }));
+      // 疑似不一致排在其余待确认之前（稳定排序，其他顺序不变）。
+      const SECTION_RANK = { error: 0, suspect: 1, manual: 2, warning: 3, pass: 4 };
+      activeFindings = activeFindings
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => ((SECTION_RANK[sectionOf(a.item)] ?? 5) - (SECTION_RANK[sectionOf(b.item)] ?? 5)) || (a.index - b.index))
+        .map(entry => entry.item);
       showRun(run, mode);
       runCount.textContent = String(activeFindings.length);
       await loadNotes(run);

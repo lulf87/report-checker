@@ -3574,7 +3574,68 @@ def _numeric_manual_comparison(
             result["single_reading_comparison"] = {
                 key: second.get(key) for key in ("decision", "reason_code", "expected", "observed")
             }
+    if (result.get("single_reading_comparison") or {}).get(
+        "decision"
+    ) == "mismatch" and not _explained_by_dropped_decimal(
+        block, target, cells, [reading for reading, _ in readings],
+        target_ordinal=target_ordinal, target_count=target_count,
+    ):
+        # Every cell has a clear reading and the group still does not give
+        # the Report value even allowing for Apple Vision's usual dropped
+        # decimal point: either a reading or the Report is wrong.
+        result["suspected_mismatch"] = True
     return result
+
+
+def _explained_by_dropped_decimal(
+    block: str,
+    target: ReportRow,
+    cells: Sequence[Mapping[str, Any]],
+    values: Sequence[str],
+    *,
+    target_ordinal: int,
+    target_count: int,
+) -> bool:
+    """Whether a missed decimal point (or "<1" read as "17") could explain it.
+
+    Used only to decide how prominently a disagreement is shown; it never
+    accepts a value.  A lone single-digit reading is a partial read and is
+    treated as explained as well.
+    """
+
+    if len(values) == 1 and re.fullmatch(r"\d", values[0]):
+        return True
+    plain = [index for index, value in enumerate(values) if re.fullmatch(r"\d{2,}", value)]
+    trials = []
+    for place in (1, 2):
+        repaired = list(values)
+        for index in plain:
+            value = values[index]
+            if len(value) > place:
+                repaired[index] = f"{value[:-place]}.{value[-place:]}"
+        trials.append(repaired)
+    # Each value with its own smallest plausible decimal point.
+    trials.append([
+        f"{value[:-2]}.{value[-2:]}" if index in plain and len(value) >= 3
+        else f"{value[:-1]}.{value[-1:]}" if index in plain
+        else value
+        for index, value in enumerate(values)
+    ])
+    for repaired in trials:
+        if repaired == list(values):
+            continue
+        completed = []
+        for cell, value in zip(cells, repaired):
+            copy = dict(cell)
+            copy["accepted_value"] = value
+            copy["stroke_reading"] = None
+            completed.append(copy)
+        trial = _numeric_comparison_from_accepted(
+            block, target, completed, target_ordinal=target_ordinal, target_count=target_count
+        )
+        if trial.get("decision") == "match":
+            return True
+    return False
 
 
 def _single_cell_reading(cell: Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -4823,9 +4884,12 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
         single = comparison.get("single_reading_comparison") or {}
         stroke_note = ""
         if readings and all(value is not None for value in readings) and single.get("decision") == "mismatch":
-            stroke_note = (
-                f"按读数“{'、'.join(str(value) for value in readings)}”比较与Report不一致"
-                "（单路读数可能读错，例如漏掉小数点），"
+            rounded = str(single.get("observed") or "").strip()
+            rounded_text = f"，取最大值按Report位数修约为“{rounded}”" if rounded and not rounded.startswith(("<", ">")) else ""
+            return (
+                f"{measure}疑似不一致：{page_text}的手写读数为“{'、'.join(str(value) for value in readings)}”"
+                f"{rounded_text}，Report填写为“{report_value_text}”。"
+                "只有一路读数，可能是读错（如漏掉小数点），也可能是报告写错，请看原图确认。"
             )
         return (
             f"{measure}：{page_text}有手写数值，但识别通道没有形成一致结果"
