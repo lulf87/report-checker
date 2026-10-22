@@ -297,33 +297,9 @@ docs/prototypes/workbench-upload.html
 .venv/bin/python -m unittest tests.test_static_server -v
 ```
 
-## 真实数据核对工作台
+## 旧的真实数据工作台（已停用）
 
-本机工作区的真实数据页面位于：
-
-```text
-docs/prototypes/workbench-real.html
-```
-
-该页面只读加载 10 份本地正式 `result.json`，依赖未随公开仓库发布的 PDF 素材和生成结果。公开仓库保留规则、服务和结果契约源码；真实工作台只在拥有对应本地数据的环境中运行。
-
-必须在本项目根目录启动本机 HTTP 服务；8765 和 8767 不能继续复用其他副本启动的旧进程：
-
-```bash
-.venv/bin/python -m mvp.static_server --mode real --bind 127.0.0.1 --port 8765
-```
-
-当前 2948 的正式 GB 9706.1 结果固定读取 `output/full-records-current-20261011/2948/report-record-9706-1/result.json`；变更结果前先保留旧快照，避免工作台在不同副本和旧标签之间切换。
-
-然后打开：
-
-```text
-http://127.0.0.1:8765/workbench-real.html
-```
-
-真实工作台的历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-real.html` 继续兼容；根路径在 `--mode real` 下会直接打开真实工作台。
-
-真实模式仍只监听回环地址；启动器从页面中的 10 份运行清单读取 `result.json`，并且只允许这些结果声明的证据图片和 `素材/` 下源 PDF。项目根目录、未列入清单的 `output` 文件、SQLite、`.git` 和 `.aws` 均不会被静态服务读取。
+早期的只读演示页 `docs/prototypes/workbench-real.html`（8766 端口）已从启动器移除：上传工作台的“最近核对”可以直接打开以前任何一次核对结果。`mvp.static_server --mode real` 仍保留，仅供本机仍有该私有页面和对应结果时使用。
 
 通用 Record 数值比较层支持显式括号区间、阈值、单位换算、报告精度和显式极性判定；未声明端点包含关系的 `~`、`至`、`±` 文本进入人工复核。两个完整 Record 扫描器仍按各自模板路径逐步接入这些语义，未接入的字段继续保留 `partial` 状态。
 
