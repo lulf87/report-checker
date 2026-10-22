@@ -1,0 +1,10 @@
+#!/bin/bash
+# 程序坞快捷方式：在终端里运行项目根目录的启动脚本（与双击 .command 相同）。
+APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_DIR="$(dirname "$APP_DIR")"
+SCRIPT="$PROJECT_DIR/启动报告核对工具.command"
+if [ ! -f "$SCRIPT" ]; then
+  osascript -e 'display alert "找不到启动脚本" message "请把“报告核对工具.app”放在项目文件夹里（和“启动报告核对工具.command”在同一层），再把它拖到程序坞。"'
+  exit 1
+fi
+open -a Terminal "$SCRIPT"
