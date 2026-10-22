@@ -119,12 +119,14 @@ class FullRecord61Tests(unittest.TestCase):
                 # The unit fixture runs without an output directory, so OCR
                 # channels are intentionally not executed here; the
                 # report-guided decimal rule has a focused unit test below.
+                # Only stroke-shape readings ("<1") can match without OCR.
                 self.assertEqual(
                     {
-                        entry["entry_id"]
+                        entry["reason_code"]
                         for entry in numeric_entries
                         if entry["disposition"] == "matched"
-                    },
+                    }
+                    - {"stroke_shape_reading_matches_report"},
                     set(),
                 )
                 self.assertTrue(all(_valid_location(entry["record_location"]) for entry in numeric_entries))
@@ -288,9 +290,10 @@ class FullRecord61Tests(unittest.TestCase):
             for sample, result in self.results.items()
         }
         self.assertEqual(mismatches_by_sample["1347"], set())
-        # The embedded 14.13 heading now resolves the previously manual row;
-        # sample 1539 then exposes its real Record=符合 vs Report=—— mismatch.
-        self.assertEqual(mismatches_by_sample["1539"], {"RECORD61-BODY-S097-E004"})
+        # The 14.1 line "…14.13的要求适用于…" only refers to 14.13; the Report
+        # 14.13 heading is compared with the Record's own 14.13 section, so
+        # the former Record=符合 vs Report=—— "mismatch" was a pairing error.
+        self.assertEqual(mismatches_by_sample["1539"], set())
         self.assertEqual(
             mismatches_by_sample["2948"],
             {
@@ -439,9 +442,8 @@ class FullRecord61Tests(unittest.TestCase):
             for item in self.results["2948"]["ledger"]
             if item["entry_id"] == "RECORD61-BODY-S097-E004"
         )
-        self.assertEqual(q741["disposition"], "matched")
-        self.assertEqual(q741["reason_code"], "status_result_matched")
-        self.assertEqual(q741["mapping"]["method"], "embedded_subclause_and_unique_requirement_context")
+        self.assertEqual(q741["disposition"], "not_applicable")
+        self.assertEqual(q741["reason_code"], "record_cross_reference_without_report_row")
         self.assertEqual(findings["RECORD61-BODY-S097-E004"]["status"], "pass")
         # The formerly unresolved Q232/Q264/Q952 near-box marks are now
         # confirmed by their matching Report results, so their sequence
@@ -461,7 +463,8 @@ class FullRecord61Tests(unittest.TestCase):
         self.assertIn("Record第106页", findings["RECORD61-NUMERIC-8_7-01"]["summary"])
         self.assertTrue(
             "小数点仅按唯一Report约束补回" in findings["RECORD61-NUMERIC-8_7-02"]["summary"]
-            or "两种识别通道" in findings["RECORD61-NUMERIC-8_7-02"]["summary"]
+            or "识别通道" in findings["RECORD61-NUMERIC-8_7-02"]["summary"]
+            or "笔画形状" in findings["RECORD61-NUMERIC-8_7-02"]["summary"]
         )
         self.assertIn("Report填写", findings["RECORD61-NUMERIC-8_7-03"]["summary"])
 

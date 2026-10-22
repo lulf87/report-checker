@@ -24,6 +24,7 @@ try:
 except ImportError:
     import fitz
 
+from mvp.handwriting_glyphs import read_stroke_glyphs
 from mvp.record_flattened import adapt_flattened_record
 from mvp.checker import (
     accepted_numeric_candidate,
@@ -126,6 +127,33 @@ def _annotation_points(annotation: fitz.Annot) -> list[tuple[float, float]]:
     ]
 
 
+def _annotation_pen_paths(page: fitz.Page, annotation: fitz.Annot) -> list[list[tuple[float, float]]]:
+    """Pen paths of one Ink annotation, in page coordinates.
+
+    Real Ink annotations store pen paths directly.  Annotations written by
+    the flattened-Record adapter store the drawn outline in ``/InkList`` and
+    the approximate pen path in ``/RCCenterline``.
+    """
+
+    try:
+        kind, value = page.parent.xref_get_key(annotation.xref, "RCCenterline")
+    except Exception:  # pragma: no cover - defensive for unusual annotations
+        kind, value = "null", ""
+    if kind == "array":
+        numbers = [float(token) for token in value.strip()[1:-1].split()]
+        matrix = page.transformation_matrix
+        path = [
+            tuple(fitz.Point(numbers[index], numbers[index + 1]) * matrix)
+            for index in range(0, len(numbers) - 1, 2)
+        ]
+        return [[(float(x), float(y)) for x, y in path]]
+    return [
+        [(float(point[0]), float(point[1])) for point in stroke]
+        for stroke in (annotation.vertices or [])
+        if stroke
+    ]
+
+
 def _page_inks(page: fitz.Page) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     for annotation in page.annots() or []:
@@ -142,6 +170,7 @@ def _page_inks(page: fitz.Page) -> list[dict[str, Any]]:
                 "bbox": bbox,
                 "point_count": len(points),
                 "_points": points,
+                "_pen_paths": _annotation_pen_paths(page, annotation),
             }
         )
     return values
@@ -1470,6 +1499,13 @@ def _mapping_edges(
             )
         )
 
+    # A clause the Record also has as its own section (its own rows in the
+    # clause column) is only a cross-reference here, e.g. 14.1 "不论14.2至
+    # 14.12的要求是否适用，14.13的要求适用于…"; the Report 14.13 heading
+    # belongs to the Record's 14.13 section.
+    record_section_clauses = {
+        _clause_token(str(row.get("clause") or "")) for row in source_rows
+    }
     embedded_matches: list[tuple[int, int]] = []
     for source in sorted(remaining_source):
         source_clause = str(source_rows[source].get("clause") or "")
@@ -1479,7 +1515,7 @@ def _mapping_edges(
             for value in re.findall(
                 r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])", source_requirement
             )
-        }
+        } - (record_section_clauses - {_clause_token(source_clause)})
         if not embedded_clauses:
             continue
         source_terms = _context_terms(source_requirement)
@@ -1745,6 +1781,25 @@ def _mapping_edges(
     }:
         raise ValueError("internal Report mapping conservation failure")
     return result
+
+
+def _is_record_cross_reference_row(
+    source: Mapping[str, Any] | None,
+    sources: Sequence[Mapping[str, Any]],
+) -> bool:
+    """A Record line that only refers to another clause with its own rows."""
+
+    if source is None:
+        return False
+    own = _clause_token(str(source.get("clause") or ""))
+    sections = {_clause_token(str(row.get("clause") or "")) for row in sources} - {own, ""}
+    mentioned = {
+        _clause_token(value)
+        for value in re.findall(
+            r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])", str(source.get("requirement") or "")
+        )
+    }
+    return bool(mentioned & sections)
 
 
 def _mapping_reason_code(
@@ -2166,6 +2221,20 @@ def _status_ledger(
                     "covered_numeric_clause": numeric_sequence_clauses.get(sequence),
                     "record_status": source.get("status") if source is not None else None,
                     "report_result": target.result_raw if target is not None else None,
+                    "mapping_method": method,
+                }
+            elif not automatic and target is None and _is_record_cross_reference_row(source, sources):
+                # e.g. 14.1 "不论14.2至14.12的要求是否适用，14.13的要求适用于…":
+                # the Report has no such line and states 14.13 under its own
+                # heading, which is compared with the Record's 14.13 section.
+                disposition = "not_applicable"
+                reason_code = "record_cross_reference_without_report_row"
+                comparison = {
+                    "decision": "not_applicable",
+                    "reason_code": reason_code,
+                    "record_status": source.get("status"),
+                    "report_result": None,
+                    "unpaired_side": "record",
                     "mapping_method": method,
                 }
             elif not automatic:
@@ -2609,6 +2678,14 @@ def _measurement_cell(
         "semantic": dict(semantic or {}),
         "ink_bboxes": [_rect(ink["bbox"]) for ink in inks],
         "ink_count": len(inks),
+        "stroke_reading": (
+            None
+            if void_or_crossed_out
+            else read_stroke_glyphs(
+                [path for ink in inks for path in (ink.get("_pen_paths") or [])],
+                _rect(cell),
+            )
+        ),
         "void_or_crossed_out": void_or_crossed_out,
         "cancellation_bboxes": cancellation_bboxes,
         "recognition_channels": {
@@ -2738,6 +2815,15 @@ def _recognize_measurement_cell(
         accepted = accepted_values[0] if accepted_values and len(accepted_values) == 1 else None
     else:
         accepted = _accepted_dual_channel_value(candidates)
+    stroke_value = (cell.get("stroke_reading") or {}).get("value")
+    accepted_by = "apple_vision_and_tesseract" if accepted is not None else None
+    if accepted is None and stroke_value and cell.get("block_type") != "4.11":
+        ocr_values = _ocr_numeric_values(
+            [*candidates.get("apple_vision", []), *candidates.get("tesseract", [])]
+        )
+        if stroke_value in ocr_values:
+            accepted = stroke_value
+            accepted_by = "stroke_shape_and_ocr"
     cell["recognition_channels"] = {
         "apple_vision": {
             "status": "available" if "apple_vision_error" not in candidates else "unavailable",
@@ -2748,7 +2834,12 @@ def _recognize_measurement_cell(
             "status": "available" if candidates.get("tesseract") else "no_candidate",
             "candidates": list(candidates.get("tesseract", [])),
         },
+        "stroke_shape": {
+            "status": "read" if stroke_value else "not_read",
+            "value": stroke_value,
+        },
     }
+    cell["accepted_by"] = accepted_by
     cell["accepted_value"] = accepted
     cell["accepted_values"] = accepted_values
     cell["ocr_image"] = str(image_path)
@@ -3425,6 +3516,53 @@ def _numeric_manual_comparison(
     target_ordinal: int = 1,
     target_count: int = 1,
 ) -> dict[str, Any]:
+    result = _numeric_comparison_from_accepted(
+        block, target, cells, target_ordinal=target_ordinal, target_count=target_count
+    )
+    if result.get("reason_code") != "record_cells_real_but_dual_recognition_unresolved" or block == "4.11":
+        return result
+    # Second chance: the stroke-shape reading ("<1", "10", ...) fills the
+    # cells OCR could not read.  It is a single channel, so it is accepted
+    # only when the completed comparison reproduces the Report value; any
+    # other outcome stays with a person.
+    stroke_values = [(cell.get("stroke_reading") or {}).get("value") for cell in cells]
+    if not cells or not all(
+        cell.get("accepted_value") is not None or stroke_values[index]
+        for index, cell in enumerate(cells)
+    ):
+        if any(stroke_values):
+            result["record_stroke_values"] = stroke_values
+        return result
+    completed = []
+    for index, cell in enumerate(cells):
+        copy = dict(cell)
+        if copy.get("accepted_value") is None:
+            copy["accepted_value"] = stroke_values[index]
+        copy["stroke_reading"] = None
+        completed.append(copy)
+    second = _numeric_comparison_from_accepted(
+        block, target, completed, target_ordinal=target_ordinal, target_count=target_count
+    )
+    if second.get("decision") == "match":
+        second = dict(second)
+        second["recognition_method"] = "stroke_shape_reproduces_report"
+        second["reason_code"] = "stroke_shape_reading_matches_report"
+        second["record_values"] = [cell.get("accepted_value") for cell in completed]
+        second["report_value"] = target.result_raw
+        return second
+    result["record_stroke_values"] = stroke_values
+    result["stroke_comparison"] = {key: second.get(key) for key in ("decision", "reason_code", "expected", "observed")}
+    return result
+
+
+def _numeric_comparison_from_accepted(
+    block: str,
+    target: ReportRow,
+    cells: Sequence[Mapping[str, Any]],
+    *,
+    target_ordinal: int = 1,
+    target_count: int = 1,
+) -> dict[str, Any]:
     # Some handwritten Record values are legible to Apple Vision but not to
     # Tesseract (or vice versa).  For the two 8.6.4 resistance rows we can
     # resolve that disagreement safely when exactly one OCR candidate converts
@@ -3512,6 +3650,7 @@ def _numeric_manual_comparison(
                 "report_value": target.result_raw,
                 "record_values": numeric_values,
             }
+        numeric_values, cells = _drop_bounds_below_measured_maximum(numeric_values, cells, target)
         individual = []
         for value, cell in zip(numeric_values, cells):
             parsed_record = parse_report_numeric(value, cell.get("unit"))
@@ -3618,6 +3757,48 @@ def _numeric_manual_comparison(
         "aggregation": "maximum_applicable_value" if len(cells) > 1 else "single_cell",
         "percentage_policy": "copy_final_recorded_percentage_only" if block == "4.11" else None,
     }
+
+
+def _drop_bounds_below_measured_maximum(
+    values: Sequence[str],
+    cells: Sequence[Mapping[str, Any]],
+    target: ReportRow,
+) -> tuple[list[str], list[Mapping[str, Any]]]:
+    """Ignore "<a" cells when the Report states an exact measured maximum.
+
+    The Report records the largest observation of the group.  Cells written
+    as "<1" are below any measured value at or above 1, so they cannot change
+    that maximum and need not be proven against it.
+    """
+
+    parsed_report = parse_report_numeric(target.result_raw, target.unit_context)
+    if parsed_report is None or parsed_report.comparator is not None:
+        return list(values), list(cells)
+    exact: list[Decimal] = []
+    bounds: list[int] = []
+    for index, (value, cell) in enumerate(zip(values, cells)):
+        parsed = parse_report_numeric(value, cell.get("unit"))
+        if parsed is None:
+            return list(values), list(cells)
+        try:
+            converted = convert_decimal(parsed.value, parsed.unit, parsed_report.unit)
+        except (TypeError, ValueError):
+            return list(values), list(cells)
+        if parsed.comparator is None:
+            exact.append(abs(converted))
+        elif parsed.comparator in {"<", "<="}:
+            bounds.append(index)
+        else:
+            return list(values), list(cells)
+    if not exact or not bounds:
+        return list(values), list(cells)
+    maximum = max(exact)
+    for index in bounds:
+        parsed = parse_report_numeric(values[index], cells[index].get("unit"))
+        if convert_decimal(parsed.value, parsed.unit, parsed_report.unit) > maximum:
+            return list(values), list(cells)
+    keep = [index for index in range(len(values)) if index not in bounds]
+    return [values[index] for index in keep], [cells[index] for index in keep]
 
 
 def _numeric_ledger(
@@ -4537,6 +4718,10 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
             cell_unit = str(cell.get("unit") or "").strip()
             if cell_unit:
                 cell_label += f"（单位{cell_unit}）"
+            stroke_value = (cell.get("stroke_reading") or {}).get("value")
+            if stroke_value:
+                candidate_text.append(f"{cell_label}：按笔画形状读作“{stroke_value}”")
+                continue
             if vision or tesseract:
                 candidate_text.append(f"{cell_label}：Apple Vision={('/'.join(vision) or '无')}，Tesseract={('/'.join(tesseract) or '无')}")
             else:
@@ -4548,11 +4733,29 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
         report = entry.get("report") or {}
         report_unit = str(report.get("unit_context") or "").strip() if isinstance(report, Mapping) else ""
         report_value_text = f"{report_value}{report_unit}" if report_unit else report_value
+        stroke_comparison = comparison.get("stroke_comparison") or {}
+        stroke_note = (
+            "按笔画形状读出的数值与Report不一致，"
+            if stroke_comparison.get("decision") == "mismatch"
+            else ""
+        )
         return (
-            f"{measure}：{page_text}有手写数值，但两种识别通道没有形成一致结果"
-            f"（{candidates}）；Report填写为“{report_value_text}”。请人工读取原始数值后再比较。"
+            f"{measure}：{page_text}有手写数值，但识别通道没有形成一致结果"
+            f"（{candidates}）；Report填写为“{report_value_text}”。{stroke_note}请人工读取原始数值后再比较。"
         )
 
+    if reason == "record_cross_reference_without_report_row":
+        return (
+            f"{_record_location_text(record)}这一行只是引用其他条款（如“14.13的要求适用于…”），"
+            "Report没有单列这一行；被引用的条款按它自己的那一节与Report比较，这一行不单独比较。"
+        )
+    if reason == "stroke_shape_reading_matches_report":
+        values = [str(value) for value in comparison.get("record_values") or [] if value is not None]
+        shown = "、".join(dict.fromkeys(values))
+        return (
+            f"Record手写“{shown}”（“<”和“1”等按笔画形状读出，OCR读不出这类笔画），"
+            f"与Report结果“{comparison.get('report_value') or comparison.get('observed') or ''}”一致，已自动确认。"
+        )
     if reason == "report_guided_decimal_ocr_matched":
         record_values = comparison.get("record_values") or []
         candidate_text = "、".join(str(value) for value in record_values)

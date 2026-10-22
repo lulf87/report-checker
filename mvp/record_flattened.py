@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - older PyMuPDF
     import fitz
 
 
-ADAPTER_VERSION = "1.3.0"
+ADAPTER_VERSION = "1.4.0"
 
 # Printed template strokes are at most 0.72 pt; strokes drawn with the iPad
 # line tool are 0.85 pt (iOS 27) or 1.04 pt (iOS 26).
@@ -424,6 +424,7 @@ def _add_hidden_ink_annotations(
     document: fitz.Document,
     page: fitz.Page,
     polylines: list[tuple[list[tuple[float, float]], fitz.Rect | None]],
+    centerlines: list[list[tuple[float, float]] | None] | None = None,
 ) -> None:
     """Attach one hidden Ink annotation per polyline as raw PDF objects.
 
@@ -439,8 +440,13 @@ def _add_hidden_ink_annotations(
     appearance = _empty_appearance(document)
     to_pdf = ~page.transformation_matrix
     new_refs: list[str] = []
-    for points, outline in polylines:
+    for index, (points, outline) in enumerate(polylines):
         pdf_points = [fitz.Point(x, y) * to_pdf for x, y in points]
+        centre = centerlines[index] if centerlines is not None else None
+        centre_key = ""
+        if centre and len(centre) >= 2:
+            centre_pdf = [fitz.Point(x, y) * to_pdf for x, y in centre]
+            centre_key = " /RCCenterline [" + " ".join(f"{_fmt(point.x)} {_fmt(point.y)}" for point in centre_pdf) + "]" 
         if outline is not None:
             # Real Ink rectangles cover the drawn stroke, i.e. the outline box.
             corners = [fitz.Point(outline.x0, outline.y0) * to_pdf, fitz.Point(outline.x1, outline.y1) * to_pdf]
@@ -457,7 +463,7 @@ def _add_hidden_ink_annotations(
             xref,
             "<< /Type /Annot /Subtype /Ink /F 2 /CA 0 /T (flattened-record-adapter) "
             f"/P {page.xref} 0 R /Rect [{' '.join(_fmt(value) for value in rect)}] "
-            f"/BS << /W 0.1 >> /AP << /N {appearance} 0 R >> /InkList [[{ink}]] >>",
+            f"/BS << /W 0.1 >> /AP << /N {appearance} 0 R >> /InkList [[{ink}]]{centre_key} >>",
         )
         new_refs.append(f"{xref} 0 R")
 
@@ -524,16 +530,22 @@ def adapt_flattened_record(document: fitz.Document, stroke_geometry: str = "outl
     for page, strokes in plans:
         removed_text_blocks += _remove_invisible_text(document, page)
         polylines = []
+        centerlines: list[list[tuple[float, float]] | None] = []
         for drawing in strokes:
             if stroke_geometry == "centerline":
                 points = stroke_centerline(drawing)
                 outline = fitz.Rect(drawing["rect"]) if (drawing.get("type") or "") != "s" else None
+                centre = None
             else:
                 points = drawing_points(drawing)
                 outline = None
+                # The outline answers "does ink reach this box"; the pen path
+                # is kept beside it for reading simple handwritten glyphs.
+                centre = stroke_centerline(drawing)
             if len(points) >= 2:
                 polylines.append((points, outline))
-        _add_hidden_ink_annotations(document, page, polylines)
+                centerlines.append(centre)
+        _add_hidden_ink_annotations(document, page, polylines, centerlines)
         if strokes:
             pages_with_strokes += 1
 

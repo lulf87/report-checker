@@ -1479,13 +1479,15 @@
       project_matched_one_to_many: "一个项目对应多行",
       range_contained: "实测范围在要求范围内",
       range_within_bound: "实测范围满足限值",
-      record_cells_real_but_dual_recognition_unresolved: "手写数值两路识别不一致",
+      record_cells_real_but_dual_recognition_unresolved: "手写数值没能可靠认出",
       record_cover_identity_excluded_by_user_scope: "原始记录封面身份字段按约定不比对",
       record_template_ends_at_chapter_16_and_has_no_chapter_17_row: "原始记录模板到第 16 章为止，没有第 17 章",
       remark_not_compared_with_photo: "备注不与照片比对",
       report_cell_blank_or_column_absent: "报告该单元格为空或没有这一列",
       report_date_not_stated: "报告没有写日期",
       report_guided_decimal_ocr_matched: "按报告数值引导识别手写小数后一致",
+      record_cross_reference_without_report_row: "原始记录这一行只是引用其他条款，报告没有单列，不单独比较",
+      stroke_shape_reading_matches_report: "按笔画形状读出“<1”等数值，与报告一致",
       report_placeholder_and_photo_has_no_value: "报告填“/”，标签上也没有该项",
       report_refers_to_other_section: "首页写“见…栏”，不在此比对",
       report_row_extra_vs_record: "报告多出的行，原始记录模板没有对应行",
@@ -1682,7 +1684,20 @@
       const recordLoc = toLoc(locs.find(item => item.role === recordRole), recordRole, "Record");
       const rows = [];
       const hasComparison = Object.keys(c).length > 0;
-      if (hasComparison) {
+      const isNumeric = hasComparison && (c.report_value !== undefined || Array.isArray(c.record_values) || /^RECORD(61|202)-NUMERIC/.test(finding.id || ""));
+      if (isNumeric) {
+        const filled = /Report填写为“([^”]+)”/.exec(d.reason_detail || "");
+        const reportValue = filled ? filled[1] : (c.report_value ?? c.observed ?? c.expected ?? "");
+        const readings = (Array.isArray(c.record_values) ? c.record_values : [c.record_candidate ?? c.record_value ?? c.maximum_candidate])
+          .filter(v => v !== null && v !== undefined && v !== "");
+        const statusKey = normStatus(c.decision || finding.status);
+        const recordText = readings.length ? readings.join("、") : "（手写数值没认出）";
+        const recordSaid = readings.length ? `原始记录手写的是“${readings.join("、")}”` : "原始记录的手写数值没能可靠认出";
+        rows.push({ label: "测量数值", sub: c.aggregation === "maximum_applicable_value" ? "原始记录多格取最大值后比较" : "",
+          a: side(reportValue, reportLoc, "报告"), b: side(recordText, recordLoc, "原始记录"),
+          status: statusKey, note: reasonText(c),
+          problem: statusKey === "pass" ? "" : `报告写“${textOf(reportValue) || "（空）"}”，${recordSaid}；${statusKey === "error" ? "两边不一致" : "请看原图核对"}` });
+      } else if (hasComparison) {
         const fieldResult = (c.field_comparisons || {}).result;
         const recordValue = c.record_symbol ?? c.record_status ?? fieldResult?.record_value ?? c.normalized_record_value ?? c.record_value ?? null;
         const reportValue = c.report_result_physical ?? c.report_result ?? (d.report_results ? d.report_results.join(" / ") : null) ?? c.observed ?? c.expected;
