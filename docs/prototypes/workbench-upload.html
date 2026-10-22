@@ -1487,6 +1487,7 @@
       report_date_not_stated: "报告没有写日期",
       report_guided_decimal_ocr_matched: "按报告数值引导识别手写小数后一致",
       record_cross_reference_without_report_row: "原始记录这一行只是引用其他条款，报告没有单列，不单独比较",
+      single_reading_matches_report: "手写读数（取最大值、按报告位数修约）与报告一致",
       stroke_shape_reading_matches_report: "按笔画形状读出“<1”等数值，与报告一致",
       report_placeholder_and_photo_has_no_value: "报告填“/”，标签上也没有该项",
       report_refers_to_other_section: "首页写“见…栏”，不在此比对",
@@ -1688,11 +1689,15 @@
       if (isNumeric) {
         const filled = /Report填写为“([^”]+)”/.exec(d.reason_detail || "");
         const reportValue = filled ? filled[1] : (c.report_value ?? c.observed ?? c.expected ?? "");
-        const readings = (Array.isArray(c.record_values) ? c.record_values : [c.record_candidate ?? c.record_value ?? c.maximum_candidate])
-          .filter(v => v !== null && v !== undefined && v !== "");
+        const pool = c.decision !== "match" && Array.isArray(c.record_readings) ? c.record_readings
+          : Array.isArray(c.record_values) ? c.record_values : [c.record_candidate ?? c.record_value ?? c.maximum_candidate];
+        const readings = pool.filter(v => v !== null && v !== undefined && v !== "");
         const statusKey = normStatus(c.decision || finding.status);
         const recordText = readings.length ? readings.join("、") : "（手写数值没认出）";
-        const recordSaid = readings.length ? `原始记录手写的是“${readings.join("、")}”` : "原始记录的手写数值没能可靠认出";
+        const partial = pool.some(v => v === null || v === undefined || v === "");
+        const recordSaid = !readings.length ? "原始记录的手写数值没能可靠认出"
+          : partial ? `原始记录有的格没认出（认出的：“${readings.join("、")}”）`
+          : `原始记录读作“${readings.join("、")}”`;
         rows.push({ label: "测量数值", sub: c.aggregation === "maximum_applicable_value" ? "原始记录多格取最大值后比较" : "",
           a: side(reportValue, reportLoc, "报告"), b: side(recordText, recordLoc, "原始记录"),
           status: statusKey, note: reasonText(c),

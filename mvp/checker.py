@@ -1589,7 +1589,15 @@ def render_cell_for_ocr(page: fitz.Page, rect: fitz.Rect, output_path: Path) -> 
     pix.save(output_path)
 
 
-def local_ocr_candidates(image_path: Path) -> dict[str, Any]:
+def local_ocr_candidates(image_path: Path, *, tesseract: str = "always") -> dict[str, Any]:
+    """OCR one image with Apple Vision and, unless skipped, Tesseract.
+
+    ``tesseract="fallback"`` runs Tesseract only when Apple Vision is not
+    available (for example on Linux).  Handwritten Record numbers use this:
+    on the 2948/3944/1998 Records Tesseract added no correct reading that
+    Apple Vision missed, and each cell cost three extra Tesseract passes.
+    """
+
     results: dict[str, Any] = {"apple_vision": [], "tesseract": []}
     try:
         from ocrmac.ocrmac import text_from_image
@@ -1604,7 +1612,10 @@ def local_ocr_candidates(image_path: Path) -> dict[str, Any]:
     except Exception as exc:  # optional local backend
         results["apple_vision_error"] = str(exc)
 
-    if shutil.which("tesseract"):
+    skip_tesseract = tesseract == "fallback" and "apple_vision_error" not in results
+    if skip_tesseract:
+        results["tesseract_skipped"] = True
+    if shutil.which("tesseract") and not skip_tesseract:
         for psm in (7, 8, 13):
             process = subprocess.run(
                 [

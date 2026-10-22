@@ -2805,7 +2805,11 @@ def _recognize_measurement_cell(
     safe_name = re.sub(r"[^0-9A-Za-z._-]+", "_", str(cell["row_id"]))
     image_path = output_dir / "record61-ocr" / f"{safe_name}.png"
     render_cell_for_ocr(page, fitz.Rect(cell["bbox"]), image_path)
-    candidates = local_ocr_candidates(image_path)
+    candidates = local_ocr_candidates(
+        image_path,
+        # 4.11 percentages still need two agreeing channels.
+        tesseract="always" if cell.get("block_type") == "4.11" else "fallback",
+    )
     accepted_values = None
     if cell.get("block_type") == "4.11":
         accepted_values = _accepted_dual_channel_values(
@@ -2831,7 +2835,11 @@ def _recognize_measurement_cell(
             "error": candidates.get("apple_vision_error"),
         },
         "tesseract": {
-            "status": "available" if candidates.get("tesseract") else "no_candidate",
+            "status": (
+                "skipped"
+                if candidates.get("tesseract_skipped")
+                else "available" if candidates.get("tesseract") else "no_candidate"
+            ),
             "candidates": list(candidates.get("tesseract", [])),
         },
         "stroke_shape": {
@@ -3521,38 +3529,116 @@ def _numeric_manual_comparison(
     )
     if result.get("reason_code") != "record_cells_real_but_dual_recognition_unresolved" or block == "4.11":
         return result
-    # Second chance: the stroke-shape reading ("<1", "10", ...) fills the
-    # cells OCR could not read.  It is a single channel, so it is accepted
-    # only when the completed comparison reproduces the Report value; any
-    # other outcome stays with a person.
-    stroke_values = [(cell.get("stroke_reading") or {}).get("value") for cell in cells]
-    if not cells or not all(
-        cell.get("accepted_value") is not None or stroke_values[index]
-        for index, cell in enumerate(cells)
-    ):
-        if any(stroke_values):
-            result["record_stroke_values"] = stroke_values
+    # Second chance: one reading per cell, from the most reliable source.
+    #
+    # * the stroke-shape reading ("<1", "10", ...), which OCR cannot read;
+    # * otherwise Apple Vision (Tesseract only when Vision is unavailable).
+    #
+    # Apple Vision often drops the decimal point of a handwritten value
+    # ("123.9" -> "1239").  Undotted values are therefore also tried with the
+    # decimal places the other cells of the same table were written with.
+    # A single reading is accepted only when the completed comparison
+    # reproduces the Report value (maximum of the group, Report rounding);
+    # anything else stays with a person, never an automatic error.
+    readings = [_single_cell_reading(cell) for cell in cells]
+    result["record_readings"] = [reading for reading, _ in readings]
+    result["record_reading_sources"] = [source for _, source in readings]
+    if not cells or any(reading is None for reading, _ in readings):
         return result
-    completed = []
-    for index, cell in enumerate(cells):
-        copy = dict(cell)
-        if copy.get("accepted_value") is None:
-            copy["accepted_value"] = stroke_values[index]
-        copy["stroke_reading"] = None
-        completed.append(copy)
-    second = _numeric_comparison_from_accepted(
-        block, target, completed, target_ordinal=target_ordinal, target_count=target_count
-    )
-    if second.get("decision") == "match":
-        second = dict(second)
-        second["recognition_method"] = "stroke_shape_reproduces_report"
-        second["reason_code"] = "stroke_shape_reading_matches_report"
-        second["record_values"] = [cell.get("accepted_value") for cell in completed]
-        second["report_value"] = target.result_raw
-        return second
-    result["record_stroke_values"] = stroke_values
-    result["stroke_comparison"] = {key: second.get(key) for key in ("decision", "reason_code", "expected", "observed")}
+    for option, values in _decimal_repair_options([reading for reading, _ in readings], cells, target):
+        completed = []
+        for cell, value in zip(cells, values):
+            copy = dict(cell)
+            copy["accepted_value"] = value
+            copy["stroke_reading"] = None
+            completed.append(copy)
+        second = _numeric_comparison_from_accepted(
+            block, target, completed, target_ordinal=target_ordinal, target_count=target_count
+        )
+        if second.get("decision") == "match":
+            second = dict(second)
+            sources = {source for _, source in readings}
+            second["reason_code"] = (
+                "stroke_shape_reading_matches_report"
+                if sources == {"stroke_shape"}
+                else "single_reading_matches_report"
+            )
+            second["recognition_method"] = "single_reading_reproduces_report"
+            second["record_values"] = list(values)
+            second["record_readings"] = [reading for reading, _ in readings]
+            second["record_reading_sources"] = [source for _, source in readings]
+            second["decimal_repair"] = option
+            second["report_value"] = target.result_raw
+            return second
+        if option == "as_read":
+            result["single_reading_comparison"] = {
+                key: second.get(key) for key in ("decision", "reason_code", "expected", "observed")
+            }
     return result
+
+
+def _single_cell_reading(cell: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    if cell.get("accepted_value") is not None:
+        return str(cell["accepted_value"]), str(cell.get("accepted_by") or "two_channels")
+    stroke = (cell.get("stroke_reading") or {}).get("value")
+    if stroke:
+        return str(stroke), "stroke_shape"
+    channels = cell.get("recognition_channels") or {}
+    vision = channels.get("apple_vision") or {}
+    if vision.get("status") == "available":
+        values = _ocr_numeric_values(vision.get("candidates", []))
+        return (next(iter(values)), "apple_vision") if len(values) == 1 else (None, None)
+    values = _ocr_numeric_values((channels.get("tesseract") or {}).get("candidates", []))
+    return (next(iter(values)), "tesseract") if len(values) == 1 else (None, None)
+
+
+def _decimal_repair_options(
+    values: Sequence[str],
+    cells: Sequence[Mapping[str, Any]],
+    target: ReportRow,
+) -> list[tuple[str, list[str]]]:
+    """The readings as read, then with OCR-dropped decimal points restored.
+
+    Restoring a decimal point only ever makes a value smaller, so it is used
+    only against an exact Report value (never "<X", which a smaller value
+    satisfies more easily).  One number of decimal places is applied to every
+    undotted reading of the group (the same instrument resolution), and the
+    group maximum must then be a value written with exactly that many
+    places; otherwise a larger true value could be hidden.
+    """
+
+    options: list[tuple[str, list[str]]] = [("as_read", list(values))]
+    parsed_report = parse_report_numeric(target.result_raw, target.unit_context)
+    if parsed_report is None or parsed_report.comparator is not None:
+        return options
+    plain = [index for index, value in enumerate(values) if re.fullmatch(r"\d{2,}", value)]
+    if not plain:
+        return options
+    for place in (1, 2):
+        repaired = list(values)
+        for index in plain:
+            value = values[index]
+            if len(value) > place:
+                repaired[index] = f"{value[:-place]}.{value[-place:]}"
+        if repaired == list(values):
+            continue
+        exact: list[tuple[Decimal, str]] = []
+        for value, cell in zip(repaired, cells):
+            parsed = parse_report_numeric(value, cell.get("unit"))
+            if parsed is None or parsed.comparator is not None:
+                continue
+            try:
+                exact.append((abs(convert_decimal(parsed.value, parsed.unit, parsed_report.unit)), value))
+            except (TypeError, ValueError):
+                exact = []
+                break
+        if not exact:
+            continue
+        maximum = max(exact, key=lambda item: item[0])[1]
+        if "." not in maximum or len(maximum.split(".", 1)[1]) != place:
+            continue
+        options.append((f"decimal_places_{place}", repaired))
+    return options
 
 
 def _numeric_comparison_from_accepted(
@@ -4733,12 +4819,14 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
         report = entry.get("report") or {}
         report_unit = str(report.get("unit_context") or "").strip() if isinstance(report, Mapping) else ""
         report_value_text = f"{report_value}{report_unit}" if report_unit else report_value
-        stroke_comparison = comparison.get("stroke_comparison") or {}
-        stroke_note = (
-            "按笔画形状读出的数值与Report不一致，"
-            if stroke_comparison.get("decision") == "mismatch"
-            else ""
-        )
+        readings = comparison.get("record_readings") or []
+        single = comparison.get("single_reading_comparison") or {}
+        stroke_note = ""
+        if readings and all(value is not None for value in readings) and single.get("decision") == "mismatch":
+            stroke_note = (
+                f"按读数“{'、'.join(str(value) for value in readings)}”比较与Report不一致"
+                "（单路读数可能读错，例如漏掉小数点），"
+            )
         return (
             f"{measure}：{page_text}有手写数值，但识别通道没有形成一致结果"
             f"（{candidates}）；Report填写为“{report_value_text}”。{stroke_note}请人工读取原始数值后再比较。"
@@ -4748,6 +4836,27 @@ def _finding_reason_detail(entry: Mapping[str, Any], ledger: Sequence[Mapping[st
         return (
             f"{_record_location_text(record)}这一行只是引用其他条款（如“14.13的要求适用于…”），"
             "Report没有单列这一行；被引用的条款按它自己的那一节与Report比较，这一行不单独比较。"
+        )
+    if reason == "single_reading_matches_report":
+        values = [str(value) for value in comparison.get("record_values") or [] if value is not None]
+        sources = set(comparison.get("record_reading_sources") or [])
+        source_text = "、".join(
+            name
+            for key, name in (
+                ("apple_vision", "Apple Vision"),
+                ("stroke_shape", "笔画形状"),
+                ("tesseract", "Tesseract"),
+                ("apple_vision_and_tesseract", "两路OCR"),
+                ("stroke_shape_and_ocr", "笔画形状和OCR"),
+            )
+            if key in sources
+        ) or "OCR"
+        repaired = str(comparison.get("decimal_repair") or "").startswith("decimal_places_")
+        repair_text = "（OCR漏掉的小数点按同表其他格的小数位补回）" if repaired else ""
+        aggregation = "取最大值" if len(values) > 1 else ""
+        return (
+            f"Record手写读数为“{'、'.join(values)}”{repair_text}（{source_text}），{aggregation}"
+            f"与Report结果“{comparison.get('report_value') or ''}”一致（按Report的位数修约），已自动确认。"
         )
     if reason == "stroke_shape_reading_matches_report":
         values = [str(value) for value in comparison.get("record_values") or [] if value is not None]
