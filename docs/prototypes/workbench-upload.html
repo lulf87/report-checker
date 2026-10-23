@@ -95,6 +95,7 @@
     .finding-status.manual { color: var(--manual); background: var(--manual-soft); }
     .finding-status.error { color: var(--error); background: var(--error-soft); }
     .finding-status.suspect { color: #a2461a; background: #fdeee3; }
+    .finding-status.na { color: #66737b; background: #edf1f3; }
     .finding-status.warning { color: #735596; background: #f4edfc; }
     .empty { padding: 18px 8px; color: var(--muted); text-align: center; }
     /* Results are a review workspace: findings stay on the left while evidence stays visible on the right. */
@@ -1011,7 +1012,10 @@
       return item?.status === "manual" && Boolean(c.suspected_mismatch || c.numeric?.suspected_mismatch);
     }
     function sectionOf(item) { return isSuspect(item) ? "suspect" : item.status; }
+    // 没有样品描述表时 R02～R06 不执行（不适用），不要显示成“一致”。
+    function isNotExecuted(item) { return Boolean(item?.details?.not_executed); }
     function badgeOf(item) {
+      if (isNotExecuted(item)) return { cls: "na", text: "不适用" };
       return isSuspect(item) ? { cls: "manual suspect", text: "疑似不一致" } : { cls: String(item.status || "manual"), text: STATUS_LABELS[item.status] || item.status };
     }
 
@@ -1301,9 +1305,11 @@
       errorStat.querySelector("b").textContent = String(errors);
       manualStat.querySelector("b").textContent = String(manual);
       passStat.querySelector("b").textContent = String(pass);
-      const headline = errors
+      const skipped = activeFindings.filter(isNotExecuted).length;
+      const skippedText = skipped ? `；${skipped} 条检查不适用（报告没有样品描述表，未执行）` : "";
+      const headline = (errors
         ? `发现 ${errors} 处问题${manual ? `，另有 ${manual} 处需要你确认` : ""}`
-        : manual ? `没有发现明确的问题，有 ${manual} 处需要你确认` : `全部 ${pass} 项核对一致`;
+        : manual ? `没有发现明确的问题，有 ${manual} 处需要你确认` : skipped ? `其余 ${pass} 项核对一致` : `全部 ${pass} 项核对一致`) + skippedText;
       verdictText.replaceChildren(document.createTextNode(headline));
       const note = document.createElement("small");
       const handled = activeFindings.filter(item => notesByKey.has(findingKey(item))).length;

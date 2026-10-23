@@ -1,6 +1,6 @@
 # 报告核对工具：Report / Record 全量比对
 
-**版本 1.2.4（2026-10-23）**：Report 自检、Report + GB 9706.1 Record、Report + GB 9706.202 Record 三个模式可用；PTR 比对尚未启用，留待后续版本。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+**版本 1.2.5（2026-10-23）**：Report 自检、Report + GB 9706.1 Record、Report + GB 9706.202 Record 三个模式可用；PTR 比对尚未启用，留待后续版本。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 这是从零搭建的本机工具，不继承旧项目的架构、代码、规则、阈值、接口或测试。公开仓库只包含代码、文档、工作台和测试源码；本地 PDF 素材、生成结果、SQLite 状态库和样本复核记录不随仓库发布。使用真实样本运行时，请把本地素材放在项目约定的 `素材/` 目录。
 

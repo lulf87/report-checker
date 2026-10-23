@@ -1428,6 +1428,15 @@ def analyze_report_photo_rules(
     sample_table_found = bool(rows)
     for finding in findings:
         finding["details"]["sample_table_found"] = sample_table_found
+        if not sample_table_found:
+            # 用户 2026-10-20 确认：没有样品描述表时，依赖该表的检查不执行（不适用）。
+            # 摘要直接说明没有执行，不写成“0个对象一致”。
+            finding["details"]["not_executed"] = True
+            finding["details"]["not_executed_reason"] = "sample_description_table_absent"
+            finding["summary"] = (
+                "不适用：报告中没有样品描述表（样品描述可能是文字说明），本项没有执行；"
+                "如需核对，请人工对照样品描述与照片页。"
+            )
     ocr_records = ocr_provider.records() if ocr_provider is not None and getattr(ocr_provider, "available", False) else []
     return {
         "report_pdf": str(report_path),
