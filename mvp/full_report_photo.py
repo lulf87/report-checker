@@ -23,6 +23,7 @@ SAMPLE_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "规格型号": ("规格型号", "型号", "型号规格", "物料编码/型号规格", "组件号", "组件编号"),
     "序列号/批号": (
         "序列号/批号", "批号/序列号", "批次号/序列号", "序列号/批次号", "序列号", "批号", "批次号", "产品编号/批号",
+        "批号/生产编号", "生产编号/批号", "生产编号", "产品编号", "序列号/生产编号", "生产编号/序列号",
     ),
     "生产日期": ("生产日期", "生产日期/有效期", "生产日期（年月日）"),
     "失效日期": ("失效日期", "有效期至", "有效日期"),
@@ -154,20 +155,52 @@ def _sample_row(
     }
 
 
+# The sample table belongs to “样品描述”.  The next front-matter section,
+# “型号规格或其他说明”, often lists auxiliary equipment ("配合检测的设备")
+# in a table with the same columns; such tables are not the sample.
+_OTHER_NOTES_HEADING = "型号规格或其他说明"
+_AUXILIARY_TABLE_CUES = ("配合检测", "配合使用", "辅助设备", "陪测设备", "检测用设备", "测试用设备")
+
+
+def _other_notes_top(page: fitz.Page) -> float | None:
+    hits = page.search_for(_OTHER_NOTES_HEADING)
+    return min(hit.y0 for hit in hits) if hits else None
+
+
+def _is_auxiliary_table(page: fitz.Page, table: fitz.table.Table) -> bool:
+    top = fitz.Rect(table.bbox).y0
+    above = fitz.Rect(0, max(0.0, top - 70.0), page.rect.width, top)
+    text = compact_layout(page.get_text("text", clip=above))
+    return any(cue in text for cue in _AUXILIARY_TABLE_CUES)
+
+
 def parse_sample_description(document: fitz.Document) -> tuple[list[dict[str, Any]], list[str]]:
-    """Discover and extract the sample-description table and its headerless continuation."""
+    """Discover and extract the sample-description table and its headerless continuation.
+
+    Only tables before the “型号规格或其他说明” heading count, and a table
+    introduced as equipment used for the test (“配合检测的设备有：”) is never
+    the sample table.
+    """
 
     rows_found: list[dict[str, Any]] = []
     diagnostics: list[str] = []
     mapping: dict[str, int] | None = None
     started = False
     last_sample_page: int | None = None
+    other_notes_reached = False
 
     for page in document:
+        if other_notes_reached:
+            break
         page_added = False
+        notes_top = _other_notes_top(page)
         for table in page.find_tables().tables:
             extracted = table.extract()
             if not extracted:
+                continue
+            if notes_top is not None and fitz.Rect(table.bbox).y0 >= notes_top:
+                continue
+            if _is_auxiliary_table(page, table):
                 continue
             candidate_mapping = _header_mapping(extracted[0])
             if candidate_mapping is not None:
@@ -202,6 +235,8 @@ def parse_sample_description(document: fitz.Document) -> tuple[list[dict[str, An
             if page_added:
                 last_sample_page = page.number
 
+        if notes_top is not None:
+            other_notes_reached = True
         if started and last_sample_page is not None and page.number > last_sample_page + 1:
             break
 
