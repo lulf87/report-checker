@@ -164,7 +164,7 @@ def _parse_result(text: str) -> dict[str, Any]:
 
 
 def _declared_unit(requirement: str) -> str | None:
-    match = re.search(r"单位[:：]([A-Za-zµμΩ%()]+)", _normalized_math(requirement), re.IGNORECASE)
+    match = re.search(r"单位[:：]([A-Za-zµμΩ%()∙·⋅]+)", _normalized_math(requirement), re.IGNORECASE)
     return match.group(1) if match else None
 
 
@@ -383,7 +383,8 @@ def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> 
         return None
     if parsed.get("unit") == "%":
         percent_tolerances = {Decimal(value) for value in re.findall(r"±(\d+(?:\.\d+)?)%", text)}
-        asymmetric = re.search(r"\+(\d+(?:\.\d+)?)%/[-－](\d+(?:\.\d+)?)%|[-－](\d+(?:\.\d+)?)%/\+(\d+(?:\.\d+)?)%", text)
+        # “+5%/-10%”，也有写成“-10%，+5%”的。
+        asymmetric = re.search(r"\+(\d+(?:\.\d+)?)%[/，,、][-－](\d+(?:\.\d+)?)%|[-－](\d+(?:\.\d+)?)%[/，,、]\+(\d+(?:\.\d+)?)%", text)
         if asymmetric and not percent_tolerances:
             if asymmetric.group(1) is not None:
                 high, low = Decimal(asymmetric.group(1)), -Decimal(asymmetric.group(2))
@@ -404,12 +405,12 @@ def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> 
     signed = re.fullmatch(r"[+-]\d+(?:\.\d+)?(?:～[+-]\d+(?:\.\d+)?)?", _normalized_math(result_text))
     if not signed:
         return None
-    tolerances = list(re.finditer(r"±(?P<t>\d+(?:\.\d+)?)(?![\d.])(?P<tu>[A-Za-zµμΩ]*)(?![%\d])", text))
+    tolerances = list(re.finditer(r"±(?P<t>\d+(?:\.\d+)?)(?![\d.])(?P<tu>[A-Za-zµμΩ∙·⋅]*)(?![%\d])", text))
     if len({(match.group("t"), match.group("tu")) for match in tolerances}) != 1:
         return None
     match = tolerances[0]
     nominal = re.search(
-        r"(?<![\d.])(?P<c>\d+(?:\.\d+)?)(?P<cu>[A-Za-zµμΩ]*)[:：]?$",
+        r"(?<![\d.])(?P<c>\d+(?:\.\d+)?)(?P<cu>[A-Za-zµμΩ∙·⋅]*)[:：]?$",
         text[: match.start()],
     )
     tolerance_unit = match.group("tu") or (nominal.group("cu") if nominal else "") or None
@@ -423,9 +424,14 @@ def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> 
         center = _convert(_parse_number(nominal.group("c")), center_unit, target)
         if center is None:
             return None
-        # 带正负号的结果只有在“按绝对值理解不可能合格”时才按偏差处理，避免两种理解都说得通。
+        # 带正负号的结果可以理解为偏差（±tolerance 以内），也可以理解为测得值本身
+        # （center±tolerance 以内）。两种理解结论相同才自动判定（如 0.2mV±0.2mV、结果 +0.0：
+        # 两种都合格）；结论不同才交人工。
         if any(abs(value) >= center - tolerance for value in values):
-            return None
+            as_deviation = all(-tolerance <= value <= tolerance for value in values)
+            as_measured = all(center - tolerance <= value <= center + tolerance for value in values)
+            if as_deviation != as_measured:
+                return None
     elif not any(word in text for word in _TOLERANCE_WORDS) and not _alternative_tolerance(text):
         return None
     criterion = {"kind": "interval", "low": -tolerance, "high": tolerance, "unit": target, "source": match.group(0)}
@@ -483,6 +489,16 @@ def _extra_criterion(text: str) -> dict[str, Any] | None:
     if match := re.search(r"应?在(\d+(?:\.\d+)?)%(?:以)?内", text):
         bound = _parse_number(match.group(1))
         return {"kind": "interval", "low": -bound, "high": bound, "unit": "%", "source": match.group(0)}
+    # “扭矩为0.08～0.12N∙m 单位：N∙m”：要求本身给出的取值范围，单位须与声明的单位一致。
+    declared = _declared_unit(text)
+    if declared and (match := re.search(
+        r"(?:应为|为|应在)(\d+(?:\.\d+)?)～(\d+(?:\.\d+)?)([A-Za-zµμΩ%∙·⋅]+)?(?:之间|范围内|以内)?",
+        text,
+    )):
+        unit = match.group(3)
+        low, high = _parse_number(match.group(1)), _parse_number(match.group(2))
+        if (unit is None or unit == declared) and low < high:
+            return {"kind": "interval", "low": low, "high": high, "unit": declared, "source": match.group(0)}
     if match := re.search(
         r"(?:包含在|在)(\d+(?:\.\d+)?)([A-Za-zµμΩ]+)～(\d+(?:\.\d+)?)([A-Za-zµμΩ]+)的?(?:频段|范围)",
         text,

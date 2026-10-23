@@ -48,6 +48,22 @@ class AcceptancePhraseTests(unittest.TestCase):
         self.assertNotIn("20", decision["criterion"]["source"])
         self.assertEqual(evaluate_numeric_measurement("在压力值≤20g 时，误差不超过±3g; 单位：g", "-2.4～+4.0")["status"], "error")
 
+    def test_nominal_equal_to_tolerance_decides_when_both_readings_agree(self) -> None:
+        # Sample 0539 item 50: "0.2mV：±0.2mV", result "+0.0" passes as a deviation and as a value.
+        self.assertEqual(evaluate_numeric_measurement("0.2mV ：± 0.2 mV | 正向", "+0.0")["status"], "pass")
+        # "+0.3": deviation fails, value 0.3 within 0～0.4 passes -> a person decides.
+        self.assertEqual(evaluate_numeric_measurement("0.2mV ：± 0.2 mV | 正向", "+0.3")["status"], "manual")
+
+    def test_comma_separated_asymmetric_percent(self) -> None:
+        self.assertEqual(evaluate_numeric_measurement("当 40J 时，允差：-10%，+5%。", "-9%")["status"], "pass")
+        self.assertEqual(evaluate_numeric_measurement("当 40J 时，允差：-10%，+5%。", "+6%")["status"], "error")
+
+    def test_value_range_with_compound_unit(self) -> None:
+        requirement = "顺时针方向，扭矩为0.08～0.12N∙m 单位：N∙m"
+        self.assertEqual(evaluate_numeric_measurement(requirement, "0.113")["status"], "pass")
+        self.assertEqual(evaluate_numeric_measurement(requirement, "0.13")["status"], "error")
+        self.assertEqual(evaluate_numeric_measurement("预置力矩应为 8.5±1.41N·cm。 单位：N·cm", "+0.58")["status"], "pass")
+
 
 if __name__ == "__main__":
     unittest.main()
