@@ -55,6 +55,8 @@ class Sample0483Tests(unittest.TestCase):
         # 序号 50/51 的“单位：mV”写在上一行（允差行），视为已写单位。
         self.assertNotIn((51, "numeric_result_without_unit"), kinds)
         self.assertNotIn((49, "conclusion_cell_not_covering_item"), kinds)
+        # 计数结果“1269 个”豁免（用户 2026-10-23）。
+        self.assertNotIn((10, "numeric_result_without_unit"), kinds)
 
 
 if __name__ == "__main__":

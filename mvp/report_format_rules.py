@@ -9,7 +9,8 @@ Agreed with the user on 2026-10-23, both reported as errors:
 * **数值结果缺少“单位：”** – a result written as a number (not a percentage,
   not text such as “符合要求”) needs a “单位：X” in its acceptance text
   (anywhere earlier in the same item, e.g. “……取较大值；单位：mV”).  Only the
-  “单位：X” form counts; a unit written after the number (“1289 个”) does not.
+  “单位：X” form counts.  Exempt (user, 2026-10-23): counts written with
+  “个”, e.g. particle counts “1269 个”.
 """
 
 from __future__ import annotations
@@ -70,6 +71,9 @@ def report_format_defects(report_path: str | Path) -> dict[int, list[dict[str, A
         if not result or "%" in result or "％" in result or not _NUMERIC_RESULT.match(result):
             continue
         if row.unit_context:
+            continue
+        if "个" in result:
+            # 用户 2026-10-23：计数结果（如颗粒数“1269 个”）豁免，不要求“单位：”。
             continue
         requirement = (row.requirement_path or (row.requirement_raw,))[0]
         # 同一允差下的多行（如“正向”“负向”）用最末一级要求区分。
