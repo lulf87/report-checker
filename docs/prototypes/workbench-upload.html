@@ -1801,20 +1801,39 @@
       return raw || REASON_TEXT[c.reason_code] || "—";
     }
 
+    // 报告自检时，一条问题常在报告里前后两处（如样品描述表 ↔ 照片页）。
+    // 这时右侧窗格也打开同一份报告：左边是报告填写处（a），右边是对照处（b）。
+    let dualReport = false;
+    function paneFor(loc, which) {
+      if (loc.role !== "report") return recordPane;
+      return dualReport && which === "b" ? recordPane : reportPane;
+    }
+
     async function focusCheckRow(row, which) {
-      const meta = MODE_META[activeMode] || MODE_META.self;
       const status = normStatus(row.status) === "info" ? "pass" : normStatus(row.status);
-      const reportLocs = [row.a.loc, row.b.loc].filter(loc => loc && loc.role === "report");
-      const recordLocs = [row.a.loc, row.b.loc].filter(loc => loc && meta.recordRole && loc.role === meta.recordRole);
       if (which) {
         const loc = row[which].loc;
-        if (!loc) return;
-        if (loc.role === "report") await reportPane.setFinding(status, [loc]);
-        else await recordPane.setFinding(status, [loc]);
+        if (loc) await paneFor(loc, which).setFinding(status, [loc]);
         return;
       }
-      if (reportLocs.length) await reportPane.setFinding(status, reportLocs);
-      if (recordLocs.length) await recordPane.setFinding(status, recordLocs);
+      const byPane = new Map();
+      for (const key of ["a", "b"]) {
+        const loc = row[key].loc;
+        if (!loc) continue;
+        const pane = paneFor(loc, key);
+        byPane.set(pane, [...(byPane.get(pane) || []), loc]);
+      }
+      for (const [pane, locs] of byPane) await pane.setFinding(status, locs);
+    }
+
+    function dualReportLocations(finding) {
+      const rows = [...checkRowsFor(finding)];
+      const flagged = rows.filter(row => ["error", "manual"].includes(normStatus(row.status)));
+      const pick = flagged.length ? flagged : rows;
+      const a = pick.map(row => row.a.loc).filter(loc => loc && loc.role === "report");
+      const b = pick.map(row => row.b.loc).filter(loc => loc && loc.role === "report");
+      const far = b.some(loc => !a.some(other => other.pdf_page === loc.pdf_page));
+      return a.length && b.length && far ? { a, b } : null;
     }
 
     const rowElements = new WeakMap();
@@ -1824,7 +1843,7 @@
         const pane = chip.dataset.pageRole === "report" ? reportPane : recordPane;
         const pdfPage = Number(chip.dataset.pdfPage);
         const printed = await pane.printedPage(pdfPage);
-        const who = chip.dataset.pageRole === "report" ? "报告" : "记录";
+        const who = chip.dataset.who || (chip.dataset.pageRole === "report" ? "报告" : "记录");
         chip.textContent = printed && printed !== pdfPage ? `${who} 第 ${printed} 页（PDF ${pdfPage}）` : `${who} 第 ${pdfPage} 页`;
       }
     }
@@ -1866,7 +1885,8 @@
         if (sideValue.loc) {
           const chip = document.createElement("button");
           chip.type = "button"; chip.className = "loc-chip";
-          chip.dataset.pageRole = sideValue.loc.role === "report" ? "report" : "record";
+          chip.dataset.pageRole = paneFor(sideValue.loc, key) === reportPane ? "report" : "record";
+          chip.dataset.who = sideValue.loc.role === "report" ? "报告" : "记录";
           chip.dataset.pdfPage = String(sideValue.loc.pdf_page);
           chip.textContent = `${sideValue.loc.role === "report" ? "报告" : "记录"} 第 ${sideValue.loc.pdf_page} 页`;
           chip.addEventListener("click", event => { event.stopPropagation(); setActive(); focusCheckRow(row, key); });
@@ -1920,6 +1940,8 @@
       badge.textContent = look.text;
       comparisonBrief.querySelector(".brief-title").textContent = displayTitle(finding);
       updateFindingNav();
+      const dual = meta.recordRole ? null : dualReportLocations(finding);
+      dualReport = Boolean(dual);
       renderFindingBrief(finding);
       renderReview(finding);
       renderCheckDetails(finding);
@@ -1929,21 +1951,28 @@
         clearPane(recordPane, "等待 Record 文档。");
         return;
       }
-      comparisonCard.querySelector(".pdf-grid").classList.toggle("single-pane", !meta.recordRole);
-      recordPane.root.classList.toggle("is-hidden", !meta.recordRole);
-      recordPane.root.setAttribute("aria-hidden", String(!meta.recordRole));
+      const twoPanes = Boolean(meta.recordRole) || dualReport;
+      comparisonCard.querySelector(".pdf-grid").classList.toggle("single-pane", !twoPanes);
+      recordPane.root.classList.toggle("is-hidden", !twoPanes);
+      recordPane.root.setAttribute("aria-hidden", String(!twoPanes));
       try {
         if (meta.recordRole && !recordDocument) throw new Error("缺少 Record 文档信息。");
-        await reportPane.loadDocument(reportDocument, "检验报告");
+        await reportPane.loadDocument(reportDocument, dualReport ? "报告 · 填写处" : "检验报告");
         if (meta.recordRole) await recordPane.loadDocument(recordDocument, "原始记录");
+        else if (dualReport) await recordPane.loadDocument(reportDocument, "报告 · 照片/首页");
         refreshPageChips();
         if (token !== comparisonToken) return;
-        await reportPane.setFinding(status, reportLocations);
-        if (meta.recordRole) await recordPane.setFinding(status, recordLocations);
+        if (dualReport) {
+          await reportPane.setFinding(status, dual.a);
+          await recordPane.setFinding(status, dual.b);
+        } else {
+          await reportPane.setFinding(status, reportLocations);
+          if (meta.recordRole) await recordPane.setFinding(status, recordLocations);
+        }
       } catch (error) {
         if (token !== comparisonToken) return;
         clearPane(reportPane, `原始 PDF 读取失败：${error?.message || error}`);
-        if (meta.recordRole) clearPane(recordPane, `原始 PDF 读取失败：${error?.message || error}`);
+        if (twoPanes) clearPane(recordPane, `原始 PDF 读取失败：${error?.message || error}`);
       }
     }
 
