@@ -357,6 +357,25 @@ def _has_bound_words(text: str) -> bool:
 _TOLERANCE_WORDS = ("允差", "允许误差", "误差", "精度", "偏差")
 
 
+def _alternative_tolerance(text: str) -> bool:
+    """A requirement row that is the second half of a tolerance.
+
+    e.g. “负载阻抗显示误差不超过±5%” followed by its own row
+    “或±5Ω（取较大值）。单位：Ω” with the Ω result “+2”.
+    """
+
+    return bool(re.match(r"或±\d", text) or re.search(r"取较?大值", text))
+
+
+# “在压力值≤20g 时，误差不超过±3g”：“≤20g”是适用条件，不是接受标准。
+_CONDITION_CLAUSE = re.compile(r"(?:在|当)[^，,。；;:：]{0,40}?时[，,]?")
+
+
+def _strip_condition_clauses(requirement: str) -> str:
+    stripped = _CONDITION_CLAUSE.sub("", requirement)
+    return stripped if re.search(r"\d", stripped) else requirement
+
+
 def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> dict[str, Any] | None:
     """Results written as deviations from a nominal value with a ± tolerance."""
 
@@ -407,7 +426,7 @@ def _deviation_decision(text: str, result_text: str, parsed: dict[str, Any]) -> 
         # 带正负号的结果只有在“按绝对值理解不可能合格”时才按偏差处理，避免两种理解都说得通。
         if any(abs(value) >= center - tolerance for value in values):
             return None
-    elif not any(word in text for word in _TOLERANCE_WORDS):
+    elif not any(word in text for word in _TOLERANCE_WORDS) and not _alternative_tolerance(text):
         return None
     criterion = {"kind": "interval", "low": -tolerance, "high": tolerance, "unit": target, "source": match.group(0)}
     return _interval_decision(parsed, -tolerance, tolerance, "signed_deviation", criterion)
@@ -509,6 +528,7 @@ def evaluate_numeric_measurement(requirement: str, result_text: str) -> dict[str
     if numeric_result_kind(result_text) is None:
         return {"status": "manual", "reason": "unsupported_numeric_result_syntax", "criterion": None}
     parsed = _parse_result(result_text)
+    requirement = _strip_condition_clauses(requirement)
 
     text = _normalized_math(requirement)
     if parsed.get("suffix"):

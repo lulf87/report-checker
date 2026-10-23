@@ -104,7 +104,7 @@
     .results-workspace > .findings-card, .results-workspace > .comparison-card { margin-top: 0; min-width: 0; }
     .results-workspace:has(.comparison-card.visible) > .findings-card { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
     .results-workspace:has(.comparison-card.visible) .findings { max-height: calc(100vh - 196px); overflow: auto; padding-right: 2px; }
-    .comparison-card { display: none; grid-template-rows: auto auto auto minmax(0, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; scroll-margin-top: 16px; }
+    .comparison-card { display: none; grid-template-rows: auto auto auto auto minmax(360px, 1fr); min-width: 0; min-height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; box-shadow: none; scroll-margin-top: 16px; }
     .comparison-card.visible { display: grid; min-height: 760px; }
     .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0; padding: 14px 16px 7px; }
     .comparison-head h2 { margin: 0; font-size: 18px; }
@@ -115,7 +115,9 @@
     .brief-evidence-link { width: fit-content; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-size: 11px; text-align: left; text-decoration: underline; cursor: pointer; }
     .brief-evidence-link:hover { color: var(--ink); }
     .brief-detail { max-height: 180px; }
-    .brief-problems { margin: 4px 0 0; padding-left: 18px; color: var(--ink); }
+    /* 比对区高度固定时，上面几块按内容高度排，不被压扁；PDF 区占剩余高度，整体可滚动。 */
+    .comparison-card > .comparison-head, .comparison-card > .comparison-brief, .comparison-card > .review-box, .comparison-card > .check-details { min-height: max-content; }
+    .brief-problems { margin: 4px 0 0; padding-left: 18px; color: var(--ink); max-height: 9.5em; overflow-y: auto; overscroll-behavior: contain; }
     .brief-problems li { margin: 2px 0; }
     .brief-problems button { display: block; width: 100%; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
     .brief-problems button:hover { color: var(--accent); text-decoration: underline; }
@@ -271,7 +273,7 @@
     .finding-pos { min-width: 54px; color: var(--muted); font-size: 12px; text-align: center; }
     .printed-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
     .printed-label:empty { display: none; }
-    .results-workspace:has(.comparison-card.visible) > .comparison-card { position: sticky; top: 16px; height: calc(100vh - 32px); min-height: 560px; }
+    .results-workspace:has(.comparison-card.visible) > .comparison-card { position: sticky; top: 16px; height: calc(100vh - 32px); min-height: 560px; overflow-y: auto; }
     .results-workspace:has(.comparison-card.visible) > .comparison-card .pdf-grid { min-height: 300px; }
     @media (max-width: 980px) {
       .results-workspace:has(.comparison-card.visible) > .comparison-card { position: static; height: auto; }

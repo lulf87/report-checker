@@ -34,6 +34,20 @@ class AcceptancePhraseTests(unittest.TestCase):
         self.check(bipolar, "17.8", "pass", "201.6")
         self.check(bipolar, "250", "error", "201.6")
 
+    def test_alternative_tolerance_row(self) -> None:
+        # Sample 1998 item 197: "负载阻抗显示误差不超过±5%" + its own row "或±5Ω（取较大值）".
+        passed = evaluate_numeric_measurement("或±5Ω（取较大值）。 单位：Ω", "+2")
+        self.assertEqual(passed["status"], "pass")
+        self.assertEqual((str(passed["criterion"]["low"]), str(passed["criterion"]["high"])), ("-5", "5"))
+        self.assertEqual(evaluate_numeric_measurement("或±5Ω（取较大值）。 单位：Ω", "+7")["status"], "error")
+
+    def test_condition_clause_is_not_the_limit(self) -> None:
+        decision = evaluate_numeric_measurement("在压力值≤20g 时，误差不超过±3g; 单位：g", "-2.4～+3.0")
+        self.assertEqual(decision["status"], "pass")
+        self.assertIn("3", decision["criterion"]["source"])
+        self.assertNotIn("20", decision["criterion"]["source"])
+        self.assertEqual(evaluate_numeric_measurement("在压力值≤20g 时，误差不超过±3g; 单位：g", "-2.4～+4.0")["status"], "error")
+
 
 if __name__ == "__main__":
     unittest.main()
