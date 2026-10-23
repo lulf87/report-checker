@@ -1051,7 +1051,11 @@ def _render_finding_locations(
     finding["evidence"] = rendered
 
 
-def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:
+def _report_r08_finding(
+    items: Mapping[int, Mapping[str, Any]],
+    format_defects: Mapping[int, Sequence[Mapping[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    format_defects = format_defects or {}
     required_fields = {
         "project": lambda item: bool(compact(item.get("project"))),
         "clause": lambda item: bool(compact(item.get("clause"))),
@@ -1063,6 +1067,7 @@ def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any
     checked: list[dict[str, Any]] = []
     for sequence, item in items.items():
         absent = [name for name, predicate in required_fields.items() if not predicate(item)]
+        defects = [dict(defect) for defect in format_defects.get(sequence, [])]
         first_row = next((location for location in item.get("row_locations", []) if location.get("result_rect")), None)
         checked.append(
             {
@@ -1070,7 +1075,8 @@ def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any
                 "project": item.get("project"),
                 "clause": item.get("clause"),
                 "missing_fields": absent,
-                "status": "error" if absent else "pass",
+                "format_defects": defects,
+                "status": "error" if absent or defects else "pass",
                 "pdf_pages": sorted(set(item.get("pages", []))),
                 "location": (
                     {
@@ -1093,14 +1099,26 @@ def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any
                     "pdf_pages": sorted(set(item.get("pages", []))),
                 }
             )
+    all_defects = [defect for item in checked for defect in item["format_defects"]]
+    unit_defects = [defect for defect in all_defects if defect["kind"] == "numeric_result_without_unit"]
+    conclusion_defects = [defect for defect in all_defects if defect["kind"] == "conclusion_cell_not_covering_item"]
+    parts: list[str] = []
+    if missing:
+        parts.append(f"{len(missing)}个完整检验项目存在漏填")
+    if conclusion_defects:
+        sequences = "、".join(str(item["sequence"]) for item in checked if any(d["kind"] == "conclusion_cell_not_covering_item" for d in item["format_defects"]))
+        parts.append(f"单项结论未覆盖整个序号：序号{sequences}")
+    if unit_defects:
+        sequences = "、".join(str(item["sequence"]) for item in checked if any(d["kind"] == "numeric_result_without_unit" for d in item["format_defects"]))
+        parts.append(f"数值结果的接受标准缺少“单位：”：序号{sequences}（{len(unit_defects)}处）")
     return {
         "id": "REPORT-R08",
         "title": "完整检验项目漏填检查",
-        "status": "error" if missing else "pass",
+        "status": "error" if missing or all_defects else "pass",
         "summary": (
             f"{len(items)}个完整检验项目的项目、条款、要求、结果和单项结论均已填写"
-            if not missing
-            else f"发现{len(missing)}个完整检验项目存在漏填"
+            if not parts
+            else "；".join(parts)
         ),
         "details": {
             "items_checked": len(items),
@@ -1108,6 +1126,11 @@ def _report_r08_finding(items: Mapping[int, Mapping[str, Any]]) -> dict[str, Any
             "required_fields": list(required_fields),
             "placeholders_count_as_filled": ["/", "——"],
             "missing": missing,
+            "format_defects": all_defects,
+            "format_rules": [
+                "同一序号同一页的单项结论如分成多个单元格，不能有空白单元格（合并单元格应覆盖整个序号）",
+                "检验结果为数值（非百分比、非文字）时，对应接受标准中应写“单位：X”",
+            ],
         },
         "evidence": [],
     }
@@ -1458,7 +1481,9 @@ def report_self_check(
         _render_finding_locations(doc, finding, output_dir)
 
     r07b = _report_r07b_finding(report.path, output_dir, doc)
-    r08 = _report_r08_finding(items)
+    from mvp.report_format_rules import report_format_defects
+
+    r08 = _report_r08_finding(items, report_format_defects(report.path))
     r09, r10 = _report_r09_r10_findings(diagnostics)
     for entry in r10["details"].get("headerless_pages", [])[:3]:
         r10["evidence"].append(
@@ -1477,8 +1502,17 @@ def report_self_check(
 
     # Give missing-field findings a page-level location so every concrete
     # omission remains reviewable in the HTML evidence panel.
-    if r08["details"]["missing"]:
+    if r08["details"]["missing"] or r08["details"]["format_defects"]:
+        defect_rects: dict[int, list[list[float]]] = {}
+        for defect in r08["details"]["format_defects"]:
+            location = defect.get("location") or {}
+            if location.get("rect") and isinstance(location.get("pdf_page"), int):
+                defect_rects.setdefault(location["pdf_page"], []).append(location["rect"])
         r08["evidence"] = [
+            {"pdf_page": page_number, "rects": rects}
+            for page_number, rects in sorted(defect_rects.items())
+            if 1 <= page_number <= doc.page_count
+        ] + [
             {
                 "pdf_page": page_number,
                 "rects": [[0, 0, doc[page_number - 1].rect.width, doc[page_number - 1].rect.height]],

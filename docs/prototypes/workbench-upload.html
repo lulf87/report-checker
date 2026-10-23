@@ -1654,10 +1654,24 @@
           b: side(c.criterion?.source || clip(c.requirement, 80), null, "接受标准"),
           status: c.status, note: reasonText(c) }));
       } else if (id === "REPORT-R08" && Array.isArray(d.items)) {
-        d.items.forEach(c => rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
-          a: side(c.missing_fields?.length ? `缺少：${c.missing_fields.join("、")}` : "项目、条款、要求、结果、单项结论均已填写", toLoc(c.location, "report", "检验结果")),
-          b: side("", null), status: c.status,
-          problem: c.missing_fields?.length ? `序号${c.sequence}（${[c.project, c.clause].filter(Boolean).join(" ")}）缺少：${c.missing_fields.join("、")}` : "" }));
+        const DEFECT_LABEL = { conclusion_cell_not_covering_item: "单项结论未覆盖整个序号", numeric_result_without_unit: "接受标准缺少“单位：”" };
+        d.items.forEach(c => {
+          const defects = Array.isArray(c.format_defects) ? c.format_defects : [];
+          // 有格式问题的序号逐条列出，每条都能在 PDF 中定位；没有问题的序号保持一行。
+          if (c.missing_fields?.length || !defects.length) {
+            rows.push({ label: `序号 ${c.sequence}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+              a: side(c.missing_fields?.length ? `缺少：${c.missing_fields.join("、")}` : "项目、条款、要求、结果、单项结论均已填写", toLoc(c.location, "report", "检验结果")),
+              b: side("", null), status: c.missing_fields?.length ? "error" : "pass",
+              problem: c.missing_fields?.length ? `序号${c.sequence}（${[c.project, c.clause].filter(Boolean).join(" ")}）缺少：${c.missing_fields.join("、")}` : "" });
+          }
+          defects.forEach(defect => {
+            const other = defect.written_location || defect.result_location;
+            rows.push({ label: `序号 ${c.sequence}`, sub: DEFECT_LABEL[defect.kind] || "格式问题",
+              a: side(defect.kind === "numeric_result_without_unit" ? "接受标准中没有“单位：”" : "这一格空白", toLoc(defect.location, "report", defect.kind === "numeric_result_without_unit" ? "接受标准" : "空白的单项结论")),
+              b: side(defect.kind === "numeric_result_without_unit" ? "检验结果为数值" : "单项结论只写在这里", toLoc(other, "report", defect.kind === "numeric_result_without_unit" ? "检验结果" : "单项结论")),
+              status: "error", problem: defect.message });
+          });
+        });
       } else if (id === "REPORT-R09") {
         const got = d.new_sequence_order || [];
         rows.push({ label: "新项目序号", a: side(got.length ? `${got[0]}–${got[got.length - 1]}（共 ${got.length} 个）` : "未识别", null),
