@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import pymupdf as fitz
 
 from mvp.ptr_compare import (
     EXCLUDED,
     MANUAL,
     MISMATCH,
+    MATCHED,
+    apply_llm_review,
     compare_ptr_report,
     extract_ptr_clauses,
     normalize_comparison_text,
 )
+from mvp.ptr_compare import _compare_text, _numeric_signature
+from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
+from mvp.ptr_ocr import iter_ptr_ocr_lines
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +43,134 @@ class PtrCompareNormalizationTests(unittest.TestCase):
     def test_numbers_and_decimal_versions_are_not_erased(self) -> None:
         self.assertIn("2.76μs", normalize_comparison_text("2.76 μs"))
         self.assertIn("9706.202-2021", normalize_comparison_text("GB 9706.202-2021"))
+
+    def test_controlled_si_prefixes_compare_in_base_units(self) -> None:
+        self.assertEqual(_numeric_signature("0.5mA"), _numeric_signature("500μA"))
+        self.assertEqual(_numeric_signature("1N·m"), _numeric_signature("100N·cm"))
+        self.assertNotEqual(_numeric_signature("5MΩ"), _numeric_signature("5mΩ"))
+
+    def test_identical_extracted_table_can_leave_manual_state(self) -> None:
+        ptr = {
+            "text": "表1 参数",
+            "normalized_text": "表1参数",
+            "numeric_signature": [],
+            "references": {"standards": [], "tables": ["表1"]},
+            "unit_labels": [],
+            "is_heading_only": True,
+            "table_rows": [{"rows": [["参数", "值"], ["频率", "100"]]}],
+        }
+        report = {
+            "text": "表1 参数",
+            "normalized_text": "表1参数",
+            "numeric_signature": [],
+            "references": {"standards": [], "tables": ["表1"]},
+            "unit_labels": [],
+            "is_heading_only": True,
+            "table_rows": [{"rows": [["参数", "值"], ["频率", "100"]]}],
+        }
+        comparison = _compare_text(ptr, report, has_children=False)
+        self.assertEqual(comparison["table_comparison"]["status"], MATCHED)
+
+    def test_llm_quote_must_be_found_in_the_original_side(self) -> None:
+        payload = {
+            "decision": "equivalent",
+            "missing_concepts": [],
+            "extra_concepts": [],
+            "numeric_claims": [],
+            "text_evidence": [{"side": "ptr", "quote": "输出应稳定", "page": 2}],
+            "reason": "换行不同",
+        }
+        validated = validate_llm_review(payload, ptr_text="条款：输出应稳定。", report_text="输出应稳定")
+        self.assertTrue(validated["validated"])
+        self.assertEqual(validated["schema_version"], "ptr-llm-review-0.1")
+        broken = dict(payload)
+        broken["text_evidence"] = [{"side": "ptr", "quote": "模型猜测", "page": 2}]
+        with self.assertRaises(PtrLlmReviewError):
+            validate_llm_review(broken, ptr_text="条款：输出应稳定。", report_text="输出应稳定")
+
+    def test_llm_task_is_bounded_and_does_not_include_a_provider_call(self) -> None:
+        task = build_review_task(
+            clause_id="2.6",
+            reason_code="TEXT_MISMATCH",
+            ptr_text="A" * 5000,
+            report_text="B" * 5000,
+            ptr_pages=[3],
+            report_pages=[100],
+            max_chars=200,
+        )
+        self.assertLessEqual(len(task["ptr"]["text"]), 200)
+        self.assertLessEqual(len(task["report"]["text"]), 200)
+        self.assertEqual(len(task["input_sha256"]), 64)
+        self.assertNotIn("model", task)
+
+    def test_validated_llm_equivalence_can_only_clear_text_manual(self) -> None:
+        result = {
+            "comparison_mode": "rules+llm",
+            "publishable": False,
+            "llm": {
+                "review_queue": [
+                    build_review_task(
+                        clause_id="2.1",
+                        reason_code="LLM_REVIEW_PENDING",
+                        ptr_text="产品应具备稳定输出",
+                        report_text="产品应具备稳定输出",
+                        ptr_pages=[2],
+                        report_pages=[10],
+                    )
+                ]
+            },
+            "coverage_ledger": [
+                {
+                    "clause_id": "2.1",
+                    "decision": MANUAL,
+                    "reason_code": "LLM_REVIEW_PENDING",
+                    "numeric_comparison": {"status": MATCHED},
+                    "unit_comparison": {"status": MATCHED},
+                    "reference_comparison": {"status": MATCHED},
+                    "table_comparison": {"status": MATCHED},
+                }
+            ],
+            "summary": {"counts": {MATCHED: 0, MISMATCH: 0, MANUAL: 1, EXCLUDED: 0}},
+        }
+        updated = apply_llm_review(
+            result,
+            "2.1",
+            {
+                "decision": "equivalent",
+                "missing_concepts": [],
+                "extra_concepts": [],
+                "numeric_claims": [],
+                "text_evidence": [{"side": "ptr", "quote": "稳定输出", "page": 2}],
+                "reason": "仅有排版差异",
+            },
+        )
+        self.assertEqual(updated["coverage_ledger"][0]["decision"], MATCHED)
+        self.assertEqual(updated["coverage_ledger"][0]["reason_code"], "LLM_VERIFIED_TEXT_EQUIVALENCE")
+        self.assertTrue(updated["coverage_ledger"][0]["llm_review"]["task_input_sha256"])
+        self.assertFalse(updated["publishable"])
+
+    def test_ocr_adapter_keeps_pdf_point_evidence(self) -> None:
+        with fitz.open() as document:
+            document.new_page(width=100, height=100)
+            with patch("mvp.ptr_ocr.available_ptr_ocr_backends", return_value=["fake"]), patch(
+                "mvp.ptr_ocr._run_backend",
+                return_value=[{"text": "2.1 测试要求", "confidence": 0.91, "bbox": [10, 20, 80, 40]}],
+            ):
+                # The adapter takes a path so use a temporary one only for this
+                # small geometry/contract test.
+                import tempfile
+
+                with tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "blank.pdf"
+                    document.save(path)
+                    lines, diagnostics = iter_ptr_ocr_lines(path)
+        self.assertEqual(diagnostics["status"], "observed")
+        self.assertEqual(diagnostics["used_backends"], ["fake"])
+        self.assertEqual(lines[0][0], 1)
+        self.assertEqual(lines[0][3], "ocr:fake")
+        self.assertEqual(lines[0][4], 0.91)
+        self.assertEqual(len(lines[0][1]), 4)
+        self.assertGreater(lines[0][1][2], lines[0][1][0])
 
 
 @unittest.skipUnless(MATERIALS_AVAILABLE, "本地 PTR/Report 素材不存在")
@@ -76,6 +212,8 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.6"]["decision"], MANUAL)
         self.assertEqual(by_clause["2.6"]["reason_code"], "LLM_REVIEW_PENDING")
         self.assertFalse(result["llm"]["used"])
+        self.assertGreater(result["llm"]["queue_count"], 0)
+        self.assertTrue(result["llm"]["review_queue"][0]["instructions"])
         self.assertFalse(result["publishable"])
 
     def test_2795_reports_unit_conflict_and_table_manual_queue(self) -> None:
@@ -96,7 +234,12 @@ class PtrCompareSampleTests(unittest.TestCase):
     def test_5782_without_text_layer_is_manual_instead_of_missing_or_mismatch(self) -> None:
         report_path, ptr_path = sample_paths("5782")
         result = compare_ptr_report(report_path, ptr_path)
-        self.assertEqual(result["ptr"]["diagnostics"]["reason_code"], "PTR_TEXT_LAYER_MISSING")
+        self.assertIn(
+            result["ptr"]["diagnostics"]["reason_code"],
+            {"PTR_TEXT_LAYER_MISSING", "PTR_OCR_CANDIDATES_MANUAL"},
+        )
+        if result["ptr"]["diagnostics"]["reason_code"] == "PTR_OCR_CANDIDATES_MANUAL":
+            self.assertEqual(result["ptr"]["diagnostics"]["ocr"]["status"], "observed")
         eligible = [entry for entry in result["coverage_ledger"] if entry["decision"] != EXCLUDED]
         self.assertTrue(eligible)
         self.assertTrue(all(entry["decision"] == MANUAL for entry in eligible))

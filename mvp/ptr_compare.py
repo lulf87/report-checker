@@ -18,6 +18,7 @@ import json
 import re
 import unicodedata
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -39,10 +40,12 @@ from mvp.checker import (
     sha256_file,
 )
 from mvp.ptr_scope import extract_report_scope
+from mvp.ptr_ocr import iter_ptr_ocr_lines
+from mvp.ptr_llm import build_review_task, validate_llm_review
 
 
-PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.1"
-PTR_COMPARE_RULE_VERSION = "0.1.0-draft"
+PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.2"
+PTR_COMPARE_RULE_VERSION = "0.2.0-draft"
 PTR_COMPARE_RULE_ID = "PTR-P01"
 
 MATCHED = "matched"
@@ -74,6 +77,42 @@ UNIT_LABEL_RE = re.compile(
     r"单位\s*[:：]\s*([A-Za-zμµΩΩ°℃·]+(?:\s*/\s*(?:[A-Za-zμµΩΩ°℃·]+|件|器械))?)(?:\s*[pP])?",
     re.IGNORECASE,
 )
+
+_UNIT_PREFIX_SCALE = {
+    "p": Decimal("1e-12"),
+    "n": Decimal("1e-9"),
+    "μ": Decimal("1e-6"),
+    "u": Decimal("1e-6"),
+    "m": Decimal("1e-3"),
+    "c": Decimal("1e-2"),
+    "k": Decimal("1e3"),
+    "K": Decimal("1e3"),
+    "M": Decimal("1e6"),
+    "G": Decimal("1e9"),
+}
+_BASE_UNITS = {
+    "A": "A",
+    "V": "V",
+    "W": "W",
+    "Ω": "Ω",
+    "Ω": "Ω",
+    "ohm": "Ω",
+    "Ohm": "Ω",
+    "Hz": "Hz",
+    "s": "s",
+    "g": "g",
+    "N": "N",
+    "m": "m",
+    "J": "J",
+    "C": "C",
+    "Pa": "Pa",
+    "EU": "EU",
+    "件": "件",
+    "器械": "器械",
+    "%": "%",
+    "°C": "°C",
+    "℃": "°C",
+}
 
 
 class PtrCompareError(ValueError):
@@ -175,10 +214,64 @@ def _numeric_signature(value: Any) -> list[tuple[str, str, str]]:
         # Clause IDs have already been removed from individual node text.  Keep
         # all other numbers because a changed threshold or standard year must
         # remain a hard difference.
-        unit = (match.group("unit") or "").replace("µ", "μ").lower()
+        unit = (match.group("unit") or "").replace("µ", "μ").replace("Ω", "Ω")
         operator = match.group("operator") or ""
+        number, unit = _canonical_numeric_fact(number, unit)
         result.append((operator, number, unit))
     return result
+
+
+def _decimal_text(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
+
+
+def _parse_unit_product(value: str) -> tuple[str, Decimal] | None:
+    """Return a base-unit product and scale for a controlled unit token."""
+
+    raw = value.replace("µ", "μ").replace("Ω", "Ω")
+    if raw in _BASE_UNITS:
+        return _BASE_UNITS[raw], Decimal(1)
+    pieces = raw.split("·")
+    canonical: list[str] = []
+    scale = Decimal(1)
+    for piece in pieces:
+        if piece in _BASE_UNITS:
+            canonical.append(_BASE_UNITS[piece])
+            continue
+        match = re.fullmatch(r"(?P<prefix>[pnuμmckKMG])(?P<base>.+)", piece)
+        if not match or match.group("base") not in _BASE_UNITS:
+            return None
+        canonical.append(_BASE_UNITS[match.group("base")])
+        scale *= _UNIT_PREFIX_SCALE[match.group("prefix")]
+    return "·".join(canonical), scale
+
+
+def _canonical_numeric_fact(number: str, unit: str) -> tuple[str, str]:
+    """Convert safe SI-prefixed scalar/product units to base units.
+
+    Unknown or semantic units such as ``EU/件`` remain textual.  This is a
+    conservative conversion: it never guesses a dimension or converts a
+    unit merely because its spelling looks similar.
+    """
+
+    if not unit or unit == "%":
+        return number, unit
+    try:
+        numeric = Decimal(number)
+    except (InvalidOperation, ValueError):
+        return number, unit
+    numerator, denominator = (unit.split("/", 1) + [""])[:2] if "/" in unit else (unit, "")
+    numerator_parsed = _parse_unit_product(numerator)
+    denominator_parsed = _parse_unit_product(denominator) if denominator else ("", Decimal(1))
+    if numerator_parsed is None or denominator_parsed is None:
+        return number, unit
+    numerator_unit, numerator_scale = numerator_parsed
+    denominator_unit, denominator_scale = denominator_parsed
+    scaled = numeric * numerator_scale / denominator_scale
+    canonical_unit = numerator_unit if not denominator else f"{numerator_unit}/{denominator_unit}"
+    return _decimal_text(scaled), canonical_unit
 
 
 def _references(value: Any) -> dict[str, list[str]]:
@@ -191,7 +284,7 @@ def _references(value: Any) -> dict[str, list[str]]:
 def _unit_labels(value: Any) -> list[str]:
     labels = []
     for match in UNIT_LABEL_RE.finditer(unicodedata.normalize("NFKC", str(value or ""))):
-        label = normalize_comparison_text(match.group(1)).lower()
+        label = normalize_comparison_text(match.group(1)).replace("µ", "μ").replace("Ω", "Ω")
         if label:
             labels.append(label)
     return sorted(set(labels))
@@ -260,8 +353,9 @@ def _evidence(
     text: str,
     semantic_role: str,
     extraction_method: str,
+    confidence: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    evidence = {
         "role": role,
         "pdf_page": int(page),
         "bbox": [round(float(value), 3) for value in bbox],
@@ -271,9 +365,12 @@ def _evidence(
         "semantic_role": semantic_role,
         "extraction_method": extraction_method,
     }
+    if confidence is not None:
+        evidence["confidence"] = round(float(confidence), 4)
+    return evidence
 
 
-def _iter_text_lines(path: Path) -> Iterable[tuple[int, list[float], str]]:
+def _iter_text_lines(path: Path) -> Iterable[tuple[int, list[float], str, str]]:
     with fitz.open(path) as document:
         for page_number, page in enumerate(document, start=1):
             for block in page.get_text("blocks"):
@@ -283,11 +380,11 @@ def _iter_text_lines(path: Path) -> Iterable[tuple[int, list[float], str]]:
                 for line in block_text.splitlines():
                     text = " ".join(line.split())
                     if text:
-                        yield page_number, _block_bbox(block), text
+                        yield page_number, _block_bbox(block), text, "pymupdf_text_blocks"
 
 
 def _parse_clause_lines(
-    lines: Iterable[tuple[int, Sequence[float], str]],
+    lines: Iterable[Sequence[Any]],
     *,
     role: str,
     source_sha256: str,
@@ -313,7 +410,12 @@ def _parse_clause_lines(
         nodes.append(current)
         current = None
 
-    for page, bbox, line in lines:
+    for record in lines:
+        if len(record) < 3:
+            continue
+        page, bbox, line = record[:3]
+        extraction_method = str(record[3]) if len(record) >= 4 else "pymupdf_text_blocks"
+        confidence = float(record[4]) if len(record) >= 5 and record[4] is not None else None
         if stop_at_top_level and re.match(
             rf"^\s*{re.escape(stop_at_top_level)}[.．]\s*(?=[A-Za-z\u3400-\u9fff])",
             line,
@@ -363,7 +465,8 @@ def _parse_clause_lines(
                         source_sha256=source_sha256,
                         text=line,
                         semantic_role="ptr_clause" if role == "ptr" else "report_clause",
-                        extraction_method="pymupdf_text_blocks",
+                        extraction_method=extraction_method,
+                        confidence=confidence,
                     )
                 ],
             }
@@ -385,7 +488,8 @@ def _parse_clause_lines(
                     source_sha256=source_sha256,
                     text=line,
                     semantic_role="ptr_clause_continuation" if role == "ptr" else "report_clause_continuation",
-                    extraction_method="pymupdf_text_blocks",
+                    extraction_method=extraction_method,
+                    confidence=confidence,
                 )
             )
     flush_current()
@@ -398,24 +502,63 @@ def _parse_clause_lines(
     return nodes, {"candidate_count": len(nodes), "text_layer": bool(nodes)}
 
 
-def extract_ptr_clauses(ptr_path: str | Path) -> dict[str, Any]:
-    """Extract the first deterministic 2.x requirement tree from a PTR."""
+def extract_ptr_clauses(ptr_path: str | Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
+    """Extract a 2.x requirement tree, optionally adding local OCR observations.
+
+    ``ocr_mode="auto"`` only invokes OCR when the native text layer cannot
+    produce any 2.x node.  OCR-derived nodes carry an ``ocr:*`` evidence
+    method and are kept manual by :func:`compare_ptr_report`; they are never
+    treated as native text facts.
+    """
+
+    if ocr_mode not in {"auto", "never", "required"}:
+        raise PtrCompareError("ocr_mode 必须是 auto、never 或 required")
 
     path = Path(ptr_path).expanduser().resolve()
     source_sha256 = sha256_file(path)
     with fitz.open(path) as document:
         page_count = document.page_count
         text_length = sum(len(page.get_text("text")) for page in document)
-    nodes, diagnostics = _parse_clause_lines(
-        _iter_text_lines(path), role="ptr", source_sha256=source_sha256
-    )
+    nodes, diagnostics = _parse_clause_lines(_iter_text_lines(path), role="ptr", source_sha256=source_sha256)
+    ocr_diagnostics: dict[str, Any] = {
+        "status": "not_requested",
+        "reason_code": "PTR_OCR_NOT_NEEDED" if nodes and ocr_mode != "required" else None,
+        "used_backends": [],
+        "pages_with_text": [],
+    }
+    if (not nodes or ocr_mode == "required") and ocr_mode != "never":
+        ocr_lines, ocr_diagnostics = iter_ptr_ocr_lines(path)
+        if ocr_lines and (not nodes or ocr_mode == "required"):
+            ocr_nodes, ocr_parse = _parse_clause_lines(
+                ocr_lines,
+                role="ptr",
+                source_sha256=source_sha256,
+            )
+            if ocr_nodes:
+                nodes = ocr_nodes
+                diagnostics = ocr_parse
+                diagnostics["ocr_used"] = True
+                diagnostics["text_layer"] = False
+                diagnostics["status"] = "ocr_manual"
+                diagnostics["reason_code"] = "PTR_OCR_CANDIDATES_MANUAL"
+    diagnostics.setdefault("ocr_used", False)
+    table_pages = {
+        int(page)
+        for node in nodes
+        if (node.get("references") or {}).get("tables")
+        for page in node.get("pages", [])
+    }
+    ptr_tables = _extract_ptr_tables(path, source_sha256, pages=table_pages)
+    _attach_ptr_tables(nodes, ptr_tables)
     diagnostics.update(
         {
             "page_count": page_count,
             "source_sha256": source_sha256,
             "text_length": text_length,
-            "status": "parsed" if nodes else "manual",
-            "reason_code": None if nodes else "PTR_TEXT_LAYER_MISSING",
+            "status": diagnostics.get("status") or ("parsed" if nodes else "manual"),
+            "reason_code": diagnostics.get("reason_code") if nodes else "PTR_TEXT_LAYER_MISSING",
+            "ocr": ocr_diagnostics,
+            "table_count": len(ptr_tables),
         }
     )
     return {
@@ -452,6 +595,27 @@ def _report_cell_evidence_all(
                     active_sequence = int(match.group(2))
                 if active_sequence is None:
                     continue
+                table_row = {
+                    "pdf_page": page.number + 1,
+                    "row_index": row_index,
+                    "cells": [],
+                    "all_cells": [
+                        {
+                            "column_index": index,
+                            "text": display_text(value),
+                            "bbox": rect_list(table.rows[row_index].cells[index])
+                            if row_index < len(table.rows) and index < len(table.rows[row_index].cells) and table.rows[row_index].cells[index] is not None
+                            else None,
+                        }
+                        for index, value in enumerate(row)
+                    ],
+                    "requirement_text": " ".join(
+                        display_text(value)
+                        for value in row[mapping["标准要求"] : mapping["检验结果"]]
+                        if display_text(value)
+                    ),
+                    "extraction_method": "pymupdf_report_table_cell",
+                }
                 for column, semantic_role in (
                     ("检验项目", "report_project"),
                     ("标准条款", "report_clause"),
@@ -459,6 +623,13 @@ def _report_cell_evidence_all(
                 ):
                     value = display_text(row[mapping[column]]) if mapping[column] < len(row) else ""
                     cell = report_table_cell(table, row_index, mapping[column])
+                    table_row["cells"].append(
+                        {
+                            "column": column,
+                            "text": value,
+                            "bbox": rect_list(cell) if cell is not None else None,
+                        }
+                    )
                     if not value or cell is None:
                         continue
                     values[active_sequence][column].append(
@@ -472,7 +643,146 @@ def _report_cell_evidence_all(
                             extraction_method="pymupdf_report_table_cell",
                         )
                     )
+                values[active_sequence]["_table_rows"].append(table_row)
     return {sequence: dict(columns) for sequence, columns in values.items()}
+
+
+def _extract_ptr_tables(
+    path: Path,
+    source_sha256: str,
+    *,
+    pages: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Extract deterministic vector tables where PyMuPDF can see a grid."""
+
+    tables: list[dict[str, Any]] = []
+    with fitz.open(path) as document:
+        for page_number, page in enumerate(document, start=1):
+            if pages is not None and page_number not in pages:
+                continue
+            try:
+                found = page.find_tables().tables
+            except Exception:
+                found = []
+            for table_index, table in enumerate(found, start=1):
+                rows = table.extract()
+                if not rows:
+                    continue
+                tables.append(
+                    {
+                        "pdf_page": page_number,
+                        "table_index": table_index,
+                        "bbox": [round(float(value), 3) for value in table.bbox],
+                        "rows": [[display_text(cell) for cell in row] for row in rows],
+                        "source_sha256": source_sha256,
+                        "extraction_method": "pymupdf_find_tables",
+                    }
+                )
+    return tables
+
+
+def _attach_ptr_tables(nodes: Sequence[dict[str, Any]], tables: Sequence[Mapping[str, Any]]) -> None:
+    """Attach page-local vector table observations without inferring semantics."""
+
+    for node in nodes:
+        pages = {int(page) for page in node.get("pages", [])}
+        attached = [dict(table) for table in tables if int(table.get("pdf_page", 0)) in pages]
+        node["table_rows"] = [
+            {
+                "pdf_page": table["pdf_page"],
+                "bbox": table["bbox"],
+                "rows": table["rows"],
+                "source_sha256": table["source_sha256"],
+                "extraction_method": table["extraction_method"],
+            }
+            for table in attached
+        ]
+
+
+def _table_fingerprint(rows: Any) -> tuple[tuple[str, ...], ...]:
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return ()
+    normalized: list[tuple[str, ...]] = []
+    for row in rows:
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
+            continue
+        cells = tuple(_text_for_comparison(cell) for cell in row)
+        while cells and not cells[-1]:
+            cells = cells[:-1]
+        if cells and any(cells):
+            normalized.append(cells)
+    return tuple(normalized)
+
+
+def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare only physically extracted table matrices; otherwise stay manual."""
+
+    references = (ptr.get("references") or {}).get("tables", []) or (report.get("references") or {}).get("tables", [])
+    if not references:
+        return {"status": MATCHED, "reason_code": None, "ptr_tables": 0, "report_tables": 0}
+    ptr_tables = list(ptr.get("table_rows") or [])
+    report_tables = list(report.get("table_rows") or [])
+    ptr_fingerprints = {_table_fingerprint(table.get("rows")) for table in ptr_tables}
+    report_fingerprints = {
+        _table_fingerprint(
+            table.get("rows")
+            or [[cell.get("text", "") for cell in (table.get("all_cells") or table.get("cells", []))]]
+        )
+        for table in report_tables
+    }
+    ptr_fingerprints.discard(())
+    report_fingerprints.discard(())
+    if ptr_fingerprints and report_fingerprints and ptr_fingerprints & report_fingerprints:
+        return {
+            "status": MATCHED,
+            "reason_code": "TABLE_NORMALIZED_MATCH",
+            "ptr_tables": len(ptr_fingerprints),
+            "report_tables": len(report_fingerprints),
+        }
+    return {
+        "status": MANUAL,
+        "reason_code": "TABLE_CONTENT_NOT_EXTRACTED",
+        "ptr_tables": len(ptr_fingerprints),
+        "report_tables": len(report_fingerprints),
+    }
+
+
+def _node_table_evidence(node: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Turn attached table observations into ordinary auditable evidence."""
+
+    source_sha256 = str(node.get("source_sha256") or "")
+    if not source_sha256:
+        source_sha256 = str((node.get("evidence") or [{}])[0].get("source_sha256") or "")
+    result: list[dict[str, Any]] = []
+    for index, table in enumerate(node.get("table_rows") or [], start=1):
+        cells = table.get("cells") or table.get("all_cells") or []
+        boxes = [cell.get("bbox") for cell in cells if isinstance(cell, Mapping) and cell.get("bbox")]
+        bbox = table.get("bbox")
+        if not bbox and boxes:
+            bbox = [
+                min(float(box[0]) for box in boxes),
+                min(float(box[1]) for box in boxes),
+                max(float(box[2]) for box in boxes),
+                max(float(box[3]) for box in boxes),
+            ]
+        if not bbox:
+            continue
+        text = str(table.get("requirement_text") or "")
+        if not text:
+            rows = table.get("rows") or []
+            text = " | ".join(" / ".join(str(cell or "") for cell in row) for row in rows[:20])
+        result.append(
+            _evidence(
+                role=str(node.get("role") or ""),
+                page=int(table.get("pdf_page", 0)),
+                bbox=bbox,
+                source_sha256=source_sha256,
+                text=text,
+                semantic_role=f"{node.get('role', 'document')}_table_{index}",
+                extraction_method=str(table.get("extraction_method") or "table_observation"),
+            )
+        )
+    return result
 
 
 def _report_nodes_from_item(
@@ -486,7 +796,14 @@ def _report_nodes_from_item(
     sequence = int(item["sequence"])
     parent_clause = _canonical_clause_id(str(item.get("clause") or ""))
     project = display_text(item.get("project") or "")
-    requirement = "\n".join(display_text(value) for value in item.get("requirements", []) if display_text(value))
+    requirement_parts = [display_text(value) for value in item.get("requirements", []) if display_text(value)]
+    for table_row in evidence.get("_table_rows", []):
+        wide_requirement = display_text(table_row.get("requirement_text") or "")
+        if wide_requirement and normalize_comparison_text(wide_requirement) not in {
+            normalize_comparison_text(value) for value in requirement_parts
+        }:
+            requirement_parts.append(wide_requirement)
+    requirement = "\n".join(requirement_parts)
     combined = requirement
     matches = _report_clause_matches(combined) if combined else []
     segments: list[tuple[str, str]] = []
@@ -502,6 +819,13 @@ def _report_nodes_from_item(
         if _looks_like_clause_body(body):
             segments.append((clause_id, body))
     nodes: list[dict[str, Any]] = []
+    table_rows = [dict(value) for value in evidence.get("_table_rows", [])]
+    physical_evidence = [
+        dict(value)
+        for key, values in evidence.items()
+        if not str(key).startswith("_")
+        for value in values
+    ]
     if parent_clause.startswith("2."):
         prefix = combined[: matches[0].start()].strip() if matches else combined.strip()
         parent_text = " ".join(item for item in (project, prefix) if item)
@@ -522,7 +846,8 @@ def _report_nodes_from_item(
                 "unit_labels": _unit_labels(parent_text),
                 "is_heading_only": not _numeric_signature(parent_text),
                 "pages": sorted({int(page) for page in item.get("pages", [])}),
-                "evidence": [dict(value) for values in evidence.values() for value in values],
+                "evidence": physical_evidence,
+                "table_rows": table_rows,
                 "source_sha256": source_sha256,
             }
         )
@@ -542,7 +867,8 @@ def _report_nodes_from_item(
                 "unit_labels": _unit_labels(body),
                 "is_heading_only": len(body.splitlines()) == 1 and not _numeric_signature(body),
                 "pages": sorted({int(page) for page in item.get("pages", [])}),
-                "evidence": [dict(value) for values in evidence.values() for value in values],
+                "evidence": physical_evidence,
+                "table_rows": table_rows,
                 "source_sha256": source_sha256,
             }
         )
@@ -606,6 +932,12 @@ def _scope_decision(scope: Mapping[str, Any], clause_id: str) -> tuple[str, str]
     return EXCLUDED, "OUT_OF_SCOPE"
 
 
+def _ocr_derived(node: Mapping[str, Any]) -> bool:
+    """Return true when any evidence for a node came from local OCR."""
+
+    return any(str(item.get("extraction_method", "")).startswith("ocr:") for item in node.get("evidence", []))
+
+
 def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_children: bool) -> dict[str, Any]:
     ptr_text = str(ptr.get("normalized_text") or _text_for_comparison(ptr.get("text")))
     report_text = str(report.get("normalized_text") or _text_for_comparison(report.get("text")))
@@ -650,6 +982,7 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     else:
         decision = text_status
         decision_reason = reason
+    table_comparison = _table_comparison(ptr, report)
     return {
         "title_comparison": {"status": text_status, "reason_code": reason},
         "text_comparison": {
@@ -672,10 +1005,7 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
             "ptr": ptr_units,
             "report": report_units,
         },
-        "table_comparison": {
-            "status": MANUAL if (ptr_refs.get("tables") or report_refs.get("tables")) else MATCHED,
-            "reason_code": "TABLE_CONTENT_NOT_EXTRACTED" if (ptr_refs.get("tables") or report_refs.get("tables")) else None,
-        },
+        "table_comparison": table_comparison,
         "decision": decision,
         "reason_code": decision_reason,
     }
@@ -711,6 +1041,8 @@ def _ledger_entry(
         "evidence": [
             *[dict(value) for value in (ptr or {}).get("evidence", [])],
             *[dict(value) for item in reports for value in item.get("evidence", [])],
+            *(_node_table_evidence(ptr) if ptr else []),
+            *[value for item in reports for value in _node_table_evidence(item)],
         ],
     }
 
@@ -721,6 +1053,7 @@ def compare_ptr_report(
     *,
     root: str | Path | None = None,
     comparison_mode: str = "rules",
+    ocr_mode: str = "auto",
 ) -> dict[str, Any]:
     """Build a non-publishable PTR ↔ Report comparison draft.
 
@@ -732,7 +1065,7 @@ def compare_ptr_report(
     if comparison_mode not in {"rules", "rules+llm"}:
         raise PtrCompareError("comparison_mode 必须是 rules 或 rules+llm")
     report = extract_report_clauses(report_path)
-    ptr = extract_ptr_clauses(ptr_path)
+    ptr = extract_ptr_clauses(ptr_path, ocr_mode=ocr_mode)
     scope = report["scope"]
     ptr_by_clause = {str(node["clause_id"]): node for node in ptr["nodes"]}
     report_by_clause = report["nodes_by_clause"]
@@ -813,6 +1146,9 @@ def compare_ptr_report(
         if comparison["table_comparison"]["status"] == MANUAL and decision == MATCHED:
             decision = MANUAL
             reason_code = "TABLE_CONTENT_NOT_EXTRACTED"
+        elif _ocr_derived(ptr_node) or ptr.get("diagnostics", {}).get("ocr_used"):
+            decision = MANUAL
+            reason_code = "PTR_OCR_CANDIDATES_MANUAL"
         else:
             reason_code = comparison["reason_code"]
         if comparison_mode == "rules+llm" and decision == MISMATCH and comparison["reason_code"] == "TEXT_MISMATCH":
@@ -869,6 +1205,31 @@ def compare_ptr_report(
     else:
         overall = MANUAL
     eligible_count = sum(1 for entry in ledger if entry["decision"] != EXCLUDED)
+    llm_queue: list[dict[str, Any]] = []
+    if comparison_mode == "rules+llm":
+        ptr_by_id = {str(node["node_id"]): node for node in ptr["nodes"]}
+        report_by_id = {str(node["node_id"]): node for node in report["nodes"]}
+        for entry in ledger:
+            if entry["decision"] == EXCLUDED:
+                continue
+            if entry["decision"] != MANUAL and entry.get("reason_code") not in {
+                "TEXT_MISMATCH",
+                "LLM_REVIEW_PENDING",
+            }:
+                continue
+            ptr_node = ptr_by_id.get(str(entry.get("ptr_node_id")))
+            report_nodes = [report_by_id[item] for item in entry.get("report_item_ids", []) if item in report_by_id]
+            report_node = report_nodes[0] if report_nodes else None
+            llm_queue.append(
+                build_review_task(
+                    clause_id=str(entry["clause_id"]),
+                    reason_code=str(entry.get("reason_code") or "MANUAL_REVIEW"),
+                    ptr_text=str((ptr_node or {}).get("text") or ""),
+                    report_text=str((report_node or {}).get("text") or ""),
+                    ptr_pages=(ptr_node or {}).get("pages", []),
+                    report_pages=(report_node or {}).get("pages", []),
+                )
+            )
     return {
         "schema_version": PTR_COMPARE_SCHEMA_VERSION,
         "result_kind": "ptr_report_comparison_draft",
@@ -899,6 +1260,8 @@ def compare_ptr_report(
             "used": False,
             "policy": "仅处理规则 manual 队列；不能覆盖数值、范围、引用或硬差异。",
             "status": "not_configured" if comparison_mode == "rules+llm" else "disabled",
+            "queue_count": len(llm_queue),
+            "review_queue": llm_queue,
         },
     }
 
@@ -910,14 +1273,89 @@ def write_ptr_report_comparison(
     *,
     root: str | Path | None = None,
     comparison_mode: str = "rules",
+    ocr_mode: str = "auto",
 ) -> dict[str, Any]:
-    result = compare_ptr_report(report_path, ptr_path, root=root, comparison_mode=comparison_mode)
+    result = compare_ptr_report(
+        report_path,
+        ptr_path,
+        root=root,
+        comparison_mode=comparison_mode,
+        ocr_mode=ocr_mode,
+    )
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
     temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(destination)
     return result
+
+
+def apply_llm_review(
+    result: Mapping[str, Any],
+    clause_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply one *validated* optional LLM review to a draft result.
+
+    This function is deliberately narrower than a runner: it only consumes a
+    queued text review, requires all numeric/unit/reference/table rules to be
+    already matched, and keeps the overall result non-publishable.  A hard
+    difference or an uncertain response remains unchanged.
+    """
+
+    if result.get("comparison_mode") != "rules+llm":
+        raise PtrCompareError("只有 rules+llm 草案可以接收 LLM 复核")
+    queue = list((result.get("llm") or {}).get("review_queue") or [])
+    task = next((item for item in queue if str(item.get("clause_id")) == str(clause_id)), None)
+    if task is None:
+        raise PtrCompareError(f"条款 {clause_id} 不在 LLM 复核队列中")
+    review = validate_llm_review(
+        payload,
+        ptr_text=str((task.get("ptr") or {}).get("text") or ""),
+        report_text=str((task.get("report") or {}).get("text") or ""),
+    )
+    review["task_input_sha256"] = str(task.get("input_sha256") or "")
+    import copy
+
+    updated = copy.deepcopy(dict(result))
+    entry = next(
+        (item for item in updated.get("coverage_ledger", []) if str(item.get("clause_id")) == str(clause_id)),
+        None,
+    )
+    if entry is None:
+        raise PtrCompareError(f"找不到条款 {clause_id} 的 Coverage Ledger")
+    entry["llm_review"] = review
+    comparison = entry.get("numeric_comparison"), entry.get("unit_comparison"), entry.get("reference_comparison"), entry.get("table_comparison")
+    hard_fields = [item for item in comparison if isinstance(item, Mapping)]
+    hard_statuses = [item.get("status") for item in hard_fields]
+    can_clear_text = (
+        entry.get("decision") == MANUAL
+        and review["decision"] == "equivalent"
+        and bool(review.get("text_evidence"))
+        and len(hard_fields) == 4
+        and all(status == MATCHED for status in hard_statuses)
+    )
+    if can_clear_text:
+        entry["decision"] = MATCHED
+        entry["reason_code"] = "LLM_VERIFIED_TEXT_EQUIVALENCE"
+    else:
+        entry["reason_code"] = entry.get("reason_code") or "LLM_REVIEW_RETAINED_MANUAL"
+    counts = {MATCHED: 0, MISMATCH: 0, MANUAL: 0, EXCLUDED: 0}
+    for item in updated.get("coverage_ledger", []):
+        counts[str(item.get("decision"))] = counts.get(str(item.get("decision")), 0) + 1
+    if counts[MISMATCH]:
+        overall = MISMATCH
+    elif counts[MANUAL]:
+        overall = MANUAL
+    elif counts[MATCHED]:
+        overall = MATCHED
+    else:
+        overall = MANUAL
+    updated.setdefault("summary", {})["counts"] = counts
+    updated["summary"]["decision"] = overall
+    updated.setdefault("llm", {})["validated_reviews"] = int(updated.get("llm", {}).get("validated_reviews", 0)) + 1
+    updated["publishable"] = False
+    return updated
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -927,6 +1365,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--root", type=Path)
     parser.add_argument("--mode", choices=("rules", "rules+llm"), default="rules")
+    parser.add_argument("--ocr-mode", choices=("auto", "never", "required"), default="auto")
     return parser
 
 
@@ -938,6 +1377,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output,
         root=args.root,
         comparison_mode=args.mode,
+        ocr_mode=args.ocr_mode,
     )
     print(
         json.dumps(
@@ -968,6 +1408,7 @@ __all__ = [
     "PTR_COMPARE_RULE_VERSION",
     "PTR_COMPARE_SCHEMA_VERSION",
     "PtrCompareError",
+    "apply_llm_review",
     "compare_ptr_report",
     "extract_ptr_clauses",
     "extract_report_clauses",

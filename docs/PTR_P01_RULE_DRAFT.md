@@ -4,6 +4,8 @@
 
 本文只冻结审计契约和待人工验收的候选结构，不把 PTR↔Report 草案当作已启用规则。`report_ptr`、`report_ptr_report` 仍保持 `enabled=false`，原因码为 `PTR_NOT_VALIDATED`。输入、结果和证据的接口合同由 `mvp/ptr_report_contract.py` 提供；这一步接通的是字段和生命周期边界，不是 PTR 语义验收。
 
+当前另有 `mvp/ptr_compare.py` 作为离线比较草案：它执行范围、条款、数值、单位、引用和覆盖层的规则核对，并输出不可发布的 Coverage Ledger；`mvp/ptr_ocr.py` 只提供扫描 PTR 的本机 OCR 观察，`mvp/ptr_llm.py` 只验证未来 LLM 的逐字证据。三者都没有接入正式 Runner，也不能改变本文件定义的 `PTR_NOT_VALIDATED` 禁用状态。
+
 ## 输入与范围
 
 - 输入角色固定为 `report` 和 `ptr`；两侧在草案中保存路径、页数、页面几何和 SHA-256。
