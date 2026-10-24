@@ -504,7 +504,7 @@
             <div class="zoom-controls" aria-label="Report 缩放">
               <button class="secondary tool-button fit-page" type="button" title="适应窗格宽度" aria-label="适应 Report 窗格宽度">适应</button>
               <button class="secondary tool-button zoom-out" type="button" title="缩小" aria-label="缩小 Report">−</button>
-              <span class="zoom-label">100%</span>
+              <span class="zoom-label" title="适配当前 PDF 窗格宽度；点击加号可放大查看">适配</span>
               <button class="secondary tool-button zoom-in" type="button" title="放大" aria-label="放大 Report">＋</button>
             </div>
           </div>
@@ -524,7 +524,7 @@
             <div class="zoom-controls" aria-label="Record 缩放">
               <button class="secondary tool-button fit-page" type="button" title="适应窗格宽度" aria-label="适应 Record 窗格宽度">适应</button>
               <button class="secondary tool-button zoom-out" type="button" title="缩小" aria-label="缩小 Record">−</button>
-              <span class="zoom-label">100%</span>
+              <span class="zoom-label" title="适配当前 PDF 窗格宽度；点击加号可放大查看">适配</span>
               <button class="secondary tool-button zoom-in" type="button" title="放大" aria-label="放大 Record">＋</button>
             </div>
           </div>
@@ -2166,14 +2166,21 @@
       }
       setZoom(nextZoom) {
         this.zoom = Math.max(.4, Math.min(2.5, Math.round(nextZoom * 100) / 100));
-        this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
+        this.updateZoomLabel();
         this.renderPage({ preserveScroll: true });
+      }
+      updateZoomLabel() {
+        const isFit = this.zoom === 1;
+        this.zoomLabel.textContent = isFit ? "适配" : `${Math.round(this.zoom * 100)}%`;
+        this.zoomLabel.title = isFit
+          ? "适配当前 PDF 窗格宽度；点击加号可放大查看"
+          : "相对适配尺寸的缩放比例；页面可滚动查看";
       }
       updateControls() {
         const count = this.pdfDocument?.numPages || 0;
         this.previousButton.disabled = !count || this.pageNumber <= 1; this.nextButton.disabled = !count || this.pageNumber >= count;
         this.pageInput.disabled = !count; this.fitPageButton.disabled = !count; this.zoomOut.disabled = !count || this.zoom <= .4; this.zoomIn.disabled = !count || this.zoom >= 2.5;
-        this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
+        this.updateZoomLabel();
       }
       addHighlights(pdfPage, viewport) {
         this.highlightLayer.replaceChildren();
@@ -2202,7 +2209,9 @@
           const baseViewport = pdfPage.getViewport({ scale: 1 });
           const fitScale = Math.min(1.65, Math.max(260, this.viewportElement.clientWidth - 34) / baseViewport.width);
           const viewport = pdfPage.getViewport({ scale: fitScale * this.zoom });
-          const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
+          // Two-up comparison panes are narrow. Keep extra raster resolution
+          // on a 1x display so small table text stays crisp after scaling.
+          const deviceScale = Math.min(2, Math.max(1.5, window.devicePixelRatio || 1));
           const context = this.canvas.getContext("2d", { alpha: false });
           this.canvas.width = Math.ceil(viewport.width * deviceScale); this.canvas.height = Math.ceil(viewport.height * deviceScale);
           this.canvas.style.width = `${viewport.width}px`; this.canvas.style.height = `${viewport.height}px`;
