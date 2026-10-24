@@ -17,7 +17,7 @@
 - `Report + GB 9706.1 Record`
 - `Report + GB 9706.202 Record`
 
-这里的“全量”是指：Record 模式对当前已知模板的纳入范围建立逐行 Coverage Ledger，Report 自检对已登记的 18 条规则逐条完成执行记录。具体纳入项、排除项和验收口径见 [正式比对范围矩阵](docs/COMPARISON_SCOPE.md)。自动解析和比对运行时不调用 LLM 或 Agent；原始 PDF 只读，runner 会在运行前后校验文件 SHA-256。
+这里的“全量”是指：Record 模式对当前已知模板的纳入范围建立逐行 Coverage Ledger，Report 自检对已登记的 18 条规则逐条完成执行记录。具体纳入项、排除项和验收口径见 [正式比对范围矩阵](docs/COMPARISON_SCOPE.md)；规则、需求和当前未闭合项的统一基线见 [需求与规则基线](docs/REQUIREMENTS_RULE_BASELINE.md)。自动解析和比对运行时不调用 LLM 或 Agent；原始 PDF 只读，runner 会在运行前后校验文件 SHA-256。
 
 PTR 当前保持禁用状态。两个 Record 模式不混入 `REPORT-*` 自检 Finding；Report 自检只发布 `REPORT-*` Finding。
 
