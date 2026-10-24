@@ -146,6 +146,14 @@ FROZEN_RECORD_ITEM_IDENTITIES: dict[int, str] = {
     37: "18427768e8093bff", 38: "5353fac2e8e1689f",
 }
 
+# The appendix edition used by some iOS exports omits the trailing ``单位``
+# label from item 24's last requirement row.  Its row count, clauses, and all
+# other requirement text remain the approved template, so this is a known
+# identity variant rather than a structural mismatch.
+FROZEN_RECORD_ITEM_IDENTITY_VARIANTS: dict[int, frozenset[str]] = {
+    24: frozenset({"8eeed2906abf349d"}),
+}
+
 FROZEN_REPORT_ITEM_IDENTITIES: dict[int, str] = {
     1: "0e3da5ec4e3919d9", 2: "5c9b1c4368e90d28", 3: "41bb0a0c10dfcb74",
     4: "3f96c46efb58ebd3", 5: "160f2454e712d14a", 6: "f3825239828f24e0",
@@ -2617,8 +2625,10 @@ def compare_record_202_documents(
             record_item_rows = record_by_item.get(item, [])
             record_identity = _item_template_fingerprint(record_item_rows)
             report_identity = _item_template_fingerprint(flat_report_rows)
-            record_identity_ok = record_identity == FROZEN_RECORD_ITEM_IDENTITIES[item] or (
-                item == 16 and item16_split and record_identity == ITEM16_SPLIT_RECORD_IDENTITY
+            record_identity_ok = (
+                record_identity == FROZEN_RECORD_ITEM_IDENTITIES[item]
+                or record_identity in FROZEN_RECORD_ITEM_IDENTITY_VARIANTS.get(item, frozenset())
+                or (item == 16 and item16_split and record_identity == ITEM16_SPLIT_RECORD_IDENTITY)
             )
             report_identity_ok = report_identity == FROZEN_REPORT_ITEM_IDENTITIES[item] or (
                 report_identity in REPORT_ITEM_IDENTITY_VARIANTS.get(item, frozenset())

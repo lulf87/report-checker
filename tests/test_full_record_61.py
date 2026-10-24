@@ -15,6 +15,8 @@ from mvp.full_record_61 import (
     _clause_compatible,
     _conclusion_check,
     _effective_report_result,
+    _first_row_containing,
+    _header_column,
     _mapping_edges,
     _numeric_manual_comparison,
     _report_guided_decimal_resolution,
@@ -73,6 +75,38 @@ class FullRecord61Tests(unittest.TestCase):
                     extraction["native_box_triplet_count"]
                     + extraction["alternate_glyph_triplet_count"],
                 )
+
+    def test_166_headers_and_rows_can_follow_another_table_on_the_same_page(self) -> None:
+        extracted = [
+            ["15.5.2", "旧表"],
+            ["测试电压", "测试频率"],
+            ["", ""],
+            ["16.6.1", "漏电流"],
+            ["", "正常条件下接触电流\n测量值 (µA)", "保护接地中断接触电流值\n测量值 (µA)"],
+            ["接触漏电流", "100", "500"],
+            ["", "100", "500"],
+            ["", "100", "500"],
+            ["多位插座的\n对地漏电流", "5000", "/"],
+            ["", "5000", "/"],
+        ]
+        section_row = _first_row_containing(extracted, "16.6.1")
+        self.assertEqual(section_row, 3)
+        self.assertEqual(
+            _header_column(extracted, "正常条件下接触电流测量值", start_row=section_row),
+            1,
+        )
+        self.assertEqual(
+            _header_column(extracted, "保护接地中断接触电流值测量值", start_row=section_row),
+            2,
+        )
+        self.assertEqual(
+            _first_row_containing(extracted, "接触漏电流", start_row=section_row + 1),
+            5,
+        )
+        self.assertEqual(
+            _first_row_containing(extracted, "多位插座的", start_row=section_row + 1),
+            8,
+        )
 
     def test_alternate_glyph_rows_are_not_silently_dropped(self) -> None:
         for sample, result in self.results.items():

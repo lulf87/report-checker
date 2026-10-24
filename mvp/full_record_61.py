@@ -2872,9 +2872,14 @@ def _find_tables_with_token(
     return matches
 
 
-def _header_column(extracted: Sequence[Sequence[Any]], token: str) -> int:
+def _header_column(
+    extracted: Sequence[Sequence[Any]],
+    token: str,
+    *,
+    start_row: int = 0,
+) -> int:
     compact_token = compact(token)
-    for row in extracted[:4]:
+    for row in extracted[start_row:]:
         for index, value in enumerate(row):
             if compact_token in compact(display_text(value)):
                 return index
@@ -3038,12 +3043,39 @@ def _append_166_cells(
     if len(matches) != 1:
         raise ValueError(f"16.6.1 measurement table is not unique ({len(matches)})")
     page, table_index, table, extracted = matches[0]
-    normal_column = _header_column(extracted, "正常条件下接触电流测量值")
-    pe_column = _header_column(extracted, "保护接地中断接触电流值测量值")
+    section_row = _first_row_containing(extracted, "16.6.1")
+    if section_row is None:
+        raise ValueError("16.6.1 measurement table lacks its section header")
+    normal_column = _header_column(
+        extracted,
+        "正常条件下接触电流测量值",
+        start_row=section_row,
+    )
+    pe_column = _header_column(
+        extracted,
+        "保护接地中断接触电流值测量值",
+        start_row=section_row,
+    )
+    normal_row = _first_row_containing(
+        extracted,
+        "接触漏电流",
+        start_row=section_row + 1,
+    )
+    multiple_socket_row = _first_row_containing(
+        extracted,
+        "多位插座的",
+        start_row=section_row + 1,
+    )
+    if normal_row is None or multiple_socket_row is None:
+        raise ValueError("16.6.1 measurement table lacks expected data rows")
     for condition, rows, column in (
-        ("normal", range(2, 5), normal_column),
-        ("protective_earth_interrupted", range(2, 5), pe_column),
-        ("multiple_socket_outlet", range(5, 7), normal_column),
+        ("normal", range(normal_row, normal_row + 3), normal_column),
+        ("protective_earth_interrupted", range(normal_row, normal_row + 3), pe_column),
+        (
+            "multiple_socket_outlet",
+            range(multiple_socket_row, multiple_socket_row + 2),
+            normal_column,
+        ),
     ):
         for row_index in rows:
             result["16.6"].append(
@@ -3078,9 +3110,15 @@ def _header_text_for_x(
     return ""
 
 
-def _first_row_containing(extracted: Sequence[Sequence[Any]], *tokens: str) -> int | None:
+def _first_row_containing(
+    extracted: Sequence[Sequence[Any]],
+    *tokens: str,
+    start_row: int = 0,
+) -> int | None:
     best: tuple[int, int] | None = None
     for row_index, row in enumerate(extracted):
+        if row_index < start_row:
+            continue
         score = sum(
             any(compact(token) in compact(display_text(value)) for token in tokens)
             for value in row

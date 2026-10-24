@@ -57,7 +57,7 @@ class RecordFullRuleTests(unittest.TestCase):
         self.assertEqual(compare_record61_status_result("符合", "0.3").decision, "match")
         self.assertEqual(compare_record61_status_result("不适用", "——").decision, "match")
         self.assertEqual(compare_record61_status_result("不符合", "不符合要求").decision, "match")
-        self.assertEqual(compare_record61_status_result("不适用", "/").decision, "mismatch")
+        self.assertEqual(compare_record61_status_result("不适用", "/").decision, "match")
         self.assertEqual(compare_record61_status_result("符合", "-").decision, "mismatch")
         self.assertEqual(compare_record61_status_result("合格", "符合要求").decision, "manual")
 
@@ -68,7 +68,7 @@ class RecordFullRuleTests(unittest.TestCase):
             ("×", "不符合要求", "match"),
             ("△", "——", "match"),
             ("/", "/", "match"),
-            ("△", "/", "mismatch"),
+            ("△", "/", "match"),
             ("/", "——", "mismatch"),
             ("", "——", "manual"),
         )

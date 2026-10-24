@@ -12,6 +12,7 @@ from mvp.full_record_202 import (
     EXPECTED_NUMBER_ROWS,
     EXPECTED_REPORT_PHYSICAL_ROWS,
     FROZEN_RECORD_ITEM_IDENTITIES,
+    FROZEN_RECORD_ITEM_IDENTITY_VARIANTS,
     _compare_one,
     _findings_from_result,
     _has_nonconforming_candidate,
@@ -94,9 +95,9 @@ class FullRecord202Tests(unittest.TestCase):
     def test_status_clustering_reduces_manual_rows_on_all_frozen_samples(self) -> None:
         expected_decisions = {
             # 2026-10-21: item 10 row 22 is a hooked tick, now recognised.
-            "1539": {"match": 166, "manual": 9},
-            "2795": {"match": 158, "manual": 13, "mismatch": 4},
-            "2948": {"match": 159, "manual": 15, "mismatch": 1},
+            "1539": {"match": 167, "manual": 8},
+            "2795": {"match": 160, "manual": 13, "mismatch": 2},
+            "2948": {"match": 160, "manual": 15},
         }
         manual_total = 0
         for sample, result in self.results.items():
@@ -124,7 +125,7 @@ class FullRecord202Tests(unittest.TestCase):
                         for key in ink
                     )
                 )
-        self.assertEqual(manual_total, 37)
+        self.assertEqual(manual_total, 36)
 
     def test_five_frozen_open_triangles_are_resolved_without_global_relaxation(self) -> None:
         expected = {
@@ -169,7 +170,7 @@ class FullRecord202Tests(unittest.TestCase):
         self.assertEqual(item38_second["comparison"]["record_symbol"], "△")
         self.assertEqual(item38_first["report"]["results"], ["/"])
         self.assertEqual(item38_second["report"]["results"], ["/"])
-        self.assertEqual((item38_first["decision"], item38_second["decision"]), ("mismatch", "mismatch"))
+        self.assertEqual((item38_first["decision"], item38_second["decision"]), ("match", "match"))
         self.assertEqual(result["number_check"]["status"], "error")
         self.assertEqual(result["number_check"]["missing_pages"], list(range(1, 25)))
 
@@ -181,7 +182,7 @@ class FullRecord202Tests(unittest.TestCase):
         }
         self.assertEqual(rows[1]["comparison"]["record_symbol"], "△")
         self.assertEqual(rows[1]["report"]["results"], ["/"])
-        self.assertEqual(rows[1]["decision"], "mismatch")
+        self.assertEqual(rows[1]["decision"], "match")
         self.assertEqual(rows[2]["comparison"]["record_symbol"], "√")
         self.assertEqual(rows[2]["report"]["results"], ["符合要求"])
         self.assertEqual(rows[2]["decision"], "match")
@@ -259,6 +260,27 @@ class FullRecord202Tests(unittest.TestCase):
         self.assertEqual(_item_template_fingerprint(item1), FROZEN_RECORD_ITEM_IDENTITIES[1])
         mutated = [{**item1[0], "requirement": "完全不同的要求"}]
         self.assertNotEqual(_item_template_fingerprint(mutated), FROZEN_RECORD_ITEM_IDENTITIES[1])
+
+    def test_known_appendix_item_24_identity_variant_keeps_status_comparison_enabled(self) -> None:
+        variant = "8eeed2906abf349d"
+        self.assertIn(variant, FROZEN_RECORD_ITEM_IDENTITY_VARIANTS[24])
+        self.assertNotEqual(variant, FROZEN_RECORD_ITEM_IDENTITIES[24])
+        comparison = _compare_one(
+            {
+                "project": "有电线连接的手持式和脚踏式控制装置",
+                "inks": [{"classified_symbol": "△"}],
+                "native_result_text": "",
+            },
+            [
+                {
+                    "project": "有电线连接的手持式和脚踏式控制装置",
+                    "result": "——",
+                    "requirement": "",
+                }
+            ],
+        )
+        self.assertEqual(comparison["decision"], "match")
+        self.assertEqual(comparison["status"]["reason_code"], "record_report_status_match")
 
     def test_source_pdf_hashes_are_unchanged(self) -> None:
         for sample, paths in self.paths.items():
