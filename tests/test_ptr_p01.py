@@ -61,6 +61,10 @@ class PtrP01DraftTests(unittest.TestCase):
         self.assertGreater(len(graph["report_declared_scope_candidates"]), 0)
         self.assertGreater(len(graph["ptr_clause_candidates"]), 0)
         self.assertGreater(len(graph["reference_candidates"]), 0)
+        scope = graph["report_declared_scope_candidates"][0]
+        self.assertEqual(scope["scope_set"]["status"], "parsed")
+        self.assertEqual(scope["scope_set"]["included_clause_ids"], ["2.1", "2.5", "2.6", "2.7", "2.8.1.2", "2.10", "2.11"])
+        self.assertTrue(scope["evidence"][0]["extraction_method"].startswith("pymupdf_table_cell"))
         self.assertEqual(graph["coverage_audit"]["status"], "not_evaluated")
         self.assertEqual(sha256(REPORT), report_before)
         self.assertEqual(sha256(PTR), ptr_before)

@@ -1,0 +1,12 @@
+{
+  "schema_version": "ptr-scope-0.1",
+  "status": "parsed",
+  "raw_text": "2.2、 2.5、2.6 (除生物相容性、电磁兼容性)",
+  "included_clause_ids": ["2.2", "2.5", "2.6"],
+  "excluded": [
+    {"raw": "生物相容性", "kind": "text", "clause_ids": []},
+    {"raw": "电磁兼容性", "kind": "text", "clause_ids": []}
+  ],
+  "only": [],
+  "unresolved": []
+}

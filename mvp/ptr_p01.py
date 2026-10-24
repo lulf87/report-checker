@@ -30,6 +30,7 @@ from mvp.ptr_report_contract import (
     copy_ptr_report_contract,
     validate_ptr_report_contract,
 )
+from mvp.ptr_scope import extract_report_scope
 
 
 PTR_P01_DRAFT_SCHEMA_VERSION = "ptr-p01-draft-0.1"
@@ -47,10 +48,6 @@ REFERENCE_TOKEN_RE = re.compile(
     r"附录\s*[A-Za-z一二三四五六七八九十]+|"
     r"(?:GB|YY)\s*[0-9][0-9A-Za-z.\-]*)"
 )
-REPORT_SCOPE_START = "检验项目"
-REPORT_SCOPE_END = ("检验依据", "检验结论")
-
-
 class PtrP01DraftError(ValueError):
     """Raised when a draft cannot satisfy its own audit invariants."""
 
@@ -63,6 +60,7 @@ class EvidenceRef:
     source_sha256: str
     semantic_role: str
     text: str
+    extraction_method: str = "pymupdf_text_blocks"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -79,7 +77,7 @@ class EvidenceRef:
             "source_sha256": self.source_sha256,
             "coordinate_space": "pdf_points",
             "precision": "region",
-            "extraction_method": "pymupdf_text_blocks",
+            "extraction_method": self.extraction_method,
             "semantic_role": self.semantic_role,
             "text_anchor": self.text,
             "text": self.text,
@@ -164,6 +162,7 @@ def _evidence(
     source_sha256: str,
     semantic_role: str,
     text: str,
+    extraction_method: str = "pymupdf_text_blocks",
 ) -> dict[str, Any]:
     return EvidenceRef(
         role=role,
@@ -172,6 +171,7 @@ def _evidence(
         source_sha256=source_sha256,
         semantic_role=semantic_role,
         text=text,
+        extraction_method=extraction_method,
     ).as_dict()
 
 
@@ -248,39 +248,35 @@ def _report_scope_candidates(
     path: Path,
     source_sha256: str,
 ) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for page, block_index, rect, block_text in _blocks(path, "report", source_sha256):
-        if REPORT_SCOPE_START not in block_text:
-            continue
-        start = block_text.find(REPORT_SCOPE_START)
-        fragment = block_text[start:]
-        for marker in REPORT_SCOPE_END:
-            end = fragment.find(marker, len(REPORT_SCOPE_START))
-            if end >= 0:
-                fragment = fragment[:end]
-                break
-        fragment = " ".join(fragment.split())
-        if not fragment:
-            continue
-        candidates.append(
-            {
-                "scope_id": f"report:declared-scope:p{page}:b{block_index}",
-                "kind": "report_declared_scope_candidate",
-                "raw_text": fragment,
-                "validation_status": "manual_required",
-                "evidence": [
-                    _evidence(
-                        role="report",
-                        page=page,
-                        rect=rect,
-                        source_sha256=source_sha256,
-                        semantic_role="report_declared_scope",
-                        text=fragment,
-                    )
-                ],
-            }
-        )
-    return candidates
+    scope = extract_report_scope(path)
+    source = scope.get("source") or {}
+    raw_text = str(scope.get("raw_text") or source.get("text") or "")
+    if not raw_text or not source.get("bbox"):
+        return []
+    if source.get("source_sha256") != source_sha256:
+        raise PtrP01DraftError("Report 范围证据未绑定当前输入 SHA-256")
+    page = int(source.get("pdf_page", 0))
+    status = "candidate" if scope.get("status") == "parsed" else "manual_required"
+    return [
+        {
+            "scope_id": f"report:declared-scope:p{page:03d}",
+            "kind": "report_declared_scope_candidate",
+            "raw_text": raw_text,
+            "validation_status": status,
+            "scope_set": scope,
+            "evidence": [
+                _evidence(
+                    role="report",
+                    page=page,
+                    rect=source["bbox"],
+                    source_sha256=source_sha256,
+                    semantic_role="report_declared_scope",
+                    text=raw_text,
+                    extraction_method=str(source.get("extraction_method", "pymupdf_table_cell")),
+                )
+            ],
+        }
+    ]
 
 
 def _parent_edges(clauses: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
