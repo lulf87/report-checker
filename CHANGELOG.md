@@ -5,6 +5,9 @@
 - PTR + Report 先行实现 Report 第三页“检验项目”范围解析：从表格单元格提取原文和 bbox，支持条款区间、字母子项区间、排除项和“仅检”标准选择器。
 - 新增 `mvp/ptr_scope.py` 及 0596、1539、2795 黄金范围夹具；范围解析仍只生成禁用态草案数据，不启用 PTR 自动结论。
 - `mvp/ptr_p01.py` 的 Report 范围候选改为引用 `ScopeSet`，证据标记为表格单元格提取；规则不确定时继续保留 `manual`。
+- 新增 `mvp/ptr_compare.py`：按范围、条款树、文本、数值/单位、标准/表格引用和覆盖关系生成不可发布的 PTR ↔ Report Coverage Ledger；支持 `rules` 与 `rules+llm` 入口，但当前只执行规则，LLM 不能覆盖硬差异或直接产生通过结论。
+- 新增 `tests/test_ptr_compare.py`：固化 0596 深层条款、1539 已知数值差异、2795 单位/表格人工队列、5782 无文字层人工复核，以及 `ug/μg` 和排版归一规则。
+- 更新 `docs/PTR_REPORT_COMPARISON_PLAN.md`，记录当前比较器边界、状态含义和后续启用门槛；`report_ptr` 能力继续保持禁用。
 
 ## 1.2.7（2026-10-23）
 
