@@ -125,16 +125,19 @@ class FourModeDispatcherTests(unittest.TestCase):
             ),
         )
         self.assertTrue(MODE_CAPABILITIES["report_self"]["enabled"])
-        self.assertFalse(MODE_CAPABILITIES["report_ptr"]["enabled"])
+        self.assertTrue(MODE_CAPABILITIES["report_ptr"]["enabled"])
 
-    def test_ptr_is_stably_disabled_without_creating_output(self) -> None:
+    def test_ptr_disabled_guard_still_rejects_without_creating_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "ptr"
-            with self.assertRaises(ModeDisabledError) as context:
+            with patch.dict(
+                MODE_CAPABILITIES["report_ptr"],
+                {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+            ), self.assertRaises(ModeDisabledError) as context:
                 run_mode(
                     mode="report_ptr",
                     report_path=Path(temporary) / "missing-report.pdf",
-                    record_path=Path(temporary) / "missing-ptr.pdf",
+                    ptr_path=Path(temporary) / "missing-ptr.pdf",
                     output_dir=output,
                 )
             error = context.exception
@@ -142,10 +145,13 @@ class FourModeDispatcherTests(unittest.TestCase):
             self.assertEqual(error.reason_code, "PTR_NOT_VALIDATED")
             self.assertFalse(output.exists())
 
-    def test_ptr_report_alias_is_stably_disabled_without_creating_output(self) -> None:
+    def test_ptr_report_alias_disabled_guard_still_rejects_without_creating_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "ptr-report"
-            with self.assertRaises(ModeDisabledError) as context:
+            with patch.dict(
+                MODE_CAPABILITIES["report_ptr_report"],
+                {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+            ), self.assertRaises(ModeDisabledError) as context:
                 run_mode(
                     mode="report_ptr_report",
                     report_path=Path(temporary) / "missing-report.pdf",
@@ -204,9 +210,12 @@ class FourModeDispatcherTests(unittest.TestCase):
 
     def test_cli_returns_structured_ptr_error(self) -> None:
         stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
+        with patch.dict(
+            MODE_CAPABILITIES["report_ptr"],
+            {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+        ), contextlib.redirect_stderr(stderr):
             exit_code = main(
-                ["--mode", "report_ptr", "--report", "report.pdf", "--output", "out"]
+                ["--mode", "report_ptr", "--report", "report.pdf", "--ptr", "ptr.pdf", "--output", "out"]
             )
         self.assertEqual(exit_code, 2)
         payload = json.loads(stderr.getvalue())

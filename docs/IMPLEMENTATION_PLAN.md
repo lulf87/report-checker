@@ -3,7 +3,7 @@
 > 状态：工程实施蓝图 v0.1  
 > 本文定义未来怎么做、怎样验证和何时停止；当前轮次只交付设计，不创建正式前后端工程。
 
-> **当前范围修订（2026-10-03）**：正式比对范围以 [docs/COMPARISON_SCOPE.md](COMPARISON_SCOPE.md) 和 `mvp.capabilities` 当前目录为准。Report 自检现为 12 条独立规则（R01–R11，含 R07-B）；9706.1 现启用身份、状态、数值、百分比、序列结论、范围、结构、模板外数值发现、元数据和不符合警示共 10 条规则；9706.202 现启用编号、状态、数值、百分比、图例、结构、字段范围、身份、元数据和不符合警示共 10 条规则，并在正文单元严格比较项目名称。S01–S47 纳入，S48（表 3 独立内容）第一阶段排除。本文后续较早的“未拆分规则粒度/28 条 Finding”数字属于历史实施基线，不能作为当前范围或当前自动通过数量。
+> **当前范围修订（2026-10-03；PTR 启用状态更新于 2026-10-25）**：正式比对范围以 [docs/COMPARISON_SCOPE.md](COMPARISON_SCOPE.md) 和 `mvp.capabilities` 当前目录为准。Report 自检现为 12 条独立规则（R01–R11，含 R07-B）；9706.1 现启用身份、状态、数值、百分比、序列结论、范围、结构、模板外数值发现、元数据和不符合警示共 10 条规则；9706.202 现启用编号、状态、数值、百分比、图例、结构、字段范围、身份、元数据和不符合警示共 10 条规则，并在正文单元严格比较项目名称。S01–S47 纳入，S48（表 3 独立内容）第一阶段排除。`report_ptr` 已完成三份试点验收、业务授权和正式 Runner 回归；本文后续较早的“PTR disabled”与“未拆分规则粒度/28 条 Finding”内容属于历史实施基线，当前状态以能力目录和验证报告为准。
 
 ## 1. 已有基础与可信边界
 
@@ -37,7 +37,7 @@
 1. 先冻结通用数据契约和四样本回归基线；
 2. 再把三个已验证模式产品化；
 3. 完成人工复核、恢复和导出闭环；
-4. 最后单独开发 PTR，直到验收前保持 `disabled`。
+4. 最后单独开发 PTR，直到验收前保持 `disabled`；该门槛已完成，当前 `report_ptr` 已启用。
 
 第一阶段对外显示四个模式，但真正可运行的是：
 
@@ -124,7 +124,7 @@ FastAPI 父进程（唯一数据库写者）
 ```text
 ModePlan
   ├─ report_self              = report_parse + report_rules
-  ├─ report_ptr               = report_parse + ptr_parse + ptr_expand + ptr_rules [disabled]
+  ├─ report_ptr               = report_parse + ptr_parse + ptr_expand + ptr_rules [enabled after signoff]
   ├─ report_record_9706_1     = report_parse + record61_parse + record61_rules
   └─ report_record_9706_202   = report_parse + record202_parse + record202_rules
 ```
@@ -204,7 +204,7 @@ POST create run
 - 固定 Run 的 component versions/config hashes，以及 resolved overall 的 review revision/计算时间语义；
 - 建立 JSON Schema 与生成的 Python/TypeScript 类型；
 - 将四份现有 result.json 转成只读回归夹具，另保留输入哈希；
-- 定义 capability 响应，PTR 为 `disabled`；
+- 定义 capability 响应（历史验收阶段 PTR 为 `disabled`；当前 `report_ptr` 已启用）；
 - 记录当前环境版本和 OCR 后端可用性。
 
 退出门槛：Schema 往返验证通过；Python/TypeScript 枚举一致；preflight plan hash 漂移、组件不可用、模式 Finding 隔离和 PTR disabled 契约测试通过；四样本基线可枚举 28 条唯一语义断言；独立模式回归计划明确为 10 个 Run、按当前未拆分规则粒度共 28 条 Run Finding；规则级旧 Finding 若为支持逐项 Q 而拆分，已有一对多映射且新的精确计数已经单独冻结；任何字段歧义已解决。
@@ -245,7 +245,7 @@ POST create run
 - Evidence 发布前验证源文档、页码、bbox 和 artifact hash；
 - 暂不实现人工录入，只保留 `manual` 结果。
 
-退出门槛：完成 4 个 `report_self`、3 个 `report_record_9706_1`、3 个 `report_record_9706_202`，共 10 个独立 Run；按当前未拆分规则粒度物化 28 条 Run Finding，并逐项映射回 28 条已审核语义断言且无回归。`report_self` 不出现 RECORD/PTR Finding，对比模式不出现 REPORT-* Finding，三个模式绝不串跑；PTR 后端仍拒绝。规则拆分会改变物化数时，先冻结并审查新的预期计数。
+退出门槛：完成 4 个 `report_self`、3 个 `report_record_9706_1`、3 个 `report_record_9706_202`，共 10 个独立 Run；按当前未拆分规则粒度物化 28 条 Run Finding，并逐项映射回 28 条已审核语义断言且无回归。`report_self` 不出现 RECORD/PTR Finding，对比模式不出现 REPORT-* Finding，三个模式绝不串跑；PTR 后端在启用前拒绝，当前正式 `report_ptr` 已通过独立验收。规则拆分会改变物化数时，先冻结并审查新的预期计数。
 
 ### 阶段 3：前端基础闭环
 
@@ -374,7 +374,7 @@ Golden 不是可随意重录的截图。任何业务状态变化必须对应：�
 | 完整文档与 Q 定位 | Report 自检可浏览完整 Report；对比模式始终保留 Report + PTR/Record 两个文档槽；点击 Q 跳到全部相关页/bbox；切状态 tab 只筛 Q 而不重建查看器或丢失页码/滚动/缩放；检查项/判定抽屉开合、任务信息展开和窄屏文档页签切换保持 viewer identity 与双方浏览状态；当前 Q 不在非空筛选中时提示但保留上下文，零项筛选只隐藏 Q 定位和详情；裁剪只作辅助 | 只显示裁剪图；单侧 Q 使另一文档槽消失；辅助面板或 tab 操作重建 PDF、丢浏览状态、更换 Q 或使 Q 重编号；零项筛选卸载文档；warning 被合并到 error/pass |
 | SAMPLE-B / 9706.1 | 结构与状态链可自动裁决；手写值未达门槛时 manual | 用 Report 值反推 Record；因肉眼可读而冒充自动通过 |
 | SAMPLE-A / 9706.1 | 正确选择适用数值页/格；识别不足时 manual | 占位图触发错误数值比较；缺证据仍 pass |
-| PTR 第一阶段 | capability 为 disabled；前端不可开始；API 明确拒绝 | 创建成功、零 Finding、overall pass |
+| PTR 启用前阶段（历史） | capability 为 disabled；前端不可开始；API 明确拒绝 | 创建成功、零 Finding、overall pass |
 | 父进程存活时 Worker 崩溃 | Run 为 failed；无 published 结果 | 生命周期 succeeded；展示旧或半成品结果 |
 | 应用或主机中断后重启 | 启动对账将孤立运行态标记 interrupted | 原地假装继续；误标为内容 error |
 | SSE 断线 | Run 继续；重连后快照和事件一致 | 自动重建重复 Run；断线即取消 |
@@ -456,7 +456,7 @@ Golden 不是可随意重录的截图。任何业务状态变化必须对应：�
 
 只有以下项目全部具备证据，才能说第一版实现完成：
 
-1. 三个启用模式端到端运行并独立保存；
+1. 四个启用模式端到端运行并独立保存；
 2. 四份真实样本回归与已审核 Finding 等价；
 3. Case/Document/Run/Finding/Evidence/ReviewAction/ReviewState 的 Schema 和数据库迁移稳定；
 4. Run 成功、内容错误、人工待复核和系统失败在 UI/API 中不混淆；
@@ -465,7 +465,7 @@ Golden 不是可随意重录的截图。任何业务状态变化必须对应：�
 7. 9706.1 先录后比可工作，且不改写自动状态；
 8. 取消、崩溃、重启、SSE 重连、磁盘失败和证据缺失均有测试；
 9. JSON/HTML 导出与发布快照一致；
-10. PTR 始终明确 disabled，直至其独立验收完成；
+10. PTR 独立验收、业务授权、正式 Runner 和发布回归完成；当前 `report_ptr` 已启用；
 11. 规则目录、系统诊断与输入相关 preflight 能驱动前端，不依赖硬编码规则版本或组件状态；每个可创建计划的规则依赖组件精确去重并集必须与 Run 复现快照完全闭合；
 12. 使用文档明确列出已覆盖、未覆盖和真实验证范围。
 

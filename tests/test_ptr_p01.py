@@ -111,10 +111,11 @@ class PtrP01DraftTests(unittest.TestCase):
             self.assertFalse(payload["publishable"])
             self.assertEqual(payload["findings"], [])
 
-    def test_capability_remains_disabled(self) -> None:
-        self.assertFalse(MODE_CATALOG["report_ptr"]["enabled"])
+    def test_formal_capability_is_enabled_but_draft_remains_non_publishable(self) -> None:
+        self.assertTrue(MODE_CATALOG["report_ptr"]["enabled"])
+        self.assertEqual(MODE_CATALOG["report_ptr"]["status"], "enabled")
         self.assertEqual(MODE_CATALOG["report_ptr"]["runner"], "mvp.run_ptr_report:run_ptr_report")
-        self.assertEqual(MODE_CATALOG["report_ptr"]["disabled_reason_code"], PTR_P01_DISABLED_REASON)
+        self.assertIsNone(MODE_CATALOG["report_ptr"]["disabled_reason_code"])
         self.assertFalse(MODE_CATALOG["report_ptr_report"]["enabled"])
 
 

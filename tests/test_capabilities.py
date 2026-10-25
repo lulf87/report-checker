@@ -37,11 +37,9 @@ class CapabilityCatalogTests(unittest.TestCase):
             MODE_CATALOG["report_ptr"]["required_roles"],
             ("report", "ptr"),
         )
-        self.assertFalse(MODE_CATALOG["report_ptr"]["enabled"])
-        self.assertEqual(
-            MODE_CATALOG["report_ptr"]["disabled_reason_code"],
-            "PTR_NOT_VALIDATED",
-        )
+        self.assertTrue(MODE_CATALOG["report_ptr"]["enabled"])
+        self.assertEqual(MODE_CATALOG["report_ptr"]["status"], "enabled")
+        self.assertIsNone(MODE_CATALOG["report_ptr"]["disabled_reason_code"])
         self.assertEqual(MODE_CATALOG["report_ptr"]["rule_ids"], ("PTR-P01",))
         self.assertEqual(
             {slot["role"]: slot["field"] for slot in MODE_CATALOG["report_ptr"]["input_contract"]["slots"]},
@@ -95,7 +93,9 @@ class CapabilityCatalogTests(unittest.TestCase):
         self.assertTrue(contract["result_contract"]["publishable"])
 
     def test_ptr_mode_cannot_run_if_its_rule_catalog_is_still_disabled(self) -> None:
-        with patch.dict(MODE_CATALOG["report_ptr"], {"enabled": True, "status": "enabled"}):
+        with patch.dict(MODE_CATALOG["report_ptr"], {"enabled": True, "status": "enabled"}), patch.dict(
+            RULE_CATALOG["PTR-P01"], {"enabled": False, "catalog_status": "disabled"}
+        ):
             decision = validate_mode("report_ptr", operation="runner")
         self.assertFalse(decision["enabled"])
         self.assertEqual(decision["code"], "MODE_DISABLED")
@@ -155,7 +155,7 @@ class CapabilityServerTests(unittest.TestCase):
         status, capabilities = self.get_json("/api/v1/capabilities?cache=0")
         self.assertEqual(status, 200)
         self.assertEqual(list(capabilities["modes"]), list(MODE_CATALOG))
-        self.assertFalse(capabilities["modes"]["report_ptr"]["enabled"])
+        self.assertTrue(capabilities["modes"]["report_ptr"]["enabled"])
 
         status, rules = self.get_json("/api/v1/rules")
         self.assertEqual(status, 200)

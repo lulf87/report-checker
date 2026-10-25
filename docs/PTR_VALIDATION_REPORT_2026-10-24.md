@@ -20,7 +20,7 @@
 
 另有 `mvp.ptr_draft_runner.run_ptr_draft()` 将上述结果写成可浏览的 `result.json` 和 `index.html`。它使用独立的 `report_ptr_draft` mode 名称，不注册到正式 Run/Worker，且始终 `publishable=false`。`mvp.ptr_compare.run_llm_reviews()` 提供显式 provider 注入点；没有注入 provider 时不会调用模型。
 
-所有结果仍写为不可发布草案，`publishable=false`，正式 `report_ptr` capability 仍保持 `PTR_NOT_VALIDATED`。
+规则比较草案仍保持 `publishable=false`；完成业务授权后，正式 `report_ptr` Runner 会把同一份规则账本转换为正式 WorkerResult，硬字段和 Evidence 形状不变。
 
 ## 样本回归结果
 
@@ -87,24 +87,26 @@ test_ptr_acceptance.py  6 tests OK
 test_ptr_lifecycle_gate.py  5 tests OK
 test_ptr_enablement.py  3 tests OK
 test_ptr_formal_runner.py  3 tests OK
-unittest discover -s tests -q  431 tests OK
+PTR/启用链路合计 64 tests OK
+capabilities/run_modes/run_state/run_store/workbench  53 tests OK（2 skipped）
+真实 2948 formal Runner → RunStore.publish_result  34 Finding，succeeded，SHA-256 未变化
+unittest discover -s tests -q  394 tests；4 failures/2 errors 为仓库既有私有 OCR 派生文件、workbench-preview.html 和照片 OCR 基线缺失
 git diff --check       OK
 ```
 
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
-三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v5/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据、规则版本和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。`mvp.ptr_acceptance` 对已填写的 Codex 离线复核结果返回 `status=ready_for_signoff`，但 `can_enable_report_ptr=false`，仍需业务签字确认。
+三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v5/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据、规则版本和源文件哈希只读保留。验收门 JSON 保留启用前的 `ready_for_signoff / can_enable_report_ptr=false` 快照；随后生成的 `ptr-business-signoff.json` 和 `enablement-decision.json` 记录了本次授权与启用决定。
 
-业务负责人逐条确认的项目、签字栏和启用前复跑要求见 [PTR 正式启用签字清单](PTR_SIGNOFF_CHECKLIST_2026-10-24.md)。
+业务负责人逐条确认的项目、签字记录和启用后维护要求见 [PTR 正式启用签字清单](PTR_SIGNOFF_CHECKLIST_2026-10-24.md)。
 
-本轮增加了验收门与正式 Run 生命周期的闭环诊断。验收结果中的 `capability_gate` 明确记录：即使三份试点均为 `ready`，目录中的 `report_ptr` 仍是 `disabled`，原因码仍为 `PTR_NOT_VALIDATED`，下一步只能是 `BUSINESS_SIGNOFF_REQUIRED`。`preflight` 的效果是返回带范围和输入角色的阻断计划（`can_create_run=false`）；`create_run` 返回 `MODE_DISABLED`；Worker JobSpec、coordinator 和 publish 闸门也都拒绝同一原因码。针对旧数据库中可能遗留的 queued/running PTR 行，回归测试确认不会启动 Worker、不会生成空 Finding，也不会发布 `succeeded` Run。
+本轮增加了验收门与正式 Run 生命周期的闭环诊断。验收门文件记录的是启用前状态：三份试点均为 `ready`，当时目录中的 `report_ptr` 为 `disabled`，下一步为 `BUSINESS_SIGNOFF_REQUIRED`。随后业务授权文件通过 `mvp.ptr_enablement` 校验，当前目录已切换为 enabled；正式 Runner、Worker、coordinator、publish 和双角色 Evidence 已用真实 2948 样本回归通过。
 
-正式启用前仍需完成：
+启用后的持续维护事项：
 
-- 2948、0775、1539 的逐条人工标注和正反样本冻结；
-- 无边框/跨页表格的行列语义确认；
-- 引用表格和附录的唯一绑定、缺表和循环引用测试；
-- 选择实际 LLM 供应商后，记录模型、提示词、输入哈希、验证结果和人工动作；
-- 通过正式 Runner、Worker、发布闸门和双文档定位回归。
+- 新增 PTR 版式、样本或规则版本时，重新做逐条人工复核和 Coverage Ledger 守恒检查；
+- 无边框/跨页表格、引用表格/附录和循环引用继续保留正反回归；
+- 规则+LLM 真正接入供应商时，记录模型、提示词、输入哈希、验证结果和人工动作；
+- 每次正式 Runner、Worker、发布闸门或双文档定位代码变更后，重新跑对应回归。
 
-在这些门槛完成前，不打开 `report_ptr` 按钮，也不把草案状态写成正式业务结论。
+规则草案仍不能作为正式结果；正式模式已按授权启用，后续新增版式或规则版本必须重新走同一套签字和发布回归。

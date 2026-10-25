@@ -52,12 +52,17 @@ def ptr_lifecycle_gate_diagnostics() -> dict[str, Any]:
         decision = validate_mode("report_ptr", operation=operation)
         capability = decision.get("capability") or capability
         details = decision.get("details") or {}
+        allowed = bool(decision.get("enabled"))
         operation_checks[operation] = {
-            "allowed": bool(decision.get("enabled")),
+            "allowed": allowed,
             "code": decision.get("code"),
             "status": decision.get("status"),
             "disabled_reason_code": details.get("disabled_reason_code"),
-            "effect": "blocked_plan" if operation == "preflight" else "rejected",
+            "effect": (
+                "plan_ready" if operation == "preflight" else "accepted"
+            ) if allowed else (
+                "blocked_plan" if operation == "preflight" else "rejected"
+            ),
         }
     capability = capability or {}
     return {
@@ -163,11 +168,18 @@ def audit_review_batch(
         all_ready = all_ready and bool(item.get("ready"))
         results.append(item)
     capability_gate = ptr_lifecycle_gate_diagnostics()
-    capability_gate["next_action"] = "BUSINESS_SIGNOFF_REQUIRED" if all_ready else "COMPLETE_TRIAL_REVIEW"
+    capability_gate["next_action"] = (
+        "COMPLETE_TRIAL_REVIEW"
+        if not all_ready
+        else "FORMAL_CAPABILITY_ENABLED"
+        if capability_gate.get("enabled")
+        else "BUSINESS_SIGNOFF_REQUIRED"
+    )
     return {
         "schema_version": PTR_ACCEPTANCE_SCHEMA_VERSION,
         "status": "ready_for_signoff" if all_ready else "blocked",
         "can_enable_report_ptr": False,
+        "capability_currently_enabled": bool(capability_gate.get("enabled")),
         "reason_code": "PTR_NOT_VALIDATED",
         "capability_gate": capability_gate,
         "samples": results,

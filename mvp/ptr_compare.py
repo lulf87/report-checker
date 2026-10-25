@@ -1,8 +1,9 @@
-"""Deterministic PTR ↔ Report comparison draft.
+"""Deterministic PTR ↔ Report comparison engine.
 
-The public PTR capability is still disabled.  This module is deliberately a
-read-only, non-publishable comparison draft that turns the existing Report
-table scanner and :mod:`mvp.ptr_scope` into an auditable comparison ledger.
+This module is the rule-first comparison layer used by both the offline
+review package and the enabled formal runner.  Direct calls remain read-only
+and non-publishable; :mod:`mvp.run_ptr_report` is the only layer that maps a
+validated comparison into a formal WorkerResult.
 
 The important safety rule is that an absent or ambiguous fact is ``manual``;
 only evidence-backed, deterministic matches are ``matched``.  A future

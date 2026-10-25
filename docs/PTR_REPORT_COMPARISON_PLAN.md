@@ -4,7 +4,7 @@
 **日期**：2026-10-24  
 **原则**：规则先判定，LLM 只能辅助不确定部分；不能用 LLM 单独给出通过结论。
 
-**当前进展（2026-10-24）**：已完成范围层、规则比较草案、OCR 观察适配器、矢量表格证据和 LLM 复核契约。`mvp/ptr_scope.py` 从 Report 第三页表格单元格提取并展开 `ScopeSet`，`mvp/ptr_compare.py` 已把有文字层 PTR 和 Report 产品技术要求拆成条款节点，输出带双方页码、坐标、原文和 SHA-256 的 Coverage Ledger；`mvp/ptr_ocr.py` 在本机 OCR 可用时为扫描 PTR 提供带置信度和 PDF 坐标的候选文字，仍强制进入 `manual`；`mvp/ptr_llm.py` 校验未来 LLM 返回的逐字证据，`apply_llm_review()` 只允许在数值、单位、引用和表格规则全部通过时消除文本人工项。`mvp/ptr_p01.py` 的禁用态草案已引用范围结构。条款解析现在对逗号、句点、无空格中文标题和 `a)`/`b)` 子项做有边界的内联拆分，并在 Report 侧保留序号身份；0775 的 `2.10.1.2.1`、`2.10.1.2.2`、`2.10.2.1`、`2.10.2.2` 以及 0780 的字母子项已能在双方账本中建立稳定节点，引用句不会被误识别成新条款。0596、1539、2795 已有黄金范围夹具和比较回归，5782 已验证无文字层时进入人工队列。PTR 能力仍保持禁用。
+**当前进展（2026-10-24）**：已完成范围层、规则比较草案、OCR 观察适配器、矢量表格证据和 LLM 复核契约。`mvp/ptr_scope.py` 从 Report 第三页表格单元格提取并展开 `ScopeSet`，`mvp/ptr_compare.py` 已把有文字层 PTR 和 Report 产品技术要求拆成条款节点，输出带双方页码、坐标、原文和 SHA-256 的 Coverage Ledger；`mvp/ptr_ocr.py` 在本机 OCR 可用时为扫描 PTR 提供带置信度和 PDF 坐标的候选文字，仍强制进入 `manual`；`mvp/ptr_llm.py` 校验未来 LLM 返回的逐字证据，`apply_llm_review()` 只允许在数值、单位、引用和表格规则全部通过时消除文本人工项。`mvp/ptr_p01.py` 的禁用态草案已引用范围结构。条款解析现在对逗号、句点、无空格中文标题和 `a)`/`b)` 子项做有边界的内联拆分，并在 Report 侧保留序号身份；0775 的 `2.10.1.2.1`、`2.10.1.2.2`、`2.10.2.1`、`2.10.2.2` 以及 0780 的字母子项已能在双方账本中建立稳定节点，引用句不会被误识别成新条款。0596、1539、2795 已有黄金范围夹具和比较回归，5782 已验证无文字层时进入人工队列。三份试点完成授权后，`report_ptr` 已启用，正式 Runner 已通过 Worker/publish 回归。
 
 ## 0. 当前已落地的比较草案
 
@@ -14,7 +14,7 @@
 - PTR 先按 2.x 条款号和父子关系生成条款树；Report 先读取第三页 `检验项目` 得到范围，再从正式检验表读取 `检验项目/标准条款/标准要求`，把嵌在父条目中的子条款拆出来。
 - 比较顺序是文本规范化、数值/单位/比较符、GB/YY 标准引用、表/附录引用和覆盖关系。空白、换行、全半角和 `ug/μg` 这类受控写法可以归一；数值、单位、上下限、引用缺失和条款缺失仍是硬差异。
 - 每个条款都会进入 Coverage Ledger，状态只有 `matched`、`mismatch`、`manual`、`excluded`。规则无法确认时进入 `manual`，不会被当作一致；当前草案对明确范围外内容使用 `excluded`，不把未解析内容伪装成排除。表/附录引用另外保存 `bound`、`bound_physical_rows`、`ambiguous` 或 `unresolved` 绑定状态，未绑定不会被当作通过。
-- `rules+llm` 只把规则识别出的文本歧义标记为待接入的 LLM 复核队列；表格结构、数值、单位、范围和引用硬差异不会送入可清除文本结论的队列。每个任务固定提示词版本和输入哈希，显式 provider 的返回会保存验证后的 JSON、模型信息和处理动作。输出固定 `publishable: false`，也不会改变 `report_ptr` 的禁用开关。
+- `rules+llm` 只把规则识别出的文本歧义标记为待接入的 LLM 复核队列；表格结构、数值、单位、范围和引用硬差异不会送入可清除文本结论的队列。每个任务固定提示词版本和输入哈希，显式 provider 的返回会保存验证后的 JSON、模型信息和处理动作。离线比较输出固定 `publishable: false`，不会绕过或改变正式能力开关。
 - Coverage Ledger 会把声明范围中两侧都没有提取节点的条款写成 `SCOPE_ITEM_UNACCOUNTED` 行；`eligible` 只统计纳入项，`accounted` 只统计有 PTR 或 Report 节点证据的纳入项，二者不再通过同一计数表达“天然相等”。
 - 扫描 PTR 的 OCR 走本机已安装的 Apple Vision/RapidOCR 适配器；若没有引擎、引擎失败或候选条款不稳定，保存诊断、bbox 和置信度并保持 `manual`。OCR 只提供观察，不反向从 Report 补写 PTR。
 - 能被 PyMuPDF 识别的矢量表格会作为物理行矩阵挂在条款节点上；双方矩阵规范化后完全相同才算表格一致，否则缺少结构证据时进入 `manual`。复杂无边框表格仍需人工标注和后续行列映射规则。
@@ -26,7 +26,7 @@
 
 ## 1. 看完素材后的结论
 
-项目中的 PTR 比对目前还没有真正启用。`mvp/ptr_p01.py` 只生成候选条款、引用和父子关系，能力目录仍以 `PTR_NOT_VALIDATED` 禁用；它不能发布“相同”或“不同”的业务结论。
+`mvp/ptr_p01.py` 仍保留禁用态草案入口，正式业务结果由 `mvp.run_ptr_report` 生成；当前能力目录已经在三份试点授权后启用，正式结果仍按规则和证据决定，不会把 LLM 判断直接当作通过。
 
 这不是把一个开关打开就能解决的问题，原因有四个：
 
@@ -264,7 +264,7 @@ reason_code
 
 ### 阶段 D：启用门槛
 
-只有同时满足以下条件，才把 `report_ptr` 从 `disabled` 改成 `enabled`：
+以下是把 `report_ptr` 从 `disabled` 改成 `enabled` 时采用的门槛；本次三份试点已经满足并完成授权：
 
 - 至少 3 份结构明显不同的 PTR（建议 2948、0775、1539）完成逐条人工对照；
 - 范围内缺项、范围外条款、父子条款、表格、引用和循环引用都有正反测试；
@@ -273,13 +273,13 @@ reason_code
 - 规则、解析器、单位词典、提示词、模型和结果 schema 都有版本号；
 - 全流程通过 preflight、worker、publish 和双 PDF 定位回归。
 
-验收包全部完成后，验收门只进入 `ready_for_signoff`，不会直接切换能力目录。业务签字前，`report_ptr` 仍必须在 preflight、create、Worker、coordinator 和 publish 五个边界返回 `MODE_DISABLED / PTR_NOT_VALIDATED`；遗留的旧 Run 也必须失败收口，不能产生空 Finding 或 `succeeded` 结果。
+验收包完成后，验收门先进入 `ready_for_signoff`；本次业务授权已通过 `mvp.ptr_enablement` 校验，签字文件绑定了验收门 SHA-256、规则版本和三份样本，随后才切换能力目录。未授权时，`report_ptr` 在 preflight、create、Worker、coordinator 和 publish 五个边界均拒绝；遗留旧 Run 也会失败收口，不能产生空 Finding 或 `succeeded` 结果。
 
 签字后的切换前置校验由 `mvp.ptr_enablement` 执行：业务签字 JSON 必须绑定当前验收门文件 SHA-256、当前 `PTR-P01` 版本和三份试点样本；校验器只返回 `approved_for_enablement` 决策，不直接修改能力目录。
 
 正式 Runner 已实现为 `mvp.run_ptr_report`，但默认参数拒绝生成可发布结果；只有统一调度器在能力目录显式启用后才会传入正式发布参数。它输出与 Worker/publish 契约一致的双角色 Evidence、Coverage Ledger 和源文件完整性信息。
 
-在此之前，PTR 可以生成“解析草案/人工复核队列”，但不能生成空通过或对外宣称已经完成 PTR 自动核对。
+即使正式模式已经启用，PTR 仍可以生成“解析草案/人工复核队列”；草案不能生成空通过，也不能替代正式 Runner 的规则结果和证据。
 
 ## 7. 最终建议
 

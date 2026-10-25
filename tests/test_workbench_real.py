@@ -392,7 +392,7 @@ class RealWorkbenchTests(unittest.TestCase):
     def test_modes_status_filters_and_read_only_identity_are_present(self) -> None:
         self.assertIn('data-mode="self"', self.html)
         self.assertIn('data-mode="ptr"', self.html)
-        self.assertIn("PTR_NOT_VALIDATED", self.html)
+        self.assertIn("Report + PTR", self.html)
         self.assertIn('data-mode="record61"', self.html)
         self.assertIn('data-mode="record202"', self.html)
         for status in ("all", "error", "manual", "pass"):
@@ -478,7 +478,7 @@ class RealWorkbenchTests(unittest.TestCase):
         self.assertIn("function manualReviewText(finding)", self.module_source)
         self.assertIn("复核要点：", self.html)
 
-    def test_upload_mode_contract_maps_roles_and_keeps_ptr_disabled(self) -> None:
+    def test_upload_mode_contract_maps_roles_and_enables_ptr(self) -> None:
         source = self.module_source
         # The enabled mode values are the same values accepted by capabilities
         # and the Run state API.  Checking the source keeps this test independent
@@ -489,7 +489,6 @@ class RealWorkbenchTests(unittest.TestCase):
         for role in ("report", "record_9706_1", "record_9706_202"):
             with self.subTest(role=role):
                 self.assertIn(role, source)
-        self.assertIn("PTR_NOT_VALIDATED", source)
         mode_select = re.search(
             r"<select\b[^>]*data-role=[\"']mode-select[\"'][^>]*>(?P<body>.*?)</select>",
             self.html,
@@ -505,20 +504,16 @@ class RealWorkbenchTests(unittest.TestCase):
             )
         }
         self.assertTrue({"self", "record61", "record202", "ptr"} <= options)
-        self.assertRegex(
-            mode_select.group("body"),
-            r"<option\b[^>]*\bvalue=[\"']ptr[\"'][^>]*\bdisabled\b",
-            "PTR upload option must remain disabled",
-        )
+        self.assertRegex(mode_select.group("body"), r"<option\b[^>]*\bvalue=[\"']ptr[\"'](?:\s|>)")
         self.assertIn("recordFile.required = needsRecord", source)
         ptr_tab = re.search(
             r"<button\b[^>]*data-mode=[\"']ptr[\"'][^>]*>",
             self.html,
             flags=re.IGNORECASE,
         )
-        self.assertIsNotNone(ptr_tab, "PTR mode control must remain visible for its disabled reason")
-        self.assertRegex(ptr_tab.group(0), r"\bdisabled\b")
-        self.assertRegex(source, r"report_ptr|PTR_NOT_VALIDATED")
+        self.assertIsNotNone(ptr_tab, "PTR mode control must remain visible")
+        self.assertNotRegex(ptr_tab.group(0), r"\bdisabled\b")
+        self.assertIn("report_ptr", source)
 
     def test_local_pdfjs_and_precise_highlight_pipeline(self) -> None:
         import_match = re.search(

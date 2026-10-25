@@ -1,10 +1,9 @@
-"""Formal PTR ↔ Report runner, kept behind the disabled capability gate.
+"""Formal PTR ↔ Report runner behind the explicit capability gate.
 
 The default entry point refuses to produce a publishable result.  The unified
 dispatcher may pass ``allow_formal_publish=True`` only after the capability
 catalog has been explicitly enabled following business sign-off.  This keeps
-the formal result shape ready for Worker/publish integration without turning
-the current offline draft into an accidental Run.
+direct draft calls from bypassing the formal Run/Worker publication contract.
 """
 
 from __future__ import annotations

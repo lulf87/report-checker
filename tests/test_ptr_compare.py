@@ -612,7 +612,11 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.5"]["decision"], MISMATCH)
         self.assertEqual(by_clause["2.5"]["reason_code"], "UNIT_MISMATCH")
         self.assertEqual(by_clause["2.6.1"]["decision"], MANUAL)
-        self.assertEqual(by_clause["2.6.1"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
+        # The report-side Appendix A binding is unresolved, so the ledger
+        # keeps the more specific reference reason while retaining the table
+        # extraction evidence as a manual sub-check.
+        self.assertEqual(by_clause["2.6.1"]["reason_code"], "REFERENCE_BINDING_UNRESOLVED")
+        self.assertEqual(by_clause["2.6.1"]["table_comparison"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
         self.assertEqual(result["summary"]["eligible"], result["summary"]["accounted"])
         self.assertTrue(all(entry["evidence"] for entry in result["coverage_ledger"]))
 

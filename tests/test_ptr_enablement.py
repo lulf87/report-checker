@@ -47,7 +47,7 @@ class PtrEnablementTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertFalse(result["can_enable_report_ptr"])
         self.assertEqual(result["reason_code"], "BUSINESS_SIGNOFF_REQUIRED")
-        self.assertFalse(MODE_CATALOG["report_ptr"]["enabled"])
+        self.assertTrue(MODE_CATALOG["report_ptr"]["enabled"])
 
     def test_valid_signoff_only_returns_an_enablement_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -60,8 +60,8 @@ class PtrEnablementTests(unittest.TestCase):
         self.assertEqual(result["status"], "approved_for_enablement")
         self.assertTrue(result["can_enable_report_ptr"])
         self.assertEqual(result["mutation"], "none")
-        self.assertFalse(result["current_catalog"]["enabled"])
-        self.assertFalse(MODE_CATALOG["report_ptr"]["enabled"])
+        self.assertTrue(result["current_catalog"]["enabled"])
+        self.assertTrue(MODE_CATALOG["report_ptr"]["enabled"])
 
     def test_signoff_hash_binding_rejects_a_different_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

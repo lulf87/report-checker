@@ -1,6 +1,6 @@
 # 报告核对工具架构设计
 
-> 文档状态：设计基线（尚未实现）  
+> 文档状态：设计基线（已落地部分以 `mvp/` 和当前 API 契约为准）
 > 适用范围：本机单用户 HTML 工具第一阶段  
 > 公开领域名词：`Case`，界面显示为“核对任务”  
 > API 前缀：`/api/v1`
@@ -15,10 +15,10 @@
 
 - 仅在本机运行并监听 `127.0.0.1`；
 - 原始 PDF 只读并按内容哈希存储；
-- 四种模式独立创建、独立运行、独立保存；
+- 四种可执行模式独立创建、独立运行、独立保存；两个未启用边界也必须显式拒绝；
 - 四种模式的 Finding 完全隔离；只有 `report_self` 执行 REPORT-* 自检，比对模式仍解析并显示 Report 作为比较输入，但不执行、注入或聚合 REPORT-* Finding；
 - Report 自检、Report + GB 9706.1 Record、Report + GB 9706.202 Record 可逐项迁移已验证能力；
-- Report + PTR 在规则、样本与验收基线完成前保持 capability disabled，不能返回空的“通过”；
+- Report + PTR 已完成规则、样本与验收基线并启用；规则证据不足时返回 `manual`，不能返回空的“通过”；
 - 正式检查运行时不调用 LLM、Agent 或远程推理服务；本地 OCR/专用分类器只产生观察候选；
 - 自动状态、人工复核状态和运行生命周期永久分离；
 - 不引入账号、云服务、Redis、Celery、PostgreSQL、Docker或微服务。
@@ -101,18 +101,18 @@ not_required | pending | in_progress | resolved
 
 不得为了视觉效果伪造矩形。
 
-## 3. 四种独立运行模式
+## 3. 四种可执行运行模式
 
 | API mode | 界面名称 | 必需输入 | 固定检查组成 | 第一阶段能力 |
 |---|---|---|---|---|
 | `report_self` | Report 自检 | Report | Report 解析 + REPORT-* 自检规则 | enabled |
-| `report_ptr` | Report + PTR 检查 | Report、PTR | Report/PTR 解析 + PTR 模式规则；不运行 REPORT-* | disabled |
+| `report_ptr` | Report + PTR 检查 | Report、PTR | Report/PTR 解析 + PTR 模式规则；不运行 REPORT-* | enabled |
 | `report_record_9706_1` | Report + 9706.1 Record 检查 | Report、9706.1 Record | Report/Record 解析 + 9706.1 模式规则；不运行 REPORT-* | enabled |
 | `report_record_9706_202` | Report + 9706.202 Record 检查 | Report、9706.202 Record | Report/Record 解析 + 9706.202 模式规则；不运行 REPORT-* | enabled |
 
 Report 解析结果可以按输入哈希和解析器版本复用，但 Finding、RuleExecution、计数、机器总体状态、复核后总体状态和导出均严格属于单个 mode。比对 Finding 可以引用 Report 与 PTR/Record 双方证据；这不等于执行 Report 自检。四种模式间不自动联动，不提供“一键全部检查”。
 
-PTR capability disabled 时：
+未启用的 PTR 组合别名或其他禁用模式：
 
 - 前端显示“尚未启用”并阻止提交；
 - 后端仍必须再次拒绝创建 Run，并返回 `409 MODE_DISABLED`；
@@ -541,7 +541,7 @@ Worker 在运行中产生的 Finding 候选属于内部 work 数据，不通过�
 2. Worker 无数据库写权限；
 3. 任一 Run 只能读取自己的 RunInput；
 4. 未通过发布校验的结果不会出现在 Findings API；
-5. PTR disabled 时不能创建 Run 或得到 pass；
+5. `report_ptr` 只有在规则、证据和发布闸门通过后才能创建并发布；未启用的 PTR 组合别名不能创建 Run 或得到 pass；
 6. 每个 Run 只发布其 mode 允许的 Finding；`report_self` 不含 RECORD/PTR Finding，比对模式不含 REPORT-* 自检 Finding；
 7. `succeeded + error` 可正常保存和展示；
 8. 技术失败不生成业务 pass/error；

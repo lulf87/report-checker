@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-from mvp.capabilities import validate_mode
+from mvp.capabilities import MODE_CATALOG, validate_mode
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
 from mvp.run_store import RunStore, RunStoreError, _json, _now
 from mvp.worker_protocol import JobSpec, WorkerProtocolError
@@ -51,7 +51,11 @@ class PtrLifecycleGateTests(unittest.TestCase):
     def test_ptr_report_alias_is_disabled_at_the_same_worker_boundary(self) -> None:
         for mode in ("report_ptr", "report_ptr_report"):
             with self.subTest(mode=mode):
-                decision = validate_mode(mode, operation="worker_job")
+                with patch.dict(
+                    MODE_CATALOG[mode],
+                    {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+                ):
+                    decision = validate_mode(mode, operation="worker_job")
                 self.assertFalse(decision["enabled"])
                 self.assertEqual(decision["code"], "MODE_DISABLED")
                 self.assertEqual(decision["details"]["disabled_reason_code"], "PTR_NOT_VALIDATED")
@@ -59,7 +63,10 @@ class PtrLifecycleGateTests(unittest.TestCase):
     def test_worker_job_rejects_disabled_ptr_before_path_or_role_processing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaises(WorkerProtocolError) as error:
+            with patch.dict(
+                MODE_CATALOG["report_ptr"],
+                {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+            ), self.assertRaises(WorkerProtocolError) as error:
                 JobSpec(
                     run_id="ptr-worker-test",
                     mode="report_ptr",
@@ -77,7 +84,10 @@ class PtrLifecycleGateTests(unittest.TestCase):
             try:
                 run_id = _insert_legacy_ptr_run(store, lifecycle="queued")
                 output = root / "published"
-                with patch("mvp.run_coordinator.subprocess.run") as worker:
+                with patch.dict(
+                    MODE_CATALOG["report_ptr"],
+                    {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+                ), patch("mvp.run_coordinator.subprocess.run") as worker:
                     with self.assertRaises(CoordinatorError) as error:
                         execute_persisted_run(
                             store,
@@ -100,7 +110,10 @@ class PtrLifecycleGateTests(unittest.TestCase):
             store = RunStore(Path(temporary) / "state.sqlite3")
             try:
                 run_id = _insert_legacy_ptr_run(store, lifecycle="running")
-                with self.assertRaises(RunStoreError) as error:
+                with patch.dict(
+                    MODE_CATALOG["report_ptr"],
+                    {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+                ), self.assertRaises(RunStoreError) as error:
                     store.publish_result(
                         run_id,
                         {
@@ -122,7 +135,10 @@ class PtrLifecycleGateTests(unittest.TestCase):
         store = RunStore()
         try:
             run_id = _insert_legacy_ptr_run(store, lifecycle="queued")
-            with self.assertRaises(RunStoreError) as error:
+            with patch.dict(
+                MODE_CATALOG["report_ptr"],
+                {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+            ), self.assertRaises(RunStoreError) as error:
                 store.transition_run(run_id, "running")
             self.assertEqual(error.exception.code, "MODE_DISABLED")
             self.assertEqual(store.get_run(run_id)["lifecycle_status"], "queued")

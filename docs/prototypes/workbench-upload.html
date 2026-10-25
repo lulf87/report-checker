@@ -343,9 +343,10 @@
           <span class="mode-desc">逐条比对表 2 原始记录的 √ △ × / 与报告的检验结果</span>
           <span class="mode-need">需要：检验报告 + 9706.202 原始记录（表 2）</span>
         </button>
-        <button type="button" class="mode-card" role="radio" data-mode="ptr" aria-checked="false" aria-disabled="true" disabled>
+        <button type="button" class="mode-card" role="radio" data-mode="ptr" aria-checked="false">
           <span class="mode-name">报告 ↔ 产品技术要求</span>
-          <span class="mode-desc">暂未开放</span>
+          <span class="mode-desc">逐条比对 PTR 与 Report 的范围、条款、数值、表格和引用</span>
+          <span class="mode-need">需要：检验报告 + PTR</span>
         </button>
       </div>
 
@@ -354,7 +355,7 @@
           <option value="self">Report 自检</option>
           <option value="record61">Report + GB 9706.1 Record</option>
           <option value="record202">Report + GB 9706.202 Record</option>
-          <option value="ptr" disabled>Report + PTR（暂未启用）</option>
+          <option value="ptr">Report + PTR</option>
         </select>
         <span class="sr-only" id="mode-note"></span>
 
@@ -542,7 +543,7 @@
 
     const MODE_META = Object.freeze({
       self: { apiMode: "report_self", label: "报告自检", recordRole: null, note: "报告自检只需要检验报告。" },
-      ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", inputField: "ptr_document_id", documentLabel: "PTR", disabled: true, note: "PTR 检查尚未启用（PTR_NOT_VALIDATED）。" },
+      ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", inputField: "ptr_document_id", documentLabel: "PTR", recordKind: "ptr", note: "需要检验报告和 PTR；规则优先，LLM 只辅助文本人工项。" },
       record61: { apiMode: "report_record_9706_1", label: "报告 ↔ GB 9706.1 原始记录", recordRole: "record_9706_1", inputField: "record_document_id", documentLabel: "GB 9706.1 原始记录", recordKind: "record61", note: "需要检验报告和 GB 9706.1 原始记录。" },
       record202: { apiMode: "report_record_9706_202", label: "报告 ↔ GB 9706.202 原始记录", recordRole: "record_9706_202", inputField: "record_document_id", documentLabel: "GB 9706.202 原始记录（表 2）", recordKind: "record202", note: "需要检验报告和 GB 9706.202 原始记录（表 2）。" }
     });
@@ -646,7 +647,7 @@
     }
 
     // ---- 文件检查：读取前两页文字，判断是检验报告还是哪一种原始记录 ----
-    const KIND_NAMES = Object.freeze({ report: "检验报告", record61: "GB 9706.1 原始记录", record202: "GB 9706.202 原始记录（表 2）", record: "原始记录", unknown: "无法识别的文件" });
+    const KIND_NAMES = Object.freeze({ report: "检验报告", ptr: "PTR 产品技术要求", record61: "GB 9706.1 原始记录", record202: "GB 9706.202 原始记录（表 2）", record: "原始记录", unknown: "无法识别的文件" });
     const fileState = { report: null, record: null };
     let overrideFileCheck = false;
 
@@ -665,6 +666,7 @@
         const flat = text.replace(/\s+/g, "");
         if (/原始记录/.test(flat)) info.kind = /9706\.202/.test(flat) ? "record202" : /9706\.1-20\d\d/.test(flat) ? "record61" : "record";
         else if (/检验报告/.test(flat) && /报告编号/.test(flat)) info.kind = "report";
+        else if (/产品技术要求|技术要求/.test(flat)) info.kind = "ptr";
         const number = flat.match(/QW(\d{4})第?(\d{1,5})号/);
         if (number) info.number = `QW${number[1]}-${number[2]}`;
       } catch (error) {
@@ -1794,7 +1796,7 @@
           const ok = state.state === "parsed" && state.parsed_number === d.report_number;
           rows.push({ label: `第 ${state.pdf_page} 页 报告编号`, sub: "页眉“编号”",
             a: side(d.report_number || "（未读到）", reportNumberLoc),
-            b: side(value, toLoc(state, recordRole, `Record 第 ${state.pdf_page} 页编号`)),
+            b: side(value, toLoc(state, recordRole, `${MODE_META[activeMode]?.documentLabel || "Record"} 第 ${state.pdf_page} 页编号`)),
             status: ok ? "pass" : state.state === "unreadable_or_unsupported" ? "manual" : "error",
             note: ok ? "编号相同" : state.state === "explicit_missing" ? "编号空白" : state.state === "parsed" ? "编号不同" : "" });
         });
@@ -1892,7 +1894,7 @@
       const rows = [...checkRowsFor(finding)];
       body.replaceChildren();
       document.getElementById("check-col-a").textContent = meta.recordRole ? "检验报告（位置 · 内容）" : "报告中的位置 · 内容";
-      document.getElementById("check-col-b").textContent = meta.recordRole ? "原始记录（位置 · 内容）" : "对照对象（首页 / 照片 / 规则）";
+      document.getElementById("check-col-b").textContent = meta.recordRole ? `${meta.documentLabel || "原始记录"}（位置 · 内容）` : "对照对象（首页 / 照片 / 规则）";
       if (!rows.length) { box.hidden = true; return; }
       const order = { error: 0, manual: 1, warning: 2, pass: 3, info: 4 };
       rows.sort((x, y) => (order[normStatus(x.status)] ?? 5) - (order[normStatus(y.status)] ?? 5));
@@ -1972,7 +1974,7 @@
       comparisonBrief.querySelector(".finding-id").textContent = String(finding.id || "—").split("@")[0];
       if (!reportDocument) {
         clearPane(reportPane, "缺少 Report 文档信息。");
-        clearPane(recordPane, "等待 Record 文档。");
+        clearPane(recordPane, `等待 ${meta.documentLabel || "Record"} 文档。`);
         return;
       }
       const twoPanes = Boolean(meta.recordRole) || dualReport;
@@ -1982,7 +1984,7 @@
       try {
         if (meta.recordRole && !recordDocument) throw new Error("缺少 Record 文档信息。");
         await reportPane.loadDocument(reportDocument, dualReport ? "报告 · 填写处" : "检验报告");
-        if (meta.recordRole) await recordPane.loadDocument(recordDocument, "原始记录");
+        if (meta.recordRole) await recordPane.loadDocument(recordDocument, meta.documentLabel || "原始记录");
         else if (dualReport) await recordPane.loadDocument(reportDocument, "报告 · 照片/首页");
         refreshPageChips();
         if (token !== comparisonToken) return;
@@ -2405,7 +2407,7 @@
         const reportDoc = await uploadDocument(caseData.id, "report", report);
         const inputs = { report_document_id: reportDoc.id };
         if (record) {
-          setStatusText(`正在上传原始记录（${formatSize(record.size)}）…`);
+          setStatusText(`正在上传${mode.documentLabel || "原始记录"}（${formatSize(record.size)}）…`);
           recordDoc = await uploadDocument(caseData.id, mode.recordRole, record);
           inputs[mode.inputField || "record_document_id"] = recordDoc.id;
         }

@@ -86,7 +86,7 @@ class RunStateServerTests(unittest.TestCase):
         self.assertEqual(cancelled["lifecycle_status"], "cancelled")
         self.assertIsNone(cancelled["machine_overall_status"])
 
-    def test_ptr_is_rejected_without_creating_run(self) -> None:
+    def test_ptr_preflight_and_create_accept_enabled_role_pair(self) -> None:
         _, case = self.request_json(
             "/api/v1/cases", method="POST", payload={"name": "PTR 状态测试"}, csrf=True
         )
@@ -97,34 +97,39 @@ class RunStateServerTests(unittest.TestCase):
             csrf=True,
         )
         self.assertEqual(status, 200)
-        self.assertFalse(preflight["enabled"])
-        self.assertFalse(preflight["can_create_run"])
-        self.assertIn("PTR_NOT_VALIDATED", preflight["blocking_issues"])
+        self.assertTrue(preflight["enabled"])
+        self.assertTrue(preflight["can_create_run"])
+        self.assertEqual(preflight["blocking_issues"], [])
         self.assertEqual(
             preflight["coverage"],
-            {"planned": 1, "ready": 0, "not_applicable": 0, "unsupported": 0, "blocked": 1},
+            {"planned": 1, "ready": 1, "not_applicable": 0, "unsupported": 0, "blocked": 0},
         )
         self.assertEqual(
             [(item["role"], item["input_field"]) for item in preflight["input_documents"]],
             [("report", "report_document_id"), ("ptr", "ptr_document_id")],
         )
-        self.assertEqual(preflight["planned_rules"][0]["disposition"], "blocked")
+        self.assertEqual(preflight["planned_rules"][0]["disposition"], "ready")
         request = Request(
             self.base_url + f"/api/v1/cases/{case['id']}/runs",
             method="POST",
             data=json.dumps(
-                {"mode": "report_ptr", "inputs": {"report_document_id": "r", "ptr_document_id": "p"}}
+                {
+                    "mode": "report_ptr",
+                    "inputs": {"report_document_id": "r", "ptr_document_id": "p"},
+                    "preflight_plan_hash": preflight["plan_hash"],
+                }
             ).encode(),
             headers={"Content-Type": "application/json", "X-CSRF-Token": self.csrf},
         )
-        with self.assertRaises(HTTPError) as error:
-            urlopen(request, timeout=5)
-        self.assertEqual(error.exception.code, 409)
-        payload = json.loads(error.exception.read())
-        self.assertEqual(payload["error"]["code"], "MODE_DISABLED")
-        self.assertEqual(payload["error"]["details"]["disabled_reason_code"], "PTR_NOT_VALIDATED")
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 202)
+            run = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(run["mode"], "report_ptr")
+        self.assertEqual(run["lifecycle_status"], "queued")
+        self.assertEqual(run["planned_rule_ids"], ["PTR-P01"])
         _, runs = self.request_json(f"/api/v1/cases/{case['id']}/runs")
-        self.assertEqual(runs["items"], [])
+        self.assertEqual(len(runs["items"]), 1)
+        self.assertEqual(runs["items"][0]["id"], run["id"])
 
     def test_write_requires_local_csrf_token(self) -> None:
         request = Request(

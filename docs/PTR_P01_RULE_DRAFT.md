@@ -1,10 +1,10 @@
-# PTR-P01 规则冻结草案（禁用态）
+# PTR-P01 规则冻结草案（非发布产物）
 
 日期：2026-10-11
 
-本文只冻结审计契约和待人工验收的候选结构，不把 PTR↔Report 草案当作已启用规则。`report_ptr`、`report_ptr_report` 仍保持 `enabled=false`，原因码为 `PTR_NOT_VALIDATED`。输入、结果和证据的接口合同由 `mvp/ptr_report_contract.py` 提供；这一步接通的是字段和生命周期边界，不是 PTR 语义验收。
+本文只记录审计契约和候选结构，不把 PTR↔Report 离线草案当作正式结果。当前 `report_ptr` 已按三份试点授权启用；`report_ptr_report` 组合别名仍保持 `enabled=false`，原因码为 `PTR_NOT_VALIDATED`。输入、结果和证据的接口合同由 `mvp/ptr_report_contract.py` 提供，正式结果由 `mvp.run_ptr_report` 生成。
 
-当前另有 `mvp/ptr_compare.py` 作为离线比较草案：它执行范围、条款、数值、单位、引用和覆盖层的规则核对，并输出不可发布的 Coverage Ledger；`mvp/ptr_ocr.py` 只提供扫描 PTR 的本机 OCR 观察，`mvp/ptr_llm.py` 只验证未来 LLM 的逐字证据。三者都没有接入正式 Runner，也不能改变本文件定义的 `PTR_NOT_VALIDATED` 禁用状态。
+当前另有 `mvp/ptr_compare.py` 作为离线比较层：它执行范围、条款、数值、单位、引用和覆盖层的规则核对，并输出不可发布的 Coverage Ledger；`mvp/ptr_ocr.py` 只提供扫描 PTR 的本机 OCR 观察，`mvp/ptr_llm.py` 只验证未来 LLM 的逐字证据。离线草案不能绕过正式 Runner，也不能由 LLM 单独给出通过结论。
 
 ## 2026-10-24 离线草案增量
 
@@ -16,7 +16,7 @@
 - `rules+llm` 只生成文本歧义队列；任务带提示词版本和输入哈希，显式 provider 的验证结果和处理动作进入审计记录。数值、单位、范围、引用和表格硬差异不能由 LLM 清除。
 - 12 组同号 PTR/Report 批量运行均满足 `eligible == accounted`、`conserved=true`；扫描 PTR 5780/5782 全部保持 `manual`。
 
-这些增量仍是离线草案，正式 `report_ptr` 仍不能创建 Run 或发布 Finding。
+这些增量仍以离线草案形式保留；正式 `report_ptr` Runner 会在能力目录开启后把规则账本转换成可发布的 WorkerResult，草案本身始终不可发布。
 
 ## 输入与范围
 
@@ -36,7 +36,7 @@
 - “仅检 GB/YY 标准中某些条款”选择器及其所作用的条款；
 - 无法解析时的 `manual` 和原因列表。
 
-当前只接入 PTR 禁用态草案和固定夹具，不产生正式 Finding，也不改变 `PTR_NOT_VALIDATED` 能力状态。0596、1539、2795 的黄金范围夹具位于 `tests/fixtures/ptr_scope/`；复杂的“全项目”表达仍保留为人工复核。
+当前草案入口和固定夹具只产生不可发布的候选结果，不修改能力目录。0596、1539、2795 的黄金范围夹具位于 `tests/fixtures/ptr_scope/`；复杂的“全项目”表达仍保留为人工复核。
 
 ## 规则对象
 
@@ -50,7 +50,7 @@
 
 ## Finding 契约样例
 
-`mvp.run_ptr_report` 已实现正式 Finding/WorkerResult 形状，但能力开关和 PTR-P01 规则目录仍为 disabled，因此当前不会发布正式 Finding。禁用态草案只带一个不可发布的模板，字段冻结为：
+`mvp.run_ptr_report` 已实现正式 Finding/WorkerResult 形状，并受 `report_ptr` 能力开关保护。草案只带一个不可发布的模板，字段冻结为：
 
 ```json
 {
@@ -101,14 +101,14 @@
 
 ## 实现与验收门槛
 
-草案提取入口为 `mvp/ptr_p01.py`，输入/结果合同入口为 `mvp/ptr_report_contract.py`，测试为 `tests/test_ptr_p01.py`。提取器没有接入 `mvp.run_modes` 或 Worker；能力目录只公开禁用态合同，当前只允许生成禁用态草案。
+草案提取入口为 `mvp/ptr_p01.py`，输入/结果合同入口为 `mvp/ptr_report_contract.py`，测试为 `tests/test_ptr_p01.py`。提取器仍不接入 `mvp.run_modes` 或 Worker；正式目录和 Runner 负责可发布结果，草案入口只允许生成不可发布草案。
 
-启用前仍必须完成：
+正式启用已经完成；后续新增版式或规则版本仍需完成：
 
 1. 选择至少 2–3 份结构显著不同的 PTR，逐条人工确认声明范围、父子条款和每个引用表格/附录的展开结果。
 2. 冻结 Report 范围与 PTR RequirementGraph 的匹配键、缺项定义、范围外定义和循环引用处理。
 3. 为人工确认过的缺项、额外条款、父条款缺失、中间条款缺失和引用循环建立正反测试夹具。
 4. 为正式 Runner 增加有版本的 `PTR-P01`、Evidence/Artifact 清单、WorkerResult 发布校验和 UI 双文档定位测试。
-5. 重新执行 preflight/create/worker/publish 全链路；通过后才可把 capability 切换为 `enabled`。
+5. 重新执行 preflight/create/worker/publish 全链路，并在通过后更新正式规则版本和签字记录。
 
-在上述门槛完成前，不启用按钮、不创建 PTR Run，也不把候选观察写成一致/不一致结论。
+草案候选观察仍不能写成正式一致/不一致结论；正式 Runner 的结果必须经过规则、证据和发布闸门校验。

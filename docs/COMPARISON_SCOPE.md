@@ -1,9 +1,9 @@
 # 报告核对工具：正式比对范围矩阵
 
-**版本**：2026-10-02  
+**版本**：2026-10-25
 **确认状态**：用户已确认 S01–S47 纳入正式范围；S48 在第一阶段排除。  
-**适用模式**：`report_self`、`report_record_9706_1`、`report_record_9706_202`。  
-**PTR**：`report_ptr` 仍保持禁用，原因是 `PTR_NOT_VALIDATED`；当前目录规则 `PTR-P01` 仅作为禁用占位，不将 PTR 自动比对视为已交付能力。
+**适用模式**：`report_self`、`report_ptr`、`report_record_9706_1`、`report_record_9706_202`。
+**PTR**：`report_ptr` 已完成 2948、0775、1539 三份试点验收和业务授权，`PTR-P01` 已启用；规则仍按证据不足降为 `manual`，LLM 不能单独给出通过结论。
 
 `report_ptr_report` 与 `report_diff` 已在能力目录中显式保留为禁用边界：前者沿用 `PTR_NOT_VALIDATED`，后者使用 `DIFF_NOT_SPECIFIED`。两者仍没有可执行规则计划；输入角色和规则冻结前必须在 preflight/create/worker/publish 全链路拒绝，不能从现有 `report_ptr` 或 Record 模式推导。
 
@@ -25,18 +25,18 @@
 
 状态说明：`confirmed` 表示已确认纳入；`excluded_phase1` 表示第一阶段排除；`planned` 表示已纳入范围但尚未接入当前规则目录；`partial` 表示已接入但字段、语义、发现范围或判定细节仍待扩展；`validated` 表示当前实现、运行结果、证据与测试已闭合。
 
-### A. 三个模式共用基础检查（S01–S08）
+### A. 四个模式共用基础检查（S01–S08）
 
 | 编号 | 比对对象 | 适用模式 | 状态 | 当前规则映射 |
 | --- | --- | --- | --- | --- |
-| S01 | PDF 可打开、未加密、未损坏 | 三个启用模式 | confirmed | 基础运行契约 |
-| S02 | 文件 SHA-256 在运行前后保持一致 | 三个启用模式 | confirmed | 输入快照契约 |
-| S03 | 页数、打印页码、总页数连续 | 三个启用模式 | confirmed | 共用页码契约 |
-| S04 | 表头、列结构、表格数量符合当前模板 | 三个启用模式 | confirmed | 模板结构契约 |
-| S05 | 序号、项目行、跨页续项无缺失、重复或跳号 | 三个启用模式 | confirmed | 共用序列契约 |
-| S06 | 每个对象进入 Coverage Ledger，并有明确处置状态 | 三个启用模式 | confirmed | Coverage Ledger |
-| S07 | 缺少对象、增加对象或模板变化时停止强行匹配 | 三个启用模式 | confirmed | 映射安全契约 |
-| S08 | 结果保留 Report/Record 两侧页码、坐标和原始值 | 三个启用模式 | confirmed | Evidence 契约 |
+| S01 | PDF 可打开、未加密、未损坏 | 四个启用模式 | confirmed | 基础运行契约 |
+| S02 | 文件 SHA-256 在运行前后保持一致 | 四个启用模式 | confirmed | 输入快照契约 |
+| S03 | 页数、打印页码、总页数连续 | 四个启用模式 | confirmed | 共用页码契约 |
+| S04 | 表头、列结构、表格数量符合当前模板 | 四个启用模式 | confirmed | 模板结构契约 |
+| S05 | 序号、项目行、跨页续项无缺失、重复或跳号 | 四个启用模式 | confirmed | 共用序列契约 |
+| S06 | 每个对象进入 Coverage Ledger，并有明确处置状态 | 四个启用模式 | confirmed | Coverage Ledger |
+| S07 | 缺少对象、增加对象或模板变化时停止强行匹配 | 四个启用模式 | confirmed | 映射安全契约 |
+| S08 | 结果保留 Report 与对比文档两侧页码、坐标和原始值 | 四个启用模式 | confirmed | Evidence 契约 |
 
 ### B. Report 自检（S09–S21）
 
@@ -101,12 +101,12 @@
 
 ## 模式和规则目录约束
 
-模式目录仍由 [mvp/capabilities.py](../mvp/capabilities.py) 维护。当前四个模式的生命周期状态如下：
+模式目录仍由 [mvp/capabilities.py](../mvp/capabilities.py) 维护。当前四个可执行模式的生命周期状态如下：
 
 | 模式 | 状态 | 本矩阵关系 |
 | --- | --- | --- |
 | `report_self` | enabled | S09–S21、S49–S54，以及 S01–S08 |
-| `report_ptr` | disabled (`PTR_NOT_VALIDATED`) | 不纳入本次范围确认 |
+| `report_ptr` | enabled | PTR-P01 规则、三份试点和正式 Runner 已验证；S01–S08 与 PTR Coverage Ledger 共同适用 |
 | `report_record_9706_1` | enabled | S22–S34，以及 S01–S08；S35 保留规则 ID 但按当前范围记为 `not_applicable` |
 | `report_record_9706_202` | enabled | S36–S47，以及 S01–S08 |
 

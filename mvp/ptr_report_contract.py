@@ -1,9 +1,8 @@
 """PTR ↔ Report 输入、规则和结果合同。
 
-PTR 尚未达到可以发布业务结论的验收门槛，但它不能因此拥有一套与
-正式 Run 不同的输入命名或证据形状。本模块只冻结两份文档如何进入
-Run、PTR-P01 如何出现在规则计划中，以及禁用态结果必须具备的字段。
-它不解析 PDF，也不改变 PTR 的启用状态。
+本模块同时描述离线草案和正式 Runner 使用的输入、规则计划、结果与
+证据字段。草案保持不可发布；正式能力通过业务授权和目录开关后，沿用
+同一套角色命名与证据形状。它不解析 PDF，也不改变 PTR 的启用状态。
 """
 
 from __future__ import annotations
@@ -52,9 +51,8 @@ def ptr_report_contract_payload(
 ) -> dict[str, Any]:
     """Return a JSON-safe snapshot of the PTR ↔ Report contract.
 
-    ``enabled`` is accepted so the same shape can be used by a future validated
-    implementation. The current catalog always calls it with ``False`` and the
-    disabled reason is deliberately retained in the snapshot.
+    ``enabled`` lets callers request the draft or formally enabled variant of
+    the same contract. The capability catalog supplies the current state.
     """
 
     if mode not in PTR_REPORT_MODES:

@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from mvp.capabilities import MODE_CATALOG
 from mvp.run_store import RunStore, RunStoreError, _json, _now
 from mvp.checker import REPORT_SELF_RULE_ORDER
 
@@ -35,13 +37,13 @@ class RunStoreTests(unittest.TestCase):
     def test_mode_and_input_contracts_are_enforced_before_insert(self) -> None:
         store = RunStore()
         case = store.create_case("case")
-        with self.assertRaises(RunStoreError) as disabled:
-            store.create_run(
-                case_id=case["id"],
-                mode="report_ptr",
-                inputs={"report_document_id": "r", "ptr_document_id": "p"},
-            )
-        self.assertEqual(disabled.exception.code, "MODE_DISABLED")
+        ptr_run = store.create_run(
+            case_id=case["id"],
+            mode="report_ptr",
+            inputs={"report_document_id": "r", "ptr_document_id": "p"},
+        )
+        self.assertEqual(ptr_run["mode"], "report_ptr")
+        self.assertEqual(ptr_run["planned_rule_ids"], ["PTR-P01"])
         with self.assertRaises(RunStoreError) as extra:
             store.create_run(
                 case_id=case["id"],
@@ -49,7 +51,7 @@ class RunStoreTests(unittest.TestCase):
                 inputs={"report_document_id": "r", "record_document_id": "x"},
             )
         self.assertEqual(extra.exception.code, "INVALID_RUN_INPUTS")
-        self.assertEqual(store.list_runs(case["id"]), [])
+        self.assertEqual([item["id"] for item in store.list_runs(case["id"])], [ptr_run["id"]])
         store.close()
 
     def test_transition_matrix_and_machine_status_visibility(self) -> None:
@@ -128,7 +130,11 @@ class RunStoreTests(unittest.TestCase):
                     timestamp,
                 ),
             )
-        recovered = store.recover_interrupted_runs()
+        with patch.dict(
+            MODE_CATALOG["report_ptr"],
+            {"enabled": False, "status": "disabled", "disabled_reason_code": "PTR_NOT_VALIDATED"},
+        ):
+            recovered = store.recover_interrupted_runs()
         self.assertEqual(recovered[0]["lifecycle_status"], "interrupted")
         self.assertEqual(store.get_run("legacy-ptr-run")["failure"]["code"], "MODE_DISABLED")
         store.close()

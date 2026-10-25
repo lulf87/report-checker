@@ -5,7 +5,7 @@
 > 基础路径：`/api/v1`（`/healthz` 除外）  
 > 公开领域名词：`Case`，界面显示为“核对任务”
 
-当前工程已经实现能力目录、Case/Document/Run 状态、Blob 存储、自动队列 Worker、Finding/Evidence 发布和 ReviewAction 追加：`.venv/bin/python -m mvp.capability_server` 提供 `/healthz`、`/api/v1/capabilities` 和 `/api/v1/rules`；`.venv/bin/python -m mvp.run_state_server` 提供本机 CSRF 会话、Case、Document、Run preflight、Run 快照、规则执行账本、事件、Finding、复核和取消入口；`mvp.run_coordinator` 负责一次 queued Run 的子进程执行与发布闸门。该服务的模式和规则目录来自 `mvp.capabilities`，PTR 保持 `PTR_NOT_VALIDATED` 禁用。
+当前工程已经实现能力目录、Case/Document/Run 状态、Blob 存储、自动队列 Worker、Finding/Evidence 发布和 ReviewAction 追加：`.venv/bin/python -m mvp.capability_server` 提供 `/healthz`、`/api/v1/capabilities` 和 `/api/v1/rules`；`.venv/bin/python -m mvp.run_state_server` 提供本机 CSRF 会话、Case、Document、Run preflight、Run 快照、规则执行账本、事件、Finding、复核和取消入口；`mvp.run_coordinator` 负责一次 queued Run 的子进程执行与发布闸门。该服务的模式和规则目录来自 `mvp.capabilities`，PTR 正式模式已按三份试点授权启用，组合别名仍保持关闭。
 
 > **当前实现边界（2026-10-05）**：以上代码路由是可运行契约。幂等键、SSE、Artifact 图片、导出、签名和完整分页游标尚未暴露为当前路由；当前事件通过 `GET /api/v1/runs/{run_id}/events` 列表轮询读取，创建接口默认不提供业务幂等保证。下列端点也尚未实现，均属于规划：`GET /api/v1/version`、`GET /api/v1/system/diagnostics`、`GET /api/v1/documents/{document_id}/pages/{page_number}/image`、`POST /api/v1/runs/{run_id}:rerun`、`GET /api/v1/runs`。公开脱敏页 `docs/prototypes/workbench-upload.html` 与本机真实工作台已接入上传、模式选择、preflight、Run 启动和结果轮询。客户端和部署说明应以代码路由为准，规划章节只用于后续设计。
 
@@ -117,6 +117,8 @@ GET /api/v1/session
 RunMode:
   report_self
   report_ptr
+  report_ptr_report
+  report_diff
   report_record_9706_1
   report_record_9706_202
 
@@ -138,14 +140,14 @@ DocumentRole:
 | `report_record_9706_1` | `report`, `record_9706_1` | PTR、9706.202 | 否 |
 | `report_record_9706_202` | `report`, `record_9706_202` | PTR、9706.1 | 否 |
 
-能力目录显式列出四种边界：`report_self` 已启用；`report_ptr` 与 `report_ptr_report` 均以 `enabled=false`、`PTR_NOT_VALIDATED` 禁用；`report_diff` 以 `enabled=false`、`DIFF_NOT_SPECIFIED` 禁用，因为其双输入角色与规则计划尚未冻结。组合模式不能当作 `report_ptr` 别名，差异模式也不能从现有 Record 模式推导；这些请求会在 preflight/create/worker/publish 生命周期按 `MODE_DISABLED` 拒绝。
+能力目录显式列出六种边界：`report_self`、`report_ptr`、两个 Record 模式已启用；`report_ptr_report` 仍以 `enabled=false`、`PTR_NOT_VALIDATED` 禁用；`report_diff` 以 `enabled=false`、`DIFF_NOT_SPECIFIED` 禁用，因为其双输入角色与规则计划尚未冻结。组合模式不能当作 `report_ptr` 别名，差异模式也不能从现有 Record 模式推导；禁用模式请求会在 preflight/create/worker/publish 生命周期按 `MODE_DISABLED` 拒绝。
 
 每个角色恰好一个 Document。创建 Run 时多传、少传、角色不符都拒绝，不自动猜测或选择“最近上传”的文件。
 对比模式仍解析并完整显示 Report，也可在对应模式 Finding 中引用 Report 侧比较证据；但不会执行、注入、显示或聚合 `REPORT-*` 自检 Finding。
 
 当前正式比对范围由 [docs/COMPARISON_SCOPE.md](COMPARISON_SCOPE.md) 维护。该矩阵确认 S01–S47 纳入三个启用模式，S48（GB 9706.202 表 3 的文档、页面、原始测量值和重新计算）第一阶段排除。范围纳入不等于每个对象都能自动判定；OCR、手写或映射证据不足时必须产生 `manual`。
 
-当前启用规则计划：`report_self` 为 `REPORT-R01`、`REPORT-R02`、`REPORT-R03`、`REPORT-R04`、`REPORT-R05`、`REPORT-R06`、`REPORT-R07`、`REPORT-R07-B`、`REPORT-R08`、`REPORT-R09`、`REPORT-R10`、`REPORT-R11` 共 12 条；`report_record_9706_1` 含 `RECORD61-IDENTITY`、`RECORD61-BODY-STATUS`、`RECORD61-BODY-NUMERIC`、`RECORD61-BODY-PERCENT`、`RECORD61-SEQUENCE-CONCLUSION`、`RECORD61-SCOPE`、`RECORD61-STRUCTURE`、`RECORD61-NUMERIC-DISCOVERY`、`RECORD61-METADATA`、`RECORD61-NONCONFORMING-ALERT` 共 10 条；`report_record_9706_202` 含 `RECORD202-NUMBER`、`RECORD202-BODY-STATUS`、`RECORD202-BODY-NUMERIC`、`RECORD202-BODY-PERCENT`、`RECORD202-SYMBOLS`、`RECORD202-STRUCTURE`、`RECORD202-SCOPE`、`RECORD202-IDENTITY`、`RECORD202-METADATA`、`RECORD202-NONCONFORMING` 共 10 条。`report_ptr` 的 `PTR-P01` 仅为禁用占位，仍返回 `PTR_NOT_VALIDATED`。
+当前启用规则计划：`report_self` 为 `REPORT-R01`、`REPORT-R02`、`REPORT-R03`、`REPORT-R04`、`REPORT-R05`、`REPORT-R06`、`REPORT-R07`、`REPORT-R07-B`、`REPORT-R08`、`REPORT-R09`、`REPORT-R10`、`REPORT-R11` 共 12 条；`report_ptr` 为 `PTR-P01`；两个 Record 模式各含 10 条专用规则。`report_ptr_report` 的组合 Runner 尚未注册，仍返回 `MODE_DISABLED / PTR_NOT_VALIDATED`。
 
 ### 2.2 运行生命周期
 
@@ -641,11 +643,11 @@ GET /api/v1/capabilities
       "includes_report_baseline": true
     },
     "report_ptr": {
-      "enabled": false,
+      "enabled": true,
       "required_roles": ["report", "ptr"],
       "includes_report_baseline": false,
-      "disabled_reason_code": "PTR_NOT_VALIDATED",
-      "disabled_message": "PTR 规则与验收基线尚未完成"
+      "disabled_reason_code": null,
+      "result_contract": {"publishable": true}
     },
     "report_record_9706_1": {
       "enabled": true,
@@ -675,7 +677,7 @@ GET /api/v1/capabilities
 
 为保持 v1 字段形状，`includes_report_baseline` 继续保留；其语义限定为“该模式是否计划并发布 `REPORT-*` 自检 Finding”，不表示是否解析、显示或引用 Report。对比模式必须返回 `false`。
 
-当前只读实现额外返回 `schema_version`、`document_roles`、`forbidden_roles` 和该模式的 `rule_ids`。其中 `rule_ids` 采用已运行扫描器的实际粒度；`report_ptr` 返回 `PTR-P01`，同时以 `enabled=false` 和 `PTR_NOT_VALIDATED` 表示禁用。
+当前只读实现额外返回 `schema_version`、`document_roles`、`forbidden_roles` 和该模式的 `rule_ids`。其中 `rule_ids` 采用已运行扫描器的实际粒度；`report_ptr` 返回已验收的 `PTR-P01`，`report_ptr_report` 仍以 `enabled=false` 和 `PTR_NOT_VALIDATED` 表示禁用。
 
 限额示例是部署返回值，不是本文承诺的固定产品限额。前端据此做早期提示，后端仍执行权威校验。
 
@@ -749,10 +751,10 @@ GET /api/v1/rules
       "version": "0.1.0-draft",
       "title": "PTR 声明范围与正文覆盖",
       "source": "mode_specific",
-      "modes": ["report_ptr"],
-      "catalog_status": "disabled",
+      "modes": ["report_ptr", "report_ptr_report"],
+      "catalog_status": "enabled",
       "required_component_ids": [],
-      "disabled_reason_code": "PTR_NOT_VALIDATED"
+      "disabled_reason_code": null
     },
     {
       "id": "RECORD61-BODY-STATUS",
@@ -1019,9 +1021,9 @@ X-CSRF-Token: <token>
 }
 ```
 
-`disposition` 只允许 `ready | not_applicable | unsupported | blocked`；每个非 `ready` 项必须有稳定 reason code。`template_status` 只允许 `supported | unknown | unsupported`。`unsupported` 只能在用户已看见未覆盖范围、且同一计划至少有一条 `ready` 规则时创建 Run，并在正式 RuleExecution 中带原因结束。`blocked`、缺少必需组件、角色错误或 Blob 完整性问题使 `can_create_run=false`。`coverage.ready=0` 时也必须 `can_create_run=false`，`blocking_issues` 包含 `NO_EXECUTABLE_RULES`；创建端会重新计算并以 `422 NO_EXECUTABLE_RULES` 拒绝，不创建 queued Run。若规则在运行中才全部落为 `not_applicable/unsupported`、最终没有任何 Finding，Run 以 `failed + NO_EXECUTABLE_RULES + machine_overall_status=null` 结束，不发布空通过。PTR disabled 时 preflight 返回 `200`、`enabled=false`、`can_create_run=false` 和 `PTR_NOT_VALIDATED`，而真正创建仍返回 `409 MODE_DISABLED`。
+`disposition` 只允许 `ready | not_applicable | unsupported | blocked`；每个非 `ready` 项必须有稳定 reason code。`template_status` 只允许 `supported | unknown | unsupported`。`unsupported` 只能在用户已看见未覆盖范围、且同一计划至少有一条 `ready` 规则时创建 Run，并在正式 RuleExecution 中带原因结束。`blocked`、缺少必需组件、角色错误或 Blob 完整性问题使 `can_create_run=false`。`coverage.ready=0` 时也必须 `can_create_run=false`，`blocking_issues` 包含 `NO_EXECUTABLE_RULES`；创建端会重新计算并以 `422 NO_EXECUTABLE_RULES` 拒绝，不创建 queued Run。若规则在运行中才全部落为 `not_applicable/unsupported`、最终没有任何 Finding，Run 以 `failed + NO_EXECUTABLE_RULES + machine_overall_status=null` 结束，不发布空通过。当前 `report_ptr` preflight 返回 `enabled=true`、`can_create_run=true`、`PTR-P01` 为 `ready`；规则未验证或组合别名仍保持禁用时，才返回 `MODE_DISABLED`。
 
-PTR preflight 还返回 `input_contract`、`input_documents` 和完整的 `mode_contract`。其中两个槽固定为 `report_document_id → report` 和 `ptr_document_id → ptr`，顺序固定、每槽只能有一个 Document，`record_document_id` 属于禁止角色；能解析到 Document 时列出其 Blob 哈希和页几何，禁用态或测试中的未解析 ID 则保留 `unresolved=true`，不能据此生成 Finding 或通过结论。Worker JobSpec、状态服务和草案结果沿用同一角色映射，避免把 PTR 路径误当成 Record。
+PTR preflight 还返回 `input_contract`、`input_documents` 和完整的 `mode_contract`。其中两个槽固定为 `report_document_id → report` 和 `ptr_document_id → ptr`，顺序固定、每槽只能有一个 Document，`record_document_id` 属于禁止角色；能解析到 Document 时列出其 Blob 哈希和页几何，测试中的未解析 ID 则保留 `unresolved=true`，不能据此生成 Finding 或通过结论。Worker JobSpec、状态服务和草案结果沿用同一角色映射，避免把 PTR 路径误当成 Record。
 
 `required_components` 不是示例子集：它必须等于全部 `disposition=ready` 规则的 `required_component_ids` 精确去重并集，并额外包含导致规则 `blocked` 的缺失或降级组件。`plan_hash` 覆盖 mode、Document ID/哈希、规则 bundle、planned rules、disposition 和该完整集合的 component version/config hash；散列前按 component ID 规范排序，响应数组顺序不作为身份。创建 Run 必须带回该值；后端重新生成并逐项校验，任何集合、版本或哈希漂移均拒绝创建并要求刷新 preflight。preflight 不是内容通过结论，也不产生 Finding。
 
@@ -1192,23 +1194,23 @@ Report 自检示例：
 }
 ```
 
-PTR 示例在 capability disabled 时返回：
+PTR 正式模式先执行 preflight，再携带 `preflight_plan_hash` 创建 queued Run：
 
 ```http
-409 MODE_DISABLED
+202 Accepted
 ```
 
-能力禁用检查先于 preflight hash 必填检查，因此任何 `report_ptr` 创建请求在本阶段都稳定返回 `409 MODE_DISABLED`，不会因缺少 plan hash 变成另一个错误，也不会创建 Run。
+请求必须包含 `report_document_id`、`ptr_document_id` 和 preflight 返回的 `plan_hash`。后端会重新计算输入快照、规则包和哈希；任何漂移都返回 `409 RUN_PLAN_CHANGED`，不会创建 Run。
 
-错误体的 `details` 至少包含：
+如果请求的是仍未启用的 `report_ptr_report` 组合别名，错误体的 `details` 至少包含：
 
 ```json
 {
   "error": {
     "code": "MODE_DISABLED",
-    "message": "PTR 检查尚未启用",
+    "message": "PTR + Report 组合模式尚未启用；PTR 证据链未完成验证",
     "details": {
-      "mode": "report_ptr",
+      "mode": "report_ptr_report",
       "disabled_reason_code": "PTR_NOT_VALIDATED"
     },
     "request_id": "uuid",
@@ -1712,7 +1714,8 @@ Artifact 读取时再次校验文件存在和尺寸；安全或导出关键路�
 | preflight 后规则包、组件配置或输入哈希漂移 | `409 RUN_PLAN_CHANGED`，要求重新预检 |
 | preflight 中 `coverage.ready=0` | `can_create_run=false` + `NO_EXECUTABLE_RULES`，创建端二次校验返回 `422` 且不创建 Run |
 | 运行期所有规则最终均不适用/不支持 | `lifecycle_status=failed`、`failure.code=NO_EXECUTABLE_RULES`、machine overall 为 null |
-| 创建 PTR Run | `409 MODE_DISABLED`，无空 pass |
+| 创建正式 `report_ptr` Run | preflight 通过后 `202 queued`；规则或证据失败时不得发布空 pass |
+| 创建 `report_ptr_report` 组合 Run | `409 MODE_DISABLED / PTR_NOT_VALIDATED` |
 | 9706.1 preflight 生成计划 | planned rules 精确为 10 条 `RECORD61-*` 规则（含结构、数值发现和元数据），不得出现 `REPORT-*` |
 | 9706.202 preflight 生成计划 | planned rules 精确为 10 条 `RECORD202-*` 规则（含字段映射、身份和元数据），S48 仅保留 `excluded` 记录，不执行表 3 重算 |
 | 成功的对比 Run | RuleExecution、Finding、计数、总体状态和导出只覆盖该模式规则，不包含或聚合 `REPORT-*` |

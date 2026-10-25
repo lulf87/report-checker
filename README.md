@@ -1,27 +1,28 @@
 # 报告核对工具：Report / Record 全量比对
 
-**版本 1.2.7（2026-10-23）**：Report 自检、Report + GB 9706.1 Record、Report + GB 9706.202 Record 三个模式可用；PTR 比对尚未启用，留待后续版本。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+**版本 1.2.8（2026-10-24）**：Report 自检、Report + GB 9706.1 Record、Report + GB 9706.202 Record 和 PTR + Report 四个模式可用。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 这是从零搭建的本机工具，不继承旧项目的架构、代码、规则、阈值、接口或测试。公开仓库只包含代码、文档、工作台和测试源码；本地 PDF 素材、生成结果、SQLite 状态库和样本复核记录不随仓库发布。使用真实样本运行时，请把本地素材放在项目约定的 `素材/` 目录。
 
 当前统一模式目录包含四种检测要求：
 
 - `report_self`：Report 自检，已接入统一调度器，执行 18 条已登记 Report 规则（R01–R17，含独立 R07-B）。
-- `report_ptr`：PTR + Report 比对，已登记为禁用能力，返回 `MODE_DISABLED / PTR_NOT_VALIDATED`，不生成空结果。
+- `report_ptr`：PTR + Report 比对，已通过三份试点验收并启用；正式结果走规则优先的 PTR-P01 Runner，LLM 只能辅助文本人工项。
 - `report_record_9706_1`：Report + GB 9706.1 Record 比对。
 - `report_record_9706_202`：Report + GB 9706.202 Record 比对。
 
-当前已完成并实际运行的可执行模式为 Report 自检（18 条规则）和两个 Record 比对模式：
+当前已完成并实际运行的可执行模式为 Report 自检（18 条规则）、PTR 比对和两个 Record 比对模式：
 
 - `Report 自检`
+- `Report + PTR`
 - `Report + GB 9706.1 Record`
 - `Report + GB 9706.202 Record`
 
 这里的“全量”是指：Record 模式对当前已知模板的纳入范围建立逐行 Coverage Ledger，Report 自检对已登记的 18 条规则逐条完成执行记录。具体纳入项、排除项和验收口径见 [正式比对范围矩阵](docs/COMPARISON_SCOPE.md)；规则、需求和当前未闭合项的统一基线见 [需求与规则基线](docs/REQUIREMENTS_RULE_BASELINE.md)。自动解析和比对运行时不调用 LLM 或 Agent；原始 PDF 只读，runner 会在运行前后校验文件 SHA-256。
 
-PTR 当前保持禁用状态。两个 Record 模式不混入 `REPORT-*` 自检 Finding；Report 自检只发布 `REPORT-*` Finding。
+PTR 当前已启用。两个 Record 模式不混入 `REPORT-*` 自检 Finding；Report 自检只发布 `REPORT-*` Finding。
 
-PTR 试点的当前机器证据、覆盖审计和业务签字栏见 [PTR 正式启用签字清单](docs/PTR_SIGNOFF_CHECKLIST_2026-10-24.md)。即使验收包显示 `ready_for_signoff`，正式能力仍需业务签字后再切换。
+PTR 试点的机器证据和授权记录见 [PTR 正式启用签字清单](docs/PTR_SIGNOFF_CHECKLIST_2026-10-24.md) 及 `output/ptr-review-package-20261024-v5/ptr-business-signoff.json`。
 
 ## Coverage Ledger
 
@@ -133,11 +134,11 @@ uv sync
   --output "output/report-self-unified-20260930/<sample>"
 ```
 
-PTR 模式会返回结构化的 `MODE_DISABLED` 错误，并保留 `PTR_NOT_VALIDATED` 原因码。
+PTR 模式通过正式 Runner 生成双角色 Evidence、Coverage Ledger 和源文件完整性记录；未通过规则或证据校验的条款仍显示为问题或待人工复核。
 
 ## 能力与规则目录服务
 
-能力目录已经集中登记四种模式的启用状态、输入角色、规则计划和 PTR 原因码。启动只读本机服务：
+能力目录已经集中登记可执行模式和两个禁用边界的启用状态、输入角色、规则计划与原因码。启动只读本机服务：
 
 ```bash
 .venv/bin/python -m mvp.capability_server --host 127.0.0.1 --port 8766
@@ -149,7 +150,7 @@ PTR 模式会返回结构化的 `MODE_DISABLED` 错误，并保留 `PTR_NOT_VALI
 - `GET /api/v1/capabilities`：四种模式、输入角色、启用状态和规则 ID。
 - `GET /api/v1/rules`：已验证规则的名称、规则族和适用模式。
 
-服务只返回静态目录，不接收文件、不创建运行、不写入项目目录。统一运行仍使用 `mvp.run_modes`；PTR 仍由调度器和目录同时标记为 `PTR_NOT_VALIDATED`。
+服务只返回静态目录，不接收文件、不创建运行、不写入项目目录。统一运行仍使用 `mvp.run_modes`；PTR 的输入角色、规则版本和结果合同与状态 API 共用同一目录。
 
 ## Case / Run 状态持久化
 
@@ -283,7 +284,7 @@ docs/prototypes/workbench-upload.html
 .venv/bin/python -m mvp.static_server --mode upload --bind 127.0.0.1 --port 8765
 ```
 
-访问 `http://127.0.0.1:8765/` 进入报告核对前端；也可以直接访问 `http://127.0.0.1:8765/workbench-upload.html`。历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html` 继续兼容。安全静态启动器固定监听 `127.0.0.1`，上传模式只允许 `docs/prototypes` 下的页面和依赖，不会暴露项目根目录中的素材、运行结果、SQLite 数据库或 Git 元数据。选择 Report 自检、GB 9706.1 Record 或 GB 9706.202 Record，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。PTR 选项保留为禁用状态并显示 `PTR_NOT_VALIDATED`。页面不引用项目素材、生成结果或真实样本。
+访问 `http://127.0.0.1:8765/` 进入报告核对前端；也可以直接访问 `http://127.0.0.1:8765/workbench-upload.html`。历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html` 继续兼容。安全静态启动器固定监听 `127.0.0.1`，上传模式只允许 `docs/prototypes` 下的页面和依赖，不会暴露项目根目录中的素材、运行结果、SQLite 数据库或 Git 元数据。选择 Report 自检、GB 9706.1 Record、GB 9706.202 Record 或 PTR，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。页面不引用项目素材、生成结果或真实样本。
 
 9706.1 Record 如果不是已验证的 851 状态框模板，会生成一条带双侧证据的 `manual` 输入变体 Finding，并将未执行的规则标记为 `unsupported`，保留实际库存、模板期望和复核动作。Worker 不会把该情况报告成通用运行崩溃。
 
@@ -309,8 +310,8 @@ docs/prototypes/workbench-upload.html
 
 已接入的查看能力包括：
 
-- 10 份正式运行选择，以及 Report 自检、GB 9706.1、GB 9706.202 三种可执行模式独立切换。
-- PTR + Report 模式显示 `PTR_NOT_VALIDATED`，保持禁用状态。
+- 10 份正式运行选择，以及 Report 自检、PTR、GB 9706.1、GB 9706.202 四种可执行模式独立切换。
+- PTR + Report 模式显示规则结果、双文档证据和 Coverage Ledger。
 - “有问题”“需复核”“没问题”状态筛选和 Finding 搜索。
 - 顶部紧凑分开展示 `Finding/Q` 与 `Ledger` 正式计数；前者说明可点击的问题条目数量，后者说明逐对象的一致、不一致、待复核、不适用和排除数量，二者不互相替代。
 - 点击 Finding 后，Report 自检打开完整 Report 单栏；Record 比对打开完整 Report 与 Record 双栏，并按 `pdf_page + bbox` 定位和高亮证据。
@@ -327,7 +328,7 @@ docs/prototypes/workbench-upload.html
 
 - 当前实现只对项目内已经冻结并验证的已知模板负责；遇到未知版式、结构身份变化或行数变化时，不声明可以通用处理。
 - Apple Vision 与 Tesseract 未形成可靠一致结果的手写字段或数值保持 `manual`；机器不会根据 Report 预期值反推 Record 内容。
-- PTR 比对保持禁用，待独立规则验收后启用。
+- PTR 比对已完成独立规则验收并启用；新增版式、样本或规则版本仍需先完成同等 Coverage 与发布回归。
 - 真实数据工作台当前接入 4 份 Report 自检和 6 份 Record 正式运行。
 - 本机状态 API 已保存人工复核动作、Run 级 review revision 和复核后总体状态；签署和导出仍按产品页面单独实现。
 - 当前 API 文档中的幂等键、SSE、Artifact 图片、导出和签名接口属于规划内容，代码路由与本 README 的已实现列表保持一致。

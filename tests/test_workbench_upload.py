@@ -70,10 +70,7 @@ class UploadWorkbenchTests(unittest.TestCase):
             )
         )
         self.assertEqual(modes, {"self", "record61", "record202", "ptr"})
-        self.assertRegex(
-            mode_select.group(1),
-            r"<option\b[^>]*value=[\"']ptr[\"'][^>]*\bdisabled\b",
-        )
+        self.assertRegex(mode_select.group(1), r"<option\b[^>]*value=[\"']ptr[\"'](?:\s|>)")
 
     def test_upload_flow_uses_session_documents_preflight_and_run_api(self) -> None:
         for required in (

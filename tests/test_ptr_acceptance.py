@@ -55,20 +55,20 @@ class PtrAcceptanceGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready_for_signoff")
         self.assertFalse(result["can_enable_report_ptr"])
         gate = result["capability_gate"]
-        self.assertEqual(gate["next_action"], "BUSINESS_SIGNOFF_REQUIRED")
-        self.assertEqual(gate["catalog_status"], "disabled")
-        self.assertFalse(gate["enabled"])
-        self.assertEqual(gate["disabled_reason_code"], "PTR_NOT_VALIDATED")
+        self.assertEqual(gate["next_action"], "FORMAL_CAPABILITY_ENABLED")
+        self.assertEqual(gate["catalog_status"], "enabled")
+        self.assertTrue(gate["enabled"])
+        self.assertIsNone(gate["disabled_reason_code"])
         self.assertEqual(
             set(gate["operations"]),
             {"preflight", "create_run", "worker_job", "coordinator", "publish_result"},
         )
-        self.assertTrue(all(not check["allowed"] for check in gate["operations"].values()))
-        self.assertTrue(all(check["code"] == "MODE_DISABLED" for check in gate["operations"].values()))
-        self.assertEqual(gate["operations"]["preflight"]["effect"], "blocked_plan")
+        self.assertTrue(all(check["allowed"] for check in gate["operations"].values()))
+        self.assertTrue(all(check["code"] is None for check in gate["operations"].values()))
+        self.assertEqual(gate["operations"]["preflight"]["effect"], "plan_ready")
         self.assertTrue(
             all(
-                gate["operations"][name]["effect"] == "rejected"
+                gate["operations"][name]["effect"] == "accepted"
                 for name in ("create_run", "worker_job", "coordinator", "publish_result")
             )
         )
@@ -76,14 +76,14 @@ class PtrAcceptanceGateTests(unittest.TestCase):
     def test_lifecycle_diagnostic_is_closed_over_the_formal_boundaries(self) -> None:
         diagnostic = ptr_lifecycle_gate_diagnostics()
         self.assertEqual(diagnostic["mode"], "report_ptr")
-        self.assertFalse(diagnostic["enabled"])
-        self.assertEqual(diagnostic["catalog_status"], "disabled")
-        self.assertEqual(diagnostic["disabled_reason_code"], "PTR_NOT_VALIDATED")
+        self.assertTrue(diagnostic["enabled"])
+        self.assertEqual(diagnostic["catalog_status"], "enabled")
+        self.assertIsNone(diagnostic["disabled_reason_code"])
         for operation, check in diagnostic["operations"].items():
             with self.subTest(operation=operation):
-                self.assertFalse(check["allowed"])
-                self.assertEqual(check["code"], "MODE_DISABLED")
-                self.assertEqual(check["disabled_reason_code"], "PTR_NOT_VALIDATED")
+                self.assertTrue(check["allowed"])
+                self.assertIsNone(check["code"])
+                self.assertIsNone(check["disabled_reason_code"])
 
     def test_acceptance_rejects_a_reviewed_package_marked_publishable(self) -> None:
         report = next((ROOT / "素材/report/1539").glob("*.pdf"))
