@@ -16,6 +16,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 
 PTR_LLM_SCHEMA_VERSION = "ptr-llm-review-0.1"
+PTR_LLM_PROMPT_VERSION = "ptr-llm-prompt-0.1"
 ALLOWED_DECISIONS = {"equivalent", "different", "uncertain"}
 ALLOWED_SIDES = {"ptr", "report"}
 
@@ -150,6 +151,7 @@ def build_review_task(
     ).hexdigest()
     return {
         "schema_version": PTR_LLM_SCHEMA_VERSION,
+        "prompt_version": PTR_LLM_PROMPT_VERSION,
         "input_sha256": input_sha256,
         "clause_id": str(clause_id),
         "reason_code": str(reason_code),
@@ -167,6 +169,7 @@ def build_review_task(
 __all__ = [
     "ALLOWED_DECISIONS",
     "PTR_LLM_SCHEMA_VERSION",
+    "PTR_LLM_PROMPT_VERSION",
     "PtrLlmReviewError",
     "PtrLlmProvider",
     "build_review_task",

@@ -147,6 +147,7 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertLessEqual(len(task["ptr"]["text"]), 200)
         self.assertLessEqual(len(task["report"]["text"]), 200)
         self.assertEqual(len(task["input_sha256"]), 64)
+        self.assertTrue(task["prompt_version"])
         self.assertNotIn("model", task)
 
     def test_validated_llm_equivalence_can_only_clear_text_manual(self) -> None:
@@ -224,6 +225,8 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertTrue(updated["llm"]["used"])
         self.assertEqual(updated["llm"]["provider_id"], "test-provider")
         self.assertEqual(updated["coverage_ledger"][0]["decision"], MATCHED)
+        self.assertEqual(updated["llm"]["audit_log"][0]["action"], "cleared_text_manual")
+        self.assertEqual(updated["llm"]["audit_log"][0]["input_sha256"], updated["llm"]["validated_responses"][0]["input_sha256"])
         self.assertFalse(updated["publishable"])
 
     def test_ocr_adapter_keeps_pdf_point_evidence(self) -> None:
@@ -299,9 +302,8 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["reason_code"], "EXACT_NORMALIZED_MATCH")
         self.assertFalse(result["llm"]["used"])
-        self.assertGreater(result["llm"]["queue_count"], 0)
-        self.assertNotIn("2.6", {task["clause_id"] for task in result["llm"]["review_queue"]})
-        self.assertTrue(result["llm"]["review_queue"][0]["instructions"])
+        self.assertEqual(result["llm"]["queue_count"], 0)
+        self.assertEqual(result["llm"]["review_queue"], [])
         self.assertFalse(result["publishable"])
 
     def test_2795_reports_unit_conflict_and_table_manual_queue(self) -> None:

@@ -1277,13 +1277,11 @@ def compare_ptr_report(
     if comparison_mode == "rules+llm":
         ptr_by_id = {str(node["node_id"]): node for node in ptr["nodes"]}
         report_by_id = {str(node["node_id"]): node for node in report["nodes"]}
+        text_review_reasons = {"TEXT_MISMATCH", "TEXT_REVIEW_REQUIRED", "LLM_REVIEW_PENDING"}
         for entry in ledger:
             if entry["decision"] == EXCLUDED:
                 continue
-            if entry["decision"] != MANUAL and entry.get("reason_code") not in {
-                "TEXT_MISMATCH",
-                "LLM_REVIEW_PENDING",
-            }:
+            if entry.get("reason_code") not in text_review_reasons:
                 continue
             ptr_node = ptr_by_id.get(str(entry.get("ptr_node_id")))
             report_nodes = [report_by_id[item] for item in entry.get("report_item_ids", []) if item in report_by_id]
@@ -1444,16 +1442,36 @@ def run_llm_reviews(result: Mapping[str, Any], provider: Any) -> dict[str, Any]:
     provider_id = str(getattr(provider, "provider_id", provider.__class__.__name__))
     model_id = str(getattr(provider, "model_id", "unknown"))
     responses: list[dict[str, Any]] = []
+    audit_log: list[dict[str, Any]] = []
     for task in list((updated.get("llm") or {}).get("review_queue") or []):
         payload = review(task)
         if not isinstance(payload, Mapping):
             raise PtrCompareError("LLM provider 返回值必须是 JSON 对象")
         updated = apply_llm_review(updated, str(task.get("clause_id")), payload)
+        ledger_entry = next(
+            item for item in updated.get("coverage_ledger", [])
+            if str(item.get("clause_id")) == str(task.get("clause_id"))
+        )
+        validated_review = dict(ledger_entry.get("llm_review") or {})
         responses.append(
             {
                 "clause_id": task.get("clause_id"),
                 "input_sha256": task.get("input_sha256"),
                 "validated": True,
+            }
+        )
+        audit_log.append(
+            {
+                "clause_id": task.get("clause_id"),
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "prompt_version": task.get("prompt_version"),
+                "input_sha256": task.get("input_sha256"),
+                "output": validated_review,
+                "validated": bool(validated_review.get("validated")),
+                "action": "cleared_text_manual"
+                if ledger_entry.get("reason_code") == "LLM_VERIFIED_TEXT_EQUIVALENCE"
+                else "retained_manual_or_hard_difference",
             }
         )
     llm = dict(updated.get("llm") or {})
@@ -1464,6 +1482,7 @@ def run_llm_reviews(result: Mapping[str, Any], provider: Any) -> dict[str, Any]:
             "provider_id": provider_id,
             "model_id": model_id,
             "validated_responses": responses,
+            "audit_log": audit_log,
         }
     )
     updated["llm"] = llm
