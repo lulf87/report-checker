@@ -18,6 +18,12 @@ from mvp.ptr_compare import EXCLUDED, compare_ptr_report
 
 
 PTR_REVIEW_PACKAGE_SCHEMA_VERSION = "ptr-review-package-0.1"
+REVIEW_DECISIONS = {
+    "confirm_match",
+    "confirm_mismatch",
+    "confirm_manual",
+    "confirm_excluded",
+}
 
 
 def _pages(entry: Mapping[str, Any], role: str) -> list[int]:
@@ -33,6 +39,7 @@ def _pages(entry: Mapping[str, Any], role: str) -> list[int]:
 def _review_row(entry: Mapping[str, Any]) -> dict[str, Any]:
     decision = str(entry.get("decision") or "manual")
     return {
+        "ledger_id": str(entry.get("id") or ""),
         "clause_id": str(entry.get("clause_id") or ""),
         "decision": decision,
         "reason_code": str(entry.get("reason_code") or ""),
@@ -55,6 +62,7 @@ def _review_row(entry: Mapping[str, Any]) -> dict[str, Any]:
 
 def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     fields = [
+        "ledger_id",
         "clause_id",
         "decision",
         "reason_code",
@@ -201,10 +209,106 @@ def build_batch_review_package(
     return batch
 
 
+def validate_review_rows(
+    manifest: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    reviewer: str,
+) -> dict[str, Any]:
+    """Validate reviewer actions without changing machine conclusions."""
+
+    reviewer = str(reviewer or "").strip()
+    if not reviewer:
+        raise ValueError("reviewer 不能为空")
+    expected = {str(row.get("ledger_id")): row for row in manifest.get("rows", [])}
+    actual = {str(row.get("ledger_id")): row for row in rows}
+    if set(expected) != set(actual):
+        raise ValueError("复核 CSV 必须逐条覆盖 manifest 中的条款，不能增删对象")
+    actions: list[dict[str, Any]] = []
+    for ledger_id, machine in expected.items():
+        row = actual[ledger_id]
+        for field in ("clause_id", "decision", "reason_code", "scope_decision", "ptr_node_id"):
+            if str(row.get(field, "")) != str(machine.get(field, "")):
+                raise ValueError(f"条款 {ledger_id} 的机器字段 {field} 被修改")
+        machine_decision = str(machine.get("decision"))
+        status = str(row.get("review_status") or "")
+        action = str(row.get("review_decision") or "")
+        if machine_decision == EXCLUDED:
+            if status != "excluded" or action not in {"", "confirm_excluded"}:
+                raise ValueError(f"范围外条款 {ledger_id} 必须保持 excluded")
+            action = "confirm_excluded"
+        else:
+            if status != "confirmed" or action not in REVIEW_DECISIONS - {"confirm_excluded"}:
+                raise ValueError(f"条款 {ledger_id} 必须填写 confirmed 和有效复核动作")
+        actions.append(
+            {
+                "ledger_id": ledger_id,
+                "clause_id": machine.get("clause_id"),
+                "machine_decision": machine_decision,
+                "machine_reason_code": machine.get("reason_code"),
+                "review_status": status,
+                "review_decision": action,
+                "review_note": str(row.get("review_note") or "").strip(),
+                "reviewer": reviewer,
+            }
+        )
+    return {
+        "review_schema_version": "ptr-review-action-0.1",
+        "reviewer": reviewer,
+        "review_complete": True,
+        "machine_conclusion_immutable": True,
+        "publishable": False,
+        "actions": actions,
+    }
+
+
+def apply_review_csv(
+    *,
+    manifest_path: str | Path,
+    csv_path: str | Path,
+    output_path: str | Path,
+    reviewer: str,
+) -> dict[str, Any]:
+    """Validate a filled review CSV and write a non-publishable audit result."""
+
+    manifest_file = Path(manifest_path).expanduser().resolve()
+    csv_file = Path(csv_path).expanduser().resolve()
+    output_file = Path(output_path).expanduser().resolve()
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    with csv_file.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    review = validate_review_rows(manifest, rows, reviewer=reviewer)
+    result = {
+        "schema_version": PTR_REVIEW_PACKAGE_SCHEMA_VERSION,
+        "package_kind": "ptr_human_reviewed",
+        "publishable": False,
+        "source_manifest_sha256": _sha256_file(manifest_file),
+        "machine_summary": manifest.get("summary"),
+        "machine_ledger": manifest.get("coverage_ledger"),
+        "review": review,
+    }
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 __all__ = [
     "PTR_REVIEW_PACKAGE_SCHEMA_VERSION",
+    "REVIEW_DECISIONS",
+    "apply_review_csv",
     "build_batch_review_package",
     "build_ptr_review_package",
+    "validate_review_rows",
 ]
 
 

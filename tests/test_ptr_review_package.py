@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import csv
 import tempfile
 import unittest
 from pathlib import Path
 
-from mvp.ptr_review_package import build_ptr_review_package
+from mvp.ptr_compare import EXCLUDED, MANUAL, MATCHED, MISMATCH
+from mvp.ptr_review_package import apply_review_csv, build_ptr_review_package
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +34,35 @@ class PtrReviewPackageTests(unittest.TestCase):
             self.assertTrue(saved["rows"])
             self.assertTrue(all(row["review_status"] in {"pending", "excluded"} for row in saved["rows"]))
             self.assertTrue(all(item["source_sha256"] for item in saved["inputs"].values()))
+
+            filled = output / "filled.csv"
+            rows = list(csv.DictReader((output / "review.csv").read_text(encoding="utf-8").splitlines()))
+            for row in rows:
+                machine = row["decision"]
+                if machine == EXCLUDED:
+                    row["review_status"] = "excluded"
+                    row["review_decision"] = "confirm_excluded"
+                else:
+                    row["review_status"] = "confirmed"
+                    row["review_decision"] = {
+                        MATCHED: "confirm_match",
+                        MISMATCH: "confirm_mismatch",
+                        MANUAL: "confirm_manual",
+                    }[machine]
+                row["review_note"] = "fixture review"
+            with filled.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            reviewed = apply_review_csv(
+                manifest_path=output / "manifest.json",
+                csv_path=filled,
+                output_path=output / "reviewed.json",
+                reviewer="test-reviewer",
+            )
+            self.assertTrue(reviewed["review"]["review_complete"])
+            self.assertFalse(reviewed["publishable"])
+            self.assertEqual(len(reviewed["review"]["actions"]), len(saved["rows"]))
 
 
 if __name__ == "__main__":
