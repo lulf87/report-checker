@@ -146,10 +146,12 @@ class UploadWorkbenchTests(unittest.TestCase):
         for required in (
             "Report · 检验报告",
             "PTR · 产品技术要求",
-            "PTR 条款 ${clause} ↔ Report 检验要求 ${clause}",
+            "PTR 条款 ${clause} ↔ Report 接受标准 ${clause}",
             "function ptrCheckRows(finding)",
             'label: "条款要求"',
-            'label: "要求数值"',
+            "function ptrReviewExplanation(finding)",
+            "TABLE_CONTENT_NOT_EXTRACTED: \"表格没有被可靠地逐格提取",
+            "TEXT_REVIEW_REQUIRED: \"条款文字存在差异",
             'label: "引用"',
             'label: "表格"',
         ):
@@ -162,8 +164,8 @@ class UploadWorkbenchTests(unittest.TestCase):
             "function compareClauseIds(left, right)",
             "function compareFindings(left, right)",
             ".sort(compareFindings)",
-            "标准要求中的数值与单位",
-            "Report 的“检验结果”是否满足要求由报告自检单独检查",
+            "这里比较 PTR 条款要求和 Report 的接受标准",
+            "Report 的检验结果是否满足接受标准，由“报告自检”单独检查",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.module_source if required.startswith("function") or required.startswith(".") else self.html)

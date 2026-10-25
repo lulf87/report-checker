@@ -85,8 +85,6 @@
     .findings { display: grid; align-content: start; gap: 4px; min-height: 0; margin: 0; padding: 6px; overflow: auto; list-style: none; scrollbar-gutter: stable; }
     .finding { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 7px; padding: 7px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
     .finding:hover, .finding[aria-current="true"] { border-color: var(--teal); background: var(--teal-soft); }
-    .finding > .finding-id:last-child { grid-column: 2; font-size: 11px; }
-    .finding-id { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .finding-title { margin-top: 2px; font-size: 13px; font-weight: 700; line-height: 1.35; }
     .finding-detail { display: -webkit-box; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
     .finding-detail.has-problem { color: var(--ink); }
@@ -121,7 +119,7 @@
     .source-link { display: grid; place-items: center; color: var(--teal); font-size: 18px; font-weight: 800; }
     .comparison-scope-note { margin: 0 16px 10px; padding: 7px 10px; border-left: 3px solid var(--teal); color: var(--muted); background: var(--soft); font-size: 11px; line-height: 1.45; }
     .brief-comparison { color: var(--ink); }
-    .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin: 0 16px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+    .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; min-height: 50px; margin: 0 16px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
     .brief-copy { min-width: 0; }
     .brief-title { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
     .brief-detail { display: flex; max-height: 104px; flex-direction: column; gap: 3px; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.45; }
@@ -356,7 +354,7 @@
         </button>
         <button type="button" class="mode-card" role="radio" data-mode="ptr" aria-checked="false">
           <span class="mode-name">报告 ↔ 产品技术要求</span>
-          <span class="mode-desc">逐条比对 PTR 与 Report 的范围、条款、数值、表格和引用</span>
+          <span class="mode-desc">逐条比对 PTR 条款要求与 Report 接受标准；表格和引用也会核对</span>
           <span class="mode-need">需要：检验报告 + PTR</span>
         </button>
       </div>
@@ -494,7 +492,6 @@
       <div class="comparison-brief" id="comparison-brief" aria-live="polite">
         <span class="finding-status manual">未选择</span>
         <div class="brief-copy"><div class="brief-title">请在左边选择一条结果</div><div class="brief-detail">核对完成后显示原始文件</div></div>
-        <span class="finding-id">—</span>
       </div>
       <div class="review-box" id="review-box" hidden>
         <span class="review-label">处理意见</span>
@@ -1021,7 +1018,7 @@
       sourceReportMeta.textContent = sourceMetaText(report);
       comparisonScopeNote.hidden = mode !== "ptr";
       comparisonScopeNote.textContent = mode === "ptr"
-        ? "PTR 模式当前核对 PTR 与 Report 的“标准要求”（条款、正文、要求数值、单位、引用和表格）；Report 的“检验结果”是否满足要求由报告自检单独检查，这里的“一致”不代替实测结果判定。"
+        ? "这里比较 PTR 条款要求和 Report 的接受标准；Report 的检验结果是否满足接受标准，由“报告自检”单独检查。"
         : "";
       const hasRecord = Boolean(meta.recordRole && record);
       comparisonSources.classList.toggle("single-source", !hasRecord);
@@ -1041,7 +1038,6 @@
       comparisonBrief.querySelector(".brief-title").textContent = message;
       comparisonBrief.querySelector(".brief-detail").textContent = "核对完成后，点一条结果即可查看原始文件。";
       document.getElementById("check-details").hidden = true;
-      comparisonBrief.querySelector(".finding-id").textContent = "—";
     }
 
     function clearPane(pane, message = "等待运行结果…") {
@@ -1118,7 +1114,7 @@
       const fc = c.field_comparisons || {};
       if (activeMode === "ptr" || item.rule_id === "PTR-P01") {
         const clause = d.clause_id || String(item.id || "").match(/clause:([^@]+)/)?.[1] || "未编号条款";
-        return `PTR 条款 ${clause} ↔ Report 检验要求 ${clause}`;
+        return `PTR 条款 ${clause} ↔ Report 接受标准 ${clause}`;
       }
       if (d.record_item !== undefined && d.record_logical_row !== undefined) {
         const project = c.project?.record_project || (c.project?.report_projects || [])[0] || "";
@@ -1240,7 +1236,11 @@
         const detail = document.createElement("div");
         detail.className = "finding-detail";
         const problems = TODO_STATUSES.has(status) ? problemLines(item) : [];
-        if (problems.length) {
+        if (isPtrFinding(item)) {
+          if (TODO_STATUSES.has(status)) detail.classList.add("has-problem");
+          detail.textContent = listSummary(item);
+          detail.title = detail.textContent;
+        } else if (problems.length) {
           detail.classList.add("has-problem");
           detail.textContent = problems[0].text + (problems.length > 1 ? `（另有 ${problems.length - 1} 处）` : "");
           detail.title = problems.map(line => line.text).join("\n");
@@ -1249,7 +1249,7 @@
         }
         const rule = document.createElement("div");
         rule.className = "finding-rule";
-        rule.textContent = ruleCode(item);
+        rule.textContent = isPtrFinding(item) ? "PTR 条款 ↔ Report 接受标准" : ruleCode(item);
         copy.append(title, detail, rule);
         row.append(badge, copy);
         findings.append(row);
@@ -1462,10 +1462,12 @@
       detail.replaceChildren();
       const summary = document.createElement("div");
       const rawSummary = String(finding.summary || "");
-      summary.textContent = /^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—");
+      summary.textContent = isPtrFinding(finding)
+        ? ptrReviewExplanation(finding)
+        : (/^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—"));
       detail.append(summary);
       const comparedRows = checkRowsFor(finding)
-        .filter(row => row.label !== "条款对应" && (row.a?.text || row.b?.text))
+        .filter(row => (isPtrFinding(finding) ? row.label === "条款要求" : row.label !== "条款对应") && (row.a?.text || row.b?.text))
         .slice(0, 2);
       comparedRows.forEach(row => {
         const line = document.createElement("div");
@@ -1475,6 +1477,9 @@
         line.textContent = `${row.label}：${left} ↔ ${right}`;
         detail.append(line);
       });
+      // PTR 结果顶部只保留一条易读的原因和“条款要求”对照；表格、引用等
+      // 诊断信息放在下方可展开的“核对明细”中，避免同一内容重复出现。
+      if (isPtrFinding(finding)) return;
       const status = String(finding.status || "");
       if (!["error", "manual", "warning"].includes(status)) return;
       const lines = problemLines(finding);
@@ -1571,6 +1576,13 @@
       record_measurement_position_unresolved: "手写数值的位置无法确定",
       record_percentage_occurrence_not_dual_recognised: "百分比手写值两路识别不一致",
       report_mapping_missing: "报告中没有对应行",
+      TABLE_CONTENT_NOT_EXTRACTED: "表格没有被可靠地逐格提取，暂不能确认每一格内容一致",
+      TEXT_REVIEW_REQUIRED: "条款文字存在差异，需要确认是排版、重复还是接受标准被改写",
+      REFERENCE_BINDING_UNRESOLVED: "表格或附录引用无法唯一对应，需要人工确认引用内容",
+      AMBIGUOUS_REPORT_MAPPING: "PTR 条款无法唯一对应到 Report 条款",
+      PTR_OCR_CANDIDATES_MANUAL: "PTR 文字来自识别结果，需要人工查看原文",
+      NUMERIC_FACT_MISMATCH: "PTR 与 Report 接受标准中的数值不同",
+      UNIT_MISMATCH: "PTR 与 Report 接受标准中的单位不同",
       parent_clause_mismatch: "父条款不一致",
       project_name_difference: "项目名称不同",
       project_name_not_uniquely_resolved: "项目名称无法唯一确定",
@@ -1702,6 +1714,49 @@
       if (!code) return "";
       return REASON_TEXT[code] || (/^[A-Za-z0-9_]+$/.test(String(code)) ? "需要人工确认" : String(code));
     }
+
+    function isPtrFinding(finding) {
+      return activeMode === "ptr" || finding?.rule_id === "PTR-P01";
+    }
+
+    function ptrReasonCode(finding) {
+      const details = finding?.details || {};
+      const comparison = details.comparison || {};
+      const direct = details.reason_code || comparison.reason_code || finding?.reason_code;
+      if (direct) return String(direct);
+      const summary = String(finding?.summary || "");
+      const fromSummary = summary.match(/:\s*([A-Za-z0-9_]+)\s*$/);
+      return fromSummary ? fromSummary[1] : "";
+    }
+
+    // PTR 的机器原因码只适合留在技术日志里。结果页给业务人员展示“为什么要确认”。
+    function ptrReviewExplanation(finding) {
+      const details = finding?.details || {};
+      const comparison = details.comparison || details;
+      const code = ptrReasonCode(finding);
+      const table = comparison.table_comparison || details.table_comparison || {};
+      const reference = comparison.reference_comparison || details.reference_comparison || {};
+      if (code === "TABLE_CONTENT_NOT_EXTRACTED") {
+        if (reference.binding_status && reference.binding_status !== "matched") {
+          return "表格或附录引用没有唯一对应：PTR 和 Report 提到了相关表格，但程序不能确认它们是同一份内容。请查看下方 PDF。";
+        }
+        const ptrTables = Number(table.ptr_tables || 0);
+        const reportTables = Number(table.report_tables || 0);
+        const countText = ptrTables || reportTables ? `（PTR 识别 ${ptrTables} 个，Report 识别 ${reportTables} 个）` : "";
+        return `表格没有被可靠地逐格核对${countText}：表格可能跨页、拆列或结构不同，程序不能仅凭表名确认每一格一致。请查看下方 PDF。`;
+      }
+      if (code === "TEXT_REVIEW_REQUIRED") {
+        return "条款文字不是完全相同：数字、单位和引用已分别核对，没有发现硬冲突，但仍需确认差异只是排版、重复或 Report 的补充说明。";
+      }
+      if (code === "NUMERIC_FACT_MISMATCH") return "PTR 与 Report 接受标准中的数值不同，请确认哪一边是正确要求。";
+      if (code === "UNIT_MISMATCH") return "PTR 与 Report 接受标准中的单位不同，请确认是否为单位写错或换算关系未识别。";
+      if (code === "REFERENCE_BINDING_UNRESOLVED") return "表格或附录引用无法唯一对应，请打开两边原文确认引用的是同一份内容。";
+      if (code === "AMBIGUOUS_REPORT_MAPPING") return "程序找到了多个可能的 Report 条款，无法确定应该和 PTR 哪一条对应。";
+      if (code === "PTR_OCR_CANDIDATES_MANUAL") return "PTR 条款来自文字识别结果，需要查看原文确认识别是否正确。";
+      if (finding?.status === "pass") return "PTR 条款要求与 Report 接受标准已核对一致。";
+      return REASON_TEXT[code] || "程序无法仅凭提取到的内容确认一致，请查看两边原文。";
+    }
+
     function normStatus(status) {
       const value = String(status || "info");
       if (value === "match") return "pass";
@@ -1880,7 +1935,7 @@
       const c = d.comparison || {};
       const locs = Array.isArray(finding.evidence) ? finding.evidence : [];
       const ptrLoc = toLoc(locs.find(item => item.role === "ptr"), "ptr", "PTR 条款");
-      const reportLoc = toLoc(locs.find(item => item.role === "report"), "report", "Report 检验要求");
+      const reportLoc = toLoc(locs.find(item => item.role === "report"), "report", "Report 接受标准");
       const rows = [];
       const clause = d.clause_id || c.clause_id || String(finding.id || "").match(/clause:([^@]+)/)?.[1] || "";
       if (clause) {
@@ -1904,14 +1959,16 @@
         }
       }
       const numeric = d.numeric_comparison || c.numeric_comparison;
-      if (numeric) {
-        rows.push({ label: "要求数值", sub: "标准要求中的数值与单位",
+      // 数值是规则的内部核对字段。只有发现真正的数值冲突时才显示，避免把
+      // 与“条款要求”重复的技术拆分项塞进业务结果页。
+      if (numeric && ptrStatus(numeric, finding.status) !== "pass") {
+        rows.push({ label: "数值差异", sub: "仅在规则发现数值冲突时显示",
           a: side(ptrComparisonValue(numeric.report), reportLoc, "Report 要求值"),
           b: side(ptrComparisonValue(numeric.ptr), ptrLoc, "PTR 要求值"),
           status: ptrStatus(numeric, finding.status), note: reasonText(numeric) || "数值归一化后比较" });
       }
       const unit = d.unit_comparison || c.unit_comparison;
-      if (unit) {
+      if (unit && ptrStatus(unit, finding.status) !== "pass") {
         rows.push({ label: "要求单位", sub: "标准要求中的单位",
           a: side(ptrComparisonValue(unit.report), reportLoc, "Report 要求单位"),
           b: side(ptrComparisonValue(unit.ptr), ptrLoc, "PTR 要求单位"),
@@ -2045,6 +2102,7 @@
     function listSummary(item) {
       const d = item.details || {};
       const c = d.comparison || {};
+      if (isPtrFinding(item)) return ptrReviewExplanation(item);
       if (c.record_symbol !== undefined && Array.isArray(d.report_results)) {
         const where = d.record_item ? `项目${d.record_item}第${d.record_logical_row}行：` : "";
         const value = c.numeric && c.numeric.record_value ? ` ${c.numeric.record_value}` : "";
@@ -2219,7 +2277,6 @@
       renderFindingBrief(finding);
       renderReview(finding);
       renderCheckDetails(finding);
-      comparisonBrief.querySelector(".finding-id").textContent = String(finding.id || "—").split("@")[0];
       if (!reportDocument) {
         clearPane(reportPane, "缺少 Report 文档信息。");
         clearPane(recordPane, `等待 ${meta.documentLabel || "Record"} 文档。`);
