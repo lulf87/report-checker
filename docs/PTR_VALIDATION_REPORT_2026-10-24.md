@@ -53,6 +53,10 @@
 - PTR 的 `2.4.1`、`2.4.2` 条款号与标题在 PDF 中分列，按同一视觉行合并后分别进入账本，均与 Report 匹配。
 - 同一 Report 序号下的 `2.1.13`、`2.1.14` 续行不会再被前条款的表格状态吞掉；当前 2948 试点账本 22 个纳入项全部 `matched`。
 
+### 0775
+
+- 文本措辞差异保守进入人工队列；当前规则账本为 141 个 `matched`、3 个确定性硬差异、47 个 `manual`，没有把措辞差异直接当成硬错误。
+
 ### 2795
 
 - `2.5`：正文写 `5MΩ`，Report 单独单位栏写 `GΩ`，状态为 `mismatch / UNIT_MISMATCH`。
@@ -83,7 +87,7 @@ git diff --check       OK
 
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
-三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v2/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。
+三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v3/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。
 
 正式启用前仍需完成：
 

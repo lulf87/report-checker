@@ -1039,10 +1039,13 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     else:
         decision = text_status
         decision_reason = reason
+        if text_status == MISMATCH:
+            decision = MANUAL
+            decision_reason = "TEXT_REVIEW_REQUIRED"
     if (
         table_comparison["status"] == MANUAL
         and (ptr_refs.get("tables") or report_refs.get("tables"))
-        and numeric_status == MISMATCH
+        and (numeric_status == MISMATCH or text_status == MISMATCH)
     ):
         decision = MANUAL
         decision_reason = "TABLE_CONTENT_NOT_EXTRACTED"
