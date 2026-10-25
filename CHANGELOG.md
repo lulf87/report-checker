@@ -28,6 +28,7 @@
 - 补充 PTR 验收门诊断和生命周期回归：验收包就绪仍保持 `report_ptr` 禁用，preflight、create、Worker、coordinator、publish 及遗留 Run 路径均拒绝 `PTR_NOT_VALIDATED`，不产生空通过。
 - 收紧 PTR Coverage Ledger：范围中两侧均未提取的条款显式记为 `SCOPE_ITEM_UNACCOUNTED`；表格/附录引用的多候选、缺失绑定和循环引用保留人工复核证据。
 - PTR 布局解析器升为 `ptr-layout-1.2`，比较草案升为 `ptr-compare-0.4` / `0.4.0-draft`；补齐独立 `a)`/`b)` 子项节点并为重复物理观察生成唯一 Ledger 身份。
+- 增加全样本硬字段回归：`rules+llm` 与规则模式的数值、单位、引用和表格状态一致，LLM 不能清除硬差异。
 - PTR 文本措辞差异现在保守进入 `manual / TEXT_REVIEW_REQUIRED`；只有数值、单位、引用、条款覆盖等确定性硬差异保留 `mismatch`，表格结构不足继续使用 `TABLE_CONTENT_NOT_EXTRACTED`。
 - PTR 页面中条款号与标题分列时（如 2948 的 `2.4.1`/“安全通用要求”），解析器会按同一视觉行合并，避免把子条款并入父条款正文。
 - Report 无边框表格状态按当前条款节点隔离，避免同一序号前一条款的表格布局影响后续条款正文；2948 的 2.1.13/2.1.14 续行现在完整保留。

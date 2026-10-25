@@ -78,20 +78,22 @@
 在项目 `.venv`（Python 3.13）中，PTR 比较相关回归通过：
 
 ```text
-test_ptr_compare.py  29 tests OK
+test_ptr_compare.py  31 tests OK
 test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
 test_ptr_draft_runner.py  2 tests OK
 test_ptr_review_package.py  1 test OK
 test_ptr_acceptance.py  6 tests OK
 test_ptr_lifecycle_gate.py  5 tests OK
-unittest discover -s tests -q  420 tests OK
+unittest discover -s tests -q  422 tests OK
 git diff --check       OK
 ```
 
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
 三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v5/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据、规则版本和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。`mvp.ptr_acceptance` 对已填写的 Codex 离线复核结果返回 `status=ready_for_signoff`，但 `can_enable_report_ptr=false`，仍需业务签字确认。
+
+业务负责人逐条确认的项目、签字栏和启用前复跑要求见 [PTR 正式启用签字清单](PTR_SIGNOFF_CHECKLIST_2026-10-24.md)。
 
 本轮增加了验收门与正式 Run 生命周期的闭环诊断。验收结果中的 `capability_gate` 明确记录：即使三份试点均为 `ready`，目录中的 `report_ptr` 仍是 `disabled`，原因码仍为 `PTR_NOT_VALIDATED`，下一步只能是 `BUSINESS_SIGNOFF_REQUIRED`。`preflight` 的效果是返回带范围和输入角色的阻断计划（`can_create_run=false`）；`create_run` 返回 `MODE_DISABLED`；Worker JobSpec、coordinator 和 publish 闸门也都拒绝同一原因码。针对旧数据库中可能遗留的 queued/running PTR 行，回归测试确认不会启动 Worker、不会生成空 Finding，也不会发布 `succeeded` Run。
 

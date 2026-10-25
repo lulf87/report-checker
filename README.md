@@ -21,6 +21,8 @@
 
 PTR 当前保持禁用状态。两个 Record 模式不混入 `REPORT-*` 自检 Finding；Report 自检只发布 `REPORT-*` Finding。
 
+PTR 试点的当前机器证据、覆盖审计和业务签字栏见 [PTR 正式启用签字清单](docs/PTR_SIGNOFF_CHECKLIST_2026-10-24.md)。即使验收包显示 `ready_for_signoff`，正式能力仍需业务签字后再切换。
+
 ## Coverage Ledger
 
 每个纳入范围的身份字段、正文行、实测单元格、结论行或页级编号都必须进入 Coverage Ledger。`eligible == accounted` 且 `conserved == true` 才能发布为完整运行；不允许静默跳过。Ledger 使用五种处置：

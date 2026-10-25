@@ -447,6 +447,41 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(updated["llm"]["audit_log"][0]["input_sha256"], updated["llm"]["validated_responses"][0]["input_sha256"])
         self.assertFalse(updated["publishable"])
 
+    def test_llm_provider_cannot_clear_a_hard_numeric_difference(self) -> None:
+        result = {
+            "comparison_mode": "rules+llm",
+            "publishable": False,
+            "llm": {"review_queue": [build_review_task(
+                clause_id="2.5", reason_code="TEXT_REVIEW_REQUIRED",
+                ptr_text="最大值 5MΩ", report_text="最大值 5GΩ", ptr_pages=[1], report_pages=[2]
+            )]},
+            "coverage_ledger": [{
+                "clause_id": "2.5", "decision": MISMATCH, "reason_code": "UNIT_MISMATCH",
+                "numeric_comparison": {"status": MATCHED}, "unit_comparison": {"status": MISMATCH},
+                "reference_comparison": {"status": MATCHED}, "table_comparison": {"status": MATCHED},
+            }],
+            "summary": {"counts": {MATCHED: 0, MISMATCH: 1, MANUAL: 0, EXCLUDED: 0}},
+        }
+
+        class FakeProvider:
+            provider_id = "test-provider"
+            model_id = "test-model"
+
+            def review(self, task):
+                return {
+                    "decision": "equivalent",
+                    "missing_concepts": [],
+                    "extra_concepts": [],
+                    "numeric_claims": [],
+                    "text_evidence": [{"side": "ptr", "quote": "最大值 5MΩ", "page": 1}],
+                    "reason": "模型认为只是措辞差异",
+                }
+
+        updated = run_llm_reviews(result, FakeProvider())
+        self.assertEqual(updated["coverage_ledger"][0]["decision"], MISMATCH)
+        self.assertEqual(updated["coverage_ledger"][0]["reason_code"], "UNIT_MISMATCH")
+        self.assertEqual(updated["llm"]["audit_log"][0]["action"], "retained_manual_or_hard_difference")
+
     def test_ocr_adapter_keeps_pdf_point_evidence(self) -> None:
         with fitz.open() as document:
             document.new_page(width=100, height=100)
@@ -473,6 +508,32 @@ class PtrCompareNormalizationTests(unittest.TestCase):
 
 @unittest.skipUnless(MATERIALS_AVAILABLE, "本地 PTR/Report 素材不存在")
 class PtrCompareSampleTests(unittest.TestCase):
+    def test_all_material_samples_keep_hard_fields_identical_with_optional_llm_mode(self) -> None:
+        samples = sorted(
+            sample_dir.name
+            for sample_dir in (ROOT / "素材" / "ptr").iterdir()
+            if sample_dir.is_dir() and list(sample_dir.glob("*.pdf")) and list((ROOT / "素材" / "report" / sample_dir.name).glob("*.pdf"))
+        )
+        self.assertEqual(len(samples), 12)
+        hard_fields = ("numeric_comparison", "unit_comparison", "reference_comparison", "table_comparison")
+        for sample in samples:
+            with self.subTest(sample=sample):
+                report_path, ptr_path = sample_paths(sample)
+                rules = compare_ptr_report(report_path, ptr_path, comparison_mode="rules")
+                with_llm = compare_ptr_report(report_path, ptr_path, comparison_mode="rules+llm")
+                self.assertFalse(with_llm["publishable"])
+                self.assertFalse(with_llm["llm"]["used"])
+                rules_by_id = {entry["id"]: entry for entry in rules["coverage_ledger"]}
+                llm_by_id = {entry["id"]: entry for entry in with_llm["coverage_ledger"]}
+                self.assertEqual(set(rules_by_id), set(llm_by_id))
+                for ledger_id in rules_by_id:
+                    for field in hard_fields:
+                        self.assertEqual(
+                            rules_by_id[ledger_id].get(field),
+                            llm_by_id[ledger_id].get(field),
+                            f"{sample}/{ledger_id}/{field}",
+                        )
+
     def test_0596_keeps_deep_clause_tree_and_evidence(self) -> None:
         _, ptr_path = sample_paths("0596")
         result = extract_ptr_clauses(ptr_path)
