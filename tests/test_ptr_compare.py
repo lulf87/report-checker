@@ -19,7 +19,7 @@ from mvp.ptr_compare import (
     normalize_comparison_text,
     run_llm_reviews,
 )
-from mvp.ptr_compare import _compare_text, _numeric_signature
+from mvp.ptr_compare import _clause_parent, _compare_text, _numeric_signature, _reference_cycle_candidates
 from mvp.ptr_layout import _reference_bindings, _split_inline_clauses
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
 from mvp.ptr_llm_http import OpenAICompatiblePtrLlmProvider, PtrLlmHttpError
@@ -97,6 +97,23 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(split[1]["node_id"], "report:item:7:clause:2.10.2.1")
         self.assertEqual(split[1]["role"], "report")
 
+    def test_lettered_subitems_get_stable_parent_ids(self) -> None:
+        node = {
+            "node_id": "ptr:clause:2.3.6.6",
+            "role": "ptr",
+            "clause_id": "2.3.6.6",
+            "title": "使用性能",
+            "parts": ["使用性能", "a) 开合性能应顺利。", "b) 夹持力应符合表1。"],
+            "evidence": [],
+            "table_rows": [],
+            "figures": [],
+            "extraction_issues": [],
+        }
+        split = _split_inline_clauses([node])
+        self.assertEqual([item["clause_id"] for item in split], ["2.3.6.6", "2.3.6.6a", "2.3.6.6b"])
+        self.assertEqual(split[1]["parent_clause_id"], "2.3.6.6")
+        self.assertEqual(_clause_parent("2.3.6.6a"), "2.3.6.6")
+
     def test_reference_binding_keeps_unresolved_tokens_manual(self) -> None:
         node = {"references": {"tables": ["表99"]}, "table_rows": []}
         self.assertEqual(_reference_bindings(node), [{"label": "表99", "status": "unresolved", "table_ids": []}])
@@ -147,6 +164,35 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(missing["reason_code"], "PTR_CLAUSE_MISSING")
         self.assertTrue(result["summary"]["conserved"])
 
+    def test_declared_scope_hole_is_explicitly_unaccounted(self) -> None:
+        report = {
+            "source_sha256": "report",
+            "nodes": [],
+            "nodes_by_clause": {},
+            "scope": {
+                "status": "parsed",
+                "included_clause_ids": ["2.9"],
+                "excluded_clause_ids": [],
+            },
+            "diagnostics": {"status": "parsed"},
+        }
+        ptr = {
+            "source_sha256": "ptr",
+            "nodes": [],
+            "diagnostics": {"status": "parsed", "ocr_used": False},
+        }
+        with patch("mvp.ptr_compare.extract_report_clauses", return_value=report), patch(
+            "mvp.ptr_compare.extract_ptr_clauses", return_value=ptr
+        ):
+            result = compare_ptr_report("report.pdf", "ptr.pdf", comparison_mode="rules")
+        hole = next(entry for entry in result["coverage_ledger"] if entry["clause_id"] == "2.9")
+        self.assertEqual(hole["decision"], MISMATCH)
+        self.assertEqual(hole["reason_code"], "SCOPE_ITEM_UNACCOUNTED")
+        self.assertEqual(result["summary"]["eligible"], 1)
+        self.assertEqual(result["summary"]["accounted"], 0)
+        self.assertFalse(result["summary"]["conserved"])
+        self.assertEqual(result["coverage_audit"]["missing_scope_items"], ["2.9"])
+
     def test_identical_extracted_table_can_leave_manual_state(self) -> None:
         ptr = {
             "text": "表1 参数",
@@ -168,6 +214,84 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         }
         comparison = _compare_text(ptr, report, has_children=False)
         self.assertEqual(comparison["table_comparison"]["status"], MATCHED)
+
+    def test_ambiguous_reference_binding_cannot_auto_match_identical_tables(self) -> None:
+        ptr = {
+            "text": "见表1",
+            "normalized_text": "见表1",
+            "numeric_signature": [],
+            "references": {"standards": [], "tables": ["表1"]},
+            "reference_bindings": [{"label": "表1", "status": "ambiguous", "table_ids": ["a", "b"]}],
+            "unit_labels": [],
+            "is_heading_only": False,
+            "table_rows": [{"rows": [["参数", "值"], ["频率", "100"]]}],
+        }
+        report = {
+            **ptr,
+            "reference_bindings": [{"label": "表1", "status": "bound", "table_ids": ["report-table"]}],
+        }
+        comparison = _compare_text(ptr, report, has_children=False)
+        self.assertEqual(comparison["table_comparison"]["status"], MATCHED)
+        self.assertEqual(comparison["reference_comparison"]["binding_status"], MANUAL)
+        self.assertEqual(comparison["decision"], MANUAL)
+        self.assertEqual(comparison["reason_code"], "REFERENCE_BINDING_UNRESOLVED")
+
+    def test_reference_cycle_is_a_manual_candidate(self) -> None:
+        nodes = [
+            {
+                "role": "ptr",
+                "node_id": "ptr:clause:2.1",
+                "table_rows": [
+                    {"table_id": "table-1", "label": "表1", "rows": [["见表2"]]},
+                    {"table_id": "table-2", "label": "表2", "rows": [["见表1"]]},
+                ],
+            }
+        ]
+        cycles = _reference_cycle_candidates(nodes)
+        self.assertEqual(len(cycles), 1)
+        self.assertEqual(cycles[0]["labels"], ["表1", "表2"])
+        self.assertEqual(cycles[0]["reason_code"], "REFERENCE_CYCLE_CANDIDATE")
+
+    def test_reference_cycle_keeps_comparison_row_manual(self) -> None:
+        def node(role: str) -> dict:
+            return {
+                "node_id": f"{role}:clause:2.1",
+                "role": role,
+                "clause_id": "2.1",
+                "parent_clause_id": "2",
+                "title": "见表1",
+                "text": "见表1",
+                "normalized_text": "见表1",
+                "numeric_signature": [],
+                "raw_numeric_signature": [],
+                "references": {"standards": [], "tables": ["表1"]},
+                "reference_bindings": [{"label": "表1", "status": "bound", "table_ids": [f"{role}-table"]}],
+                "unit_labels": [],
+                "is_heading_only": False,
+                "pages": [1],
+                "evidence": [{"role": role, "pdf_page": 1, "bbox": [1, 1, 10, 10], "source_sha256": role}],
+                "table_rows": [{"table_id": f"{role}-table", "label": "表1", "rows": [["见表1"]]}],
+                "source_sha256": role,
+            }
+
+        report_node = node("report")
+        ptr_node = node("ptr")
+        report = {
+            "source_sha256": "report",
+            "nodes": [report_node],
+            "nodes_by_clause": {"2.1": [report_node]},
+            "scope": {"status": "parsed", "included_clause_ids": ["2.1"], "excluded_clause_ids": []},
+            "diagnostics": {"status": "parsed"},
+        }
+        ptr = {"source_sha256": "ptr", "nodes": [ptr_node], "diagnostics": {"status": "parsed", "ocr_used": False}}
+        with patch("mvp.ptr_compare.extract_report_clauses", return_value=report), patch(
+            "mvp.ptr_compare.extract_ptr_clauses", return_value=ptr
+        ):
+            result = compare_ptr_report("report.pdf", "ptr.pdf", comparison_mode="rules")
+        entry = next(item for item in result["coverage_ledger"] if item["clause_id"] == "2.1")
+        self.assertEqual(result["reference_audit"]["status"], MANUAL)
+        self.assertEqual(entry["decision"], MANUAL)
+        self.assertEqual(entry["reason_code"], "REFERENCE_CYCLE_CANDIDATE")
 
     def test_llm_quote_must_be_found_in_the_original_side(self) -> None:
         payload = {

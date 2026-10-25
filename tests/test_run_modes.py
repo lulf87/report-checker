@@ -141,6 +141,20 @@ class FourModeDispatcherTests(unittest.TestCase):
             self.assertEqual(error.reason_code, "PTR_NOT_VALIDATED")
             self.assertFalse(output.exists())
 
+    def test_ptr_report_alias_is_stably_disabled_without_creating_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "ptr-report"
+            with self.assertRaises(ModeDisabledError) as context:
+                run_mode(
+                    mode="report_ptr_report",
+                    report_path=Path(temporary) / "missing-report.pdf",
+                    ptr_path=Path(temporary) / "missing-ptr.pdf",
+                    output_dir=output,
+                )
+            self.assertEqual(context.exception.code, "MODE_DISABLED")
+            self.assertEqual(context.exception.reason_code, "PTR_NOT_VALIDATED")
+            self.assertFalse(output.exists())
+
     def test_report_self_dispatches_without_record(self) -> None:
         expected = {"mode": "report_self", "machine_overall_status": "pass"}
         with patch("mvp.run_modes.run_report_self", return_value=expected) as runner:

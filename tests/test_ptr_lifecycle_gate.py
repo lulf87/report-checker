@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+from mvp.capabilities import validate_mode
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
 from mvp.run_store import RunStore, RunStoreError, _json, _now
 from mvp.worker_protocol import JobSpec, WorkerProtocolError
@@ -47,6 +48,14 @@ def _insert_legacy_ptr_run(store: RunStore, *, lifecycle: str) -> str:
 
 
 class PtrLifecycleGateTests(unittest.TestCase):
+    def test_ptr_report_alias_is_disabled_at_the_same_worker_boundary(self) -> None:
+        for mode in ("report_ptr", "report_ptr_report"):
+            with self.subTest(mode=mode):
+                decision = validate_mode(mode, operation="worker_job")
+                self.assertFalse(decision["enabled"])
+                self.assertEqual(decision["code"], "MODE_DISABLED")
+                self.assertEqual(decision["details"]["disabled_reason_code"], "PTR_NOT_VALIDATED")
+
     def test_worker_job_rejects_disabled_ptr_before_path_or_role_processing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

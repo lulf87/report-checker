@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
-PARSER_VERSION = "ptr-layout-1.1"
+PARSER_VERSION = "ptr-layout-1.2"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
@@ -212,7 +212,70 @@ def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any
                 child["figures"] = []
                 child["extraction_issues"] = ["INLINE_CLAUSE_SPLIT"]
             result.append(child)
-    return result
+    # Many PTRs write lettered sub-items as ``a) ...`` on separate lines
+    # inside one numeric clause.  The Report scope uses the stable form
+    # ``2.3.6.6a``; split those visual sub-items into the same identity while
+    # retaining the numeric parent as an auditable heading node.
+    letter_marker = re.compile(r"(?m)^[ \t]*(?P<letter>[a-z])\s*[)）](?=\s*)", re.IGNORECASE)
+    lettered: list[dict[str, Any]] = []
+    for node in result:
+        raw = "\n".join(node.get("parts", [node.get("text", "")]))
+        current_clause = _canonical_clause_id(str(node.get("clause_id") or ""))
+        if not current_clause or re.search(r"[a-z]$", current_clause, re.IGNORECASE):
+            lettered.append(node)
+            continue
+        matches = [match for match in letter_marker.finditer(raw) if match.group("letter")]
+        if not matches:
+            lettered.append(node)
+            continue
+        segments: list[dict[str, Any]] = []
+        prefix = raw[: matches[0].start()].strip()
+        base = dict(node)
+        # Keep the parent's complete source text for backwards-compatible
+        # evidence and parent-level comparisons; children provide the
+        # independently addressable lettered identities below.
+        base["parts"] = [raw]
+        base["title"] = (prefix.splitlines()[0] if prefix else str(node.get("title") or current_clause)).strip()
+        base["extraction_issues"] = [*node.get("extraction_issues", []), "LETTERED_CLAUSE_PARENT"]
+        segments.append(base)
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+            body = raw[match.end():end].strip()
+            if not body or body.startswith("～") or body.startswith("~"):
+                continue
+            letter = str(match.group("letter")).lower()
+            clause = f"{current_clause}{letter}"
+            child = dict(node)
+            role = str(node.get("role") or "ptr")
+            sequence = child.get("sequence")
+            child["clause_id"] = clause
+            child["parent_clause_id"] = current_clause
+            child["node_id"] = (
+                f"{role}:item:{sequence}:clause:{clause}"
+                if role == "report" and sequence is not None
+                else f"{role}:clause:{clause}"
+            )
+            child["title"] = body.splitlines()[0] if body else clause
+            child["parts"] = [body]
+            child["table_rows"] = []
+            child["figures"] = []
+            child["extraction_issues"] = [*node.get("extraction_issues", []), "INLINE_LETTERED_CLAUSE_SPLIT"]
+            segments.append(child)
+        if len(segments) == 1:
+            lettered.append(node)
+        else:
+            lettered.extend(segments)
+    # A single Report sequence can legitimately contain repeated lettered
+    # clauses from separate physical rows.  Keep the clause key for mapping,
+    # but make the evidence identity unique so Coverage Ledger conservation
+    # can distinguish the two observations instead of collapsing them.
+    occurrences: dict[str, int] = {}
+    for node in lettered:
+        node_id = str(node.get("node_id") or "")
+        occurrences[node_id] = occurrences.get(node_id, 0) + 1
+        if occurrences[node_id] > 1:
+            node["node_id"] = f"{node_id}:occurrence{occurrences[node_id]}"
+    return lettered
 
 
 def _table(page: fitz.Page, table: Any, digest: str, lines: Sequence[Mapping[str, Any]], index: int) -> dict[str, Any]:

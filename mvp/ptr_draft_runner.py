@@ -173,6 +173,8 @@ def run_ptr_draft(
             for role in ("report", "ptr")
         ],
         "scope": comparison["scope"],
+        "coverage_audit": comparison.get("coverage_audit"),
+        "reference_audit": comparison.get("reference_audit"),
         "coverage_ledger": comparison["coverage_ledger"],
         "coverage": comparison["summary"],
         "status_counts": {

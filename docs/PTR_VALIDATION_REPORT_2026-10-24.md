@@ -2,7 +2,7 @@
 
 日期：2026-10-24
 分支：`codex/ptr-report-comparison`
-规则草案：`PTR-P01@0.3.0-draft`
+规则草案：`PTR-P01@0.4.0-draft`
 
 ## 已验证的执行链
 
@@ -14,8 +14,9 @@
 4. 对文本、数值、单位、标准/表格引用和覆盖关系执行规则比较。
 5. 表格引用如果没有双方可确认的行列矩阵，状态为 `manual`；OCR 候选也只能为 `manual`。
 6. `rules+llm` 只生成文本歧义队列；表格结构不足、数值、单位、范围和引用硬差异不会被送入可清除文本结论的队列。LLM 引文必须逐字存在于原文，且不能修改数值、单位、范围或引用。
+7. 覆盖审计会显式记录声明范围中没有任何双方节点的 `SCOPE_ITEM_UNACCOUNTED`；表格/附录多候选、缺失绑定和循环引用进入 `reference_audit` 并保持人工复核。
 
-本轮补充了内联条款拆分：当 PDF 把子条款写成 `2.10.1.2.1，…`、`2.10.1.2.2. …` 或 `2.11.4碰撞保护` 时，PTR 和 Report 两侧都会按条款号建立独立节点；只有换行/标点边界且候选是当前条款的子项或同级项才拆分，`符合：2.1.4 的要求` 仍保留在正文。0775 的四个子条款现在均有双方节点和唯一账本映射，`eligible == accounted` 且 `conserved=true`。
+本轮补充了内联条款拆分：当 PDF 把子条款写成 `2.10.1.2.1，…`、`2.10.1.2.2. …`、`2.11.4碰撞保护` 或独立行 `a)`/`b)` 时，PTR 和 Report 两侧都会按条款号建立独立节点；只有换行/标点边界且候选是当前条款的子项或同级项才拆分，`符合：2.1.4 的要求` 仍保留在正文。0775 的四个子条款和 0780 的字母子项现在均能建立双方节点并保持唯一账本身份，`eligible == accounted` 且 `conserved=true`。
 
 另有 `mvp.ptr_draft_runner.run_ptr_draft()` 将上述结果写成可浏览的 `result.json` 和 `index.html`。它使用独立的 `report_ptr_draft` mode 名称，不注册到正式 Run/Worker，且始终 `publishable=false`。`mvp.ptr_compare.run_llm_reviews()` 提供显式 provider 注入点；没有注入 provider 时不会调用模型。
 
@@ -51,11 +52,11 @@
 ### 2948
 
 - PTR 的 `2.4.1`、`2.4.2` 条款号与标题在 PDF 中分列，按同一视觉行合并后分别进入账本，均与 Report 匹配。
-- 同一 Report 序号下的 `2.1.13`、`2.1.14` 续行不会再被前条款的表格状态吞掉；当前 2948 试点账本 22 个纳入项全部 `matched`。
+- 同一 Report 序号下的 `2.1.13`、`2.1.14` 续行不会再被前条款的表格状态吞掉；补充 `a)`/`b)` 子项后，当前 2948 试点账本 34 个纳入项全部 `matched`。
 
 ### 0775
 
-- 文本措辞差异保守进入人工队列；当前规则账本为 141 个 `matched`、3 个确定性硬差异、47 个 `manual`，没有把措辞差异直接当成硬错误。
+- 文本措辞差异保守进入人工队列；当前规则账本为 148 个 `matched`、3 个确定性硬差异、48 个 `manual`，没有把措辞差异直接当成硬错误。
 
 ### 2795
 
@@ -77,19 +78,20 @@
 在项目 `.venv`（Python 3.13）中，PTR 比较相关回归通过：
 
 ```text
-test_ptr_compare.py  24 tests OK
+test_ptr_compare.py  29 tests OK
 test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
 test_ptr_draft_runner.py  2 tests OK
 test_ptr_review_package.py  1 test OK
-test_ptr_acceptance.py  3 tests OK
-test_ptr_lifecycle_gate.py  4 tests OK
+test_ptr_acceptance.py  6 tests OK
+test_ptr_lifecycle_gate.py  5 tests OK
+unittest discover -s tests -q  420 tests OK
 git diff --check       OK
 ```
 
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
-三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v4/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。`mvp.ptr_acceptance` 对已填写的 Codex 离线复核结果返回 `status=ready_for_signoff`，但 `can_enable_report_ptr=false`，仍需业务签字确认。
+三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v5/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据、规则版本和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。`mvp.ptr_acceptance` 对已填写的 Codex 离线复核结果返回 `status=ready_for_signoff`，但 `can_enable_report_ptr=false`，仍需业务签字确认。
 
 本轮增加了验收门与正式 Run 生命周期的闭环诊断。验收结果中的 `capability_gate` 明确记录：即使三份试点均为 `ready`，目录中的 `report_ptr` 仍是 `disabled`，原因码仍为 `PTR_NOT_VALIDATED`，下一步只能是 `BUSINESS_SIGNOFF_REQUIRED`。`preflight` 的效果是返回带范围和输入角色的阻断计划（`can_create_run=false`）；`create_run` 返回 `MODE_DISABLED`；Worker JobSpec、coordinator 和 publish 闸门也都拒绝同一原因码。针对旧数据库中可能遗留的 queued/running PTR 行，回归测试确认不会启动 Worker、不会生成空 Finding，也不会发布 `succeeded` Run。
 

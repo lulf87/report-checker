@@ -85,6 +85,117 @@ class PtrAcceptanceGateTests(unittest.TestCase):
                 self.assertEqual(check["code"], "MODE_DISABLED")
                 self.assertEqual(check["disabled_reason_code"], "PTR_NOT_VALIDATED")
 
+    def test_acceptance_rejects_a_reviewed_package_marked_publishable(self) -> None:
+        report = next((ROOT / "素材/report/1539").glob("*.pdf"))
+        ptr = next((ROOT / "素材/ptr/1539").glob("*.pdf"))
+        with tempfile.TemporaryDirectory() as temporary:
+            batch = Path(temporary)
+            sample_dir = batch / "1539"
+            build_ptr_review_package(report_path=report, ptr_path=ptr, output_dir=sample_dir, ocr_mode="never")
+            rows = list(csv.DictReader((sample_dir / "review.csv").read_text(encoding="utf-8").splitlines()))
+            for row in rows:
+                machine = row["decision"]
+                row["review_status"] = "excluded" if machine == EXCLUDED else "confirmed"
+                row["review_decision"] = {
+                    EXCLUDED: "confirm_excluded",
+                    MATCHED: "confirm_match",
+                    MISMATCH: "confirm_mismatch",
+                    MANUAL: "confirm_manual",
+                }[machine]
+            filled = sample_dir / "filled.csv"
+            with filled.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            apply_review_csv(
+                manifest_path=sample_dir / "manifest.json",
+                csv_path=filled,
+                output_path=sample_dir / "reviewed.json",
+                reviewer="Codex test reviewer",
+            )
+            reviewed_path = sample_dir / "reviewed.json"
+            reviewed = json.loads(reviewed_path.read_text(encoding="utf-8"))
+            reviewed["publishable"] = True
+            reviewed_path.write_text(json.dumps(reviewed, ensure_ascii=False), encoding="utf-8")
+            result = audit_review_batch(root=ROOT, batch_dir=batch, samples=("1539",))
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["samples"][0]["reason_code"], "REVIEWED_PACKAGE_PUBLISHABLE")
+        self.assertFalse(result["samples"][0]["package_policy_ok"])
+
+    def test_acceptance_rejects_a_reviewed_package_from_an_old_rule_version(self) -> None:
+        report = next((ROOT / "素材/report/1539").glob("*.pdf"))
+        ptr = next((ROOT / "素材/ptr/1539").glob("*.pdf"))
+        with tempfile.TemporaryDirectory() as temporary:
+            batch = Path(temporary)
+            sample_dir = batch / "1539"
+            build_ptr_review_package(report_path=report, ptr_path=ptr, output_dir=sample_dir, ocr_mode="never")
+            manifest_path = sample_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["rule"]["version"] = "0.3.0-draft"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            rows = list(csv.DictReader((sample_dir / "review.csv").read_text(encoding="utf-8").splitlines()))
+            for row in rows:
+                machine = row["decision"]
+                row["review_status"] = "excluded" if machine == EXCLUDED else "confirmed"
+                row["review_decision"] = {
+                    EXCLUDED: "confirm_excluded",
+                    MATCHED: "confirm_match",
+                    MISMATCH: "confirm_mismatch",
+                    MANUAL: "confirm_manual",
+                }[machine]
+            filled = sample_dir / "filled.csv"
+            with filled.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            apply_review_csv(
+                manifest_path=manifest_path,
+                csv_path=filled,
+                output_path=sample_dir / "reviewed.json",
+                reviewer="Codex test reviewer",
+            )
+            result = audit_review_batch(root=ROOT, batch_dir=batch, samples=("1539",))
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["samples"][0]["reason_code"], "REVIEW_RULE_VERSION_MISMATCH")
+        self.assertFalse(result["samples"][0]["rule_version_ok"])
+
+    def test_acceptance_rejects_machine_coverage_that_was_not_conserved(self) -> None:
+        report = next((ROOT / "素材/report/1539").glob("*.pdf"))
+        ptr = next((ROOT / "素材/ptr/1539").glob("*.pdf"))
+        with tempfile.TemporaryDirectory() as temporary:
+            batch = Path(temporary)
+            sample_dir = batch / "1539"
+            build_ptr_review_package(report_path=report, ptr_path=ptr, output_dir=sample_dir, ocr_mode="never")
+            manifest_path = sample_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["coverage_audit"]["status"] = "incomplete"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            rows = list(csv.DictReader((sample_dir / "review.csv").read_text(encoding="utf-8").splitlines()))
+            for row in rows:
+                machine = row["decision"]
+                row["review_status"] = "excluded" if machine == EXCLUDED else "confirmed"
+                row["review_decision"] = {
+                    EXCLUDED: "confirm_excluded",
+                    MATCHED: "confirm_match",
+                    MISMATCH: "confirm_mismatch",
+                    MANUAL: "confirm_manual",
+                }[machine]
+            filled = sample_dir / "filled.csv"
+            with filled.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            apply_review_csv(
+                manifest_path=manifest_path,
+                csv_path=filled,
+                output_path=sample_dir / "reviewed.json",
+                reviewer="Codex test reviewer",
+            )
+            result = audit_review_batch(root=ROOT, batch_dir=batch, samples=("1539",))
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["samples"][0]["reason_code"], "MACHINE_COVERAGE_INCOMPLETE")
+        self.assertFalse(result["samples"][0]["machine_coverage_ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

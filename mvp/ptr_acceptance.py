@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mvp.capabilities import validate_mode
+from mvp.ptr_compare import PTR_COMPARE_RULE_ID, PTR_COMPARE_RULE_VERSION
 
 
 PTR_ACCEPTANCE_SCHEMA_VERSION = "ptr-acceptance-gate-0.1"
@@ -92,6 +93,18 @@ def audit_review_batch(
             inputs = reviewed.get("machine_inputs") or {}
             actions = (reviewed.get("review") or {}).get("actions") or []
             complete = bool((reviewed.get("review") or {}).get("review_complete"))
+            package_policy_ok = reviewed.get("publishable") is False
+            machine_rule = reviewed.get("machine_rule") or {}
+            rule_version_ok = (
+                machine_rule.get("id") == PTR_COMPARE_RULE_ID
+                and machine_rule.get("version") == PTR_COMPARE_RULE_VERSION
+            )
+            machine_summary = reviewed.get("machine_summary") or {}
+            machine_coverage = reviewed.get("machine_coverage_audit") or {}
+            machine_coverage_ok = (
+                machine_summary.get("conserved") is True
+                and machine_coverage.get("status") == "conserved"
+            )
             source_ok = True
             source_checks = []
             for role in ("report", "ptr"):
@@ -106,18 +119,42 @@ def audit_review_batch(
                 source_ok = source_ok and matches
             action_keys = {str(action.get("ledger_id")) for action in actions}
             ledger = reviewed.get("machine_ledger") or []
-            coverage_ok = len(action_keys) == len(ledger) and all(
+            coverage_ok = len(actions) == len(ledger) and len(action_keys) == len(ledger) and all(
                 str(entry.get("id")) in action_keys for entry in ledger
             )
+            ready = (
+                complete
+                and source_ok
+                and coverage_ok
+                and package_policy_ok
+                and rule_version_ok
+                and machine_coverage_ok
+            )
+            if ready:
+                reason_code = None
+            elif not rule_version_ok:
+                reason_code = "REVIEW_RULE_VERSION_MISMATCH"
+            elif not machine_coverage_ok:
+                reason_code = "MACHINE_COVERAGE_INCOMPLETE"
+            elif not package_policy_ok:
+                reason_code = "REVIEWED_PACKAGE_PUBLISHABLE"
+            elif not coverage_ok:
+                reason_code = "REVIEW_ACTION_COVERAGE_INCOMPLETE"
+            else:
+                reason_code = "REVIEW_GATE_INCOMPLETE"
             item.update(
                 {
-                    "ready": complete and source_ok and coverage_ok and reviewed.get("publishable") is False,
+                    "ready": ready,
                     "review_complete": complete,
+                    "package_policy_ok": package_policy_ok,
+                    "rule_version_ok": rule_version_ok,
+                    "machine_rule": machine_rule,
+                    "machine_coverage_ok": machine_coverage_ok,
                     "source_checks": source_checks,
                     "action_count": len(actions),
                     "ledger_count": len(ledger),
                     "coverage_ok": coverage_ok,
-                    "reason_code": None if complete and source_ok and coverage_ok else "REVIEW_GATE_INCOMPLETE",
+                    "reason_code": reason_code,
                 }
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:

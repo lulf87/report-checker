@@ -23,6 +23,8 @@ class PtrDraftRunnerTests(unittest.TestCase):
             self.assertEqual(result["rule_execution_states"]["PTR-P01"]["state"], "succeeded")
             self.assertTrue(result["source_integrity"])
             self.assertTrue(result["coverage_ledger"])
+            self.assertEqual(result["coverage_audit"]["status"], "conserved")
+            self.assertEqual(result["reference_audit"]["status"], "resolved")
             self.assertTrue((output / "result.json").is_file())
             self.assertTrue((output / "index.html").is_file())
             saved = json.loads((output / "result.json").read_text(encoding="utf-8"))

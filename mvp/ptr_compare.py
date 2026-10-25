@@ -44,8 +44,8 @@ from mvp.ptr_ocr import iter_ptr_ocr_lines
 from mvp.ptr_llm import build_review_task, validate_llm_review
 
 
-PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.3"
-PTR_COMPARE_RULE_VERSION = "0.3.0-draft"
+PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.4"
+PTR_COMPARE_RULE_VERSION = "0.4.0-draft"
 PTR_COMPARE_RULE_ID = "PTR-P01"
 
 MATCHED = "matched"
@@ -132,7 +132,12 @@ def _canonical_clause_id(value: str) -> str:
 
 def _clause_parent(clause_id: str) -> str | None:
     parts = clause_id.split(".")
-    return ".".join(parts[:-1]) if len(parts) > 1 else None
+    if len(parts) <= 1:
+        return None
+    last = re.fullmatch(r"(\d+)([a-z])", parts[-1], re.IGNORECASE)
+    if last:
+        return ".".join([*parts[:-1], last.group(1)])
+    return ".".join(parts[:-1])
 
 
 def _clause_sort_key(clause_id: str) -> tuple[tuple[int, Any], ...]:
@@ -734,6 +739,90 @@ def _table_cell_items(value: Any) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _reference_cycle_candidates(nodes: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Find table-to-table reference cycles from extracted table evidence.
+
+    This is intentionally a candidate detector.  A cycle is never resolved by
+    guessing an expansion order; callers keep the affected comparison rows in
+    manual review.
+    """
+
+    labels_to_ids: defaultdict[str, set[str]] = defaultdict(set)
+    table_text: dict[str, str] = {}
+
+    def referenced_labels(value: str) -> list[str]:
+        text = normalize_comparison_text(value)
+        return sorted(
+            {
+                normalize_comparison_text(match.group(1))
+                for match in re.finditer(
+                    r"(?:见|参见|详见|参考|依据|按照|符合|参照)\s*"
+                    r"(表\s*[0-9A-Za-z一二三四五六七八九十]+|附录\s*[A-Za-z一二三四五六七八九十]+)",
+                    text,
+                )
+            }
+        )
+
+    for node in nodes:
+        role = str(node.get("role") or "document")
+        node_id = str(node.get("node_id") or "node")
+        for index, table in enumerate(node.get("table_rows") or [], start=1):
+            if not isinstance(table, Mapping):
+                continue
+            label = compact(str(table.get("label") or table.get("caption") or ""))
+            table_id = str(table.get("table_id") or f"{role}:{node_id}:table:{index}")
+            if not label:
+                continue
+            labels_to_ids[label].add(table_id)
+            rows = table.get("rows") or []
+            row_text = "\n".join(
+                " ".join(str(cell or "") for cell in row)
+                for row in rows
+                if isinstance(row, Sequence) and not isinstance(row, (str, bytes))
+            )
+            # The caption identifies the current table; it is not a reference
+            # to another table and must not create a self-cycle.
+            table_text[table_id] = row_text
+    edges: defaultdict[str, set[str]] = defaultdict(set)
+    for source_id, text in table_text.items():
+        source_label = next((label for label, ids in labels_to_ids.items() if source_id in ids), None)
+        if not source_label:
+            continue
+        for target_label in referenced_labels(text):
+            target_key = compact(target_label)
+            if target_key in labels_to_ids:
+                edges[source_label].add(target_key)
+
+    cycles: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def visit(start: str, current: str, path: list[str], active: set[str]) -> None:
+        for target in sorted(edges.get(current, ())):
+            if target == start:
+                cycle = path[:]
+                rotations = [tuple(cycle[index:] + cycle[:index]) for index in range(len(cycle))]
+                key = min(rotations)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cycles.append(
+                    {
+                        "labels": list(key),
+                        "table_ids": sorted(
+                            {table_id for label in key for table_id in labels_to_ids.get(label, set())}
+                        ),
+                        "status": "manual",
+                        "reason_code": "REFERENCE_CYCLE_CANDIDATE",
+                    }
+                )
+            elif target not in active:
+                visit(start, target, [*path, target], active | {target})
+
+    for label in sorted(edges):
+        visit(label, label, [label], {label})
+    return cycles
+
+
 def _semantic_table_fingerprint(rows: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Group vertically continued rows by their first physical column."""
 
@@ -976,10 +1065,41 @@ def _scope_decision(scope: Mapping[str, Any], clause_id: str) -> tuple[str, str]
     return EXCLUDED, "OUT_OF_SCOPE"
 
 
+def _scope_clause_ids(scope: Mapping[str, Any]) -> list[str]:
+    """Return the normalized, declared scope items in stable order."""
+
+    if scope.get("status") != "parsed":
+        return []
+    values = {str(value) for value in scope.get("included_clause_ids", []) if str(value).strip()}
+    return sorted(values, key=_clause_sort_key)
+
+
+def _entry_covers_scope(entry: Mapping[str, Any], scope_id: str) -> bool:
+    clause_id = str(entry.get("clause_id") or "")
+    return bool(clause_id and _is_descendant(clause_id, scope_id))
+
+
 def _ocr_derived(node: Mapping[str, Any]) -> bool:
     """Return true when any evidence for a node came from local OCR."""
 
     return any(str(item.get("extraction_method", "")).startswith("ocr:") for item in node.get("evidence", []))
+
+
+def _reference_binding_status(node: Mapping[str, Any]) -> tuple[str, str | None]:
+    """Return whether every printed table/appendix token has one target."""
+
+    labels = list((node.get("references") or {}).get("tables", []) or [])
+    if not labels:
+        return MATCHED, None
+    bindings = list(node.get("reference_bindings") or [])
+    if len(bindings) != len(labels):
+        return MANUAL, "REFERENCE_BINDING_UNRESOLVED"
+    statuses = {str(item.get("status")) for item in bindings if isinstance(item, Mapping)}
+    if statuses & {"ambiguous", "unresolved"}:
+        return MANUAL, "REFERENCE_BINDING_UNRESOLVED"
+    if not statuses or not statuses.issubset({"bound", "bound_physical_rows"}):
+        return MANUAL, "REFERENCE_BINDING_UNRESOLVED"
+    return MATCHED, None
 
 
 def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_children: bool) -> dict[str, Any]:
@@ -1003,6 +1123,14 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     ptr_refs = ptr.get("references") or _references(ptr.get("text"))
     report_refs = report.get("references") or _references(report.get("text"))
     reference_status = MATCHED if ptr_refs == report_refs else MISMATCH
+    ptr_binding_status, ptr_binding_reason = _reference_binding_status(ptr)
+    report_binding_status, report_binding_reason = _reference_binding_status(report)
+    binding_status = (
+        MATCHED
+        if ptr_binding_status == MATCHED and report_binding_status == MATCHED
+        else MANUAL
+    )
+    binding_reason = ptr_binding_reason or report_binding_reason
     ptr_units = list(ptr.get("unit_labels") or _unit_labels(ptr.get("text")))
     report_units = list(report.get("unit_labels") or _unit_labels(report.get("text")))
     ptr_raw_units = {unit for _, _, unit in (ptr.get("raw_numeric_signature") or _raw_numeric_signature(ptr.get("text"))) if unit}
@@ -1036,6 +1164,9 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     elif reference_status == MISMATCH:
         decision = MISMATCH
         decision_reason = "REFERENCE_MISMATCH"
+    elif binding_status != MATCHED:
+        decision = MANUAL
+        decision_reason = binding_reason or "REFERENCE_BINDING_UNRESOLVED"
     else:
         decision = text_status
         decision_reason = reason
@@ -1063,6 +1194,8 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
         },
         "reference_comparison": {
             "status": reference_status,
+            "binding_status": binding_status,
+            "binding_reason_code": binding_reason,
             "ptr": ptr_refs,
             "report": report_refs,
             "ptr_bindings": list(ptr.get("reference_bindings") or []),
@@ -1083,15 +1216,16 @@ def _ledger_entry(
     *,
     ptr: Mapping[str, Any] | None,
     reports: Sequence[Mapping[str, Any]],
+    clause_id: str | None = None,
     scope_decision: str,
     scope_reason: str,
     comparison: Mapping[str, Any] | None,
     decision: str,
     reason_code: str,
 ) -> dict[str, Any]:
-    clause_id = str((ptr or reports[0]).get("clause_id"))
+    clause_id = str(clause_id or (ptr or reports[0]).get("clause_id"))
     report_ids = [str(item["node_id"]) for item in reports]
-    identity = str(ptr["node_id"]) if ptr else "|".join(report_ids)
+    identity = str(ptr["node_id"]) if ptr else "|".join(report_ids) or f"scope:{clause_id}"
     return {
         "id": f"comparison:{clause_id}:{identity}",
         "ptr_node_id": str(ptr["node_id"]) if ptr else None,
@@ -1136,6 +1270,10 @@ def compare_ptr_report(
     report = extract_report_clauses(report_path)
     ptr = extract_ptr_clauses(ptr_path, ocr_mode=ocr_mode)
     scope = report["scope"]
+    ptr_reference_cycles = _reference_cycle_candidates(ptr["nodes"])
+    report_reference_cycles = _reference_cycle_candidates(report["nodes"])
+    ptr_cycle_labels = {label for cycle in ptr_reference_cycles for label in cycle.get("labels", [])}
+    report_cycle_labels = {label for cycle in report_reference_cycles for label in cycle.get("labels", [])}
     ptr_by_clause = {str(node["clause_id"]): node for node in ptr["nodes"]}
     report_by_clause = report["nodes_by_clause"]
     children: defaultdict[str, set[str]] = defaultdict(set)
@@ -1266,6 +1404,62 @@ def compare_ptr_report(
                     reason_code=reason,
                 )
             )
+    # A declared scope item can be absent from both extracted sides.  Keep an
+    # explicit, evidence-free ledger row for that hole instead of letting the
+    # summary count the already-observed rows as if the whole ScopeSet were
+    # covered.  This row is deliberately ineligible for automatic success.
+    declared_scope_ids = _scope_clause_ids(scope)
+    accounted_scope_ids = {
+        scope_id
+        for scope_id in declared_scope_ids
+        if any(
+            entry.get("decision") != EXCLUDED and _entry_covers_scope(entry, scope_id)
+            for entry in ledger
+        )
+    }
+    missing_scope_ids = [scope_id for scope_id in declared_scope_ids if scope_id not in accounted_scope_ids]
+    for scope_id in missing_scope_ids:
+        if ptr["diagnostics"].get("status") != "parsed" or report["diagnostics"].get("status") != "parsed":
+            decision, reason = MANUAL, "SCOPE_ITEM_UNACCOUNTED"
+        else:
+            decision, reason = MISMATCH, "SCOPE_ITEM_UNACCOUNTED"
+        ledger.append(
+            _ledger_entry(
+                ptr=None,
+                reports=[],
+                clause_id=scope_id,
+                scope_decision="eligible",
+                scope_reason="SCOPE_INCLUDED",
+                comparison=None,
+                decision=decision,
+                reason_code=reason,
+            )
+        )
+    # A table-to-table reference cycle has no safe deterministic expansion
+    # order.  Keep affected rows manual even when the surrounding text and
+    # numeric facts happen to look identical.
+    for entry in ledger:
+        if entry.get("decision") == EXCLUDED:
+            continue
+        ptr_node = next((node for node in ptr["nodes"] if str(node.get("node_id")) == str(entry.get("ptr_node_id"))), None)
+        report_nodes = [
+            node
+            for node in report["nodes"]
+            if str(node.get("node_id")) in {str(value) for value in entry.get("report_item_ids", [])}
+        ]
+        ptr_labels = set((ptr_node or {}).get("references", {}).get("tables", []) or [])
+        report_labels = {
+            label
+            for node in report_nodes
+            for label in (node.get("references", {}).get("tables", []) or [])
+        }
+        if ptr_labels & ptr_cycle_labels or report_labels & report_cycle_labels:
+            entry["decision"] = MANUAL
+            entry["reason_code"] = "REFERENCE_CYCLE_CANDIDATE"
+            comparison = entry.get("reference_comparison")
+            if isinstance(comparison, dict):
+                comparison["cycle_status"] = MANUAL
+                comparison["cycle_reason_code"] = "REFERENCE_CYCLE_CANDIDATE"
     counts = {MATCHED: 0, MISMATCH: 0, MANUAL: 0, EXCLUDED: 0}
     for entry in ledger:
         counts[str(entry["decision"])] = counts.get(str(entry["decision"]), 0) + 1
@@ -1278,6 +1472,17 @@ def compare_ptr_report(
     else:
         overall = MANUAL
     eligible_count = sum(1 for entry in ledger if entry["decision"] != EXCLUDED)
+    accounted_count = sum(
+        1
+        for entry in ledger
+        if entry["decision"] != EXCLUDED and (entry.get("ptr_node_id") or entry.get("report_item_ids"))
+    )
+    unaccounted_ledger_ids = [
+        str(entry["id"])
+        for entry in ledger
+        if entry["decision"] != EXCLUDED
+        and not (entry.get("ptr_node_id") or entry.get("report_item_ids"))
+    ]
     llm_queue: list[dict[str, Any]] = []
     if comparison_mode == "rules+llm":
         ptr_by_id = {str(node["node_id"]): node for node in ptr["nodes"]}
@@ -1324,8 +1529,24 @@ def compare_ptr_report(
             "decision": overall,
             "counts": counts,
             "eligible": eligible_count,
-            "accounted": sum(1 for entry in ledger if entry["decision"] != EXCLUDED),
-            "conserved": len(ledger) == len({entry["id"] for entry in ledger}),
+            "accounted": accounted_count,
+            "conserved": (
+                len(ledger) == len({entry["id"] for entry in ledger})
+                and eligible_count == accounted_count
+                and not missing_scope_ids
+            ),
+        },
+        "coverage_audit": {
+            "status": "conserved" if not missing_scope_ids and eligible_count == accounted_count else "incomplete",
+            "declared_scope_ids": declared_scope_ids,
+            "accounted_scope_ids": sorted(accounted_scope_ids, key=_clause_sort_key),
+            "missing_scope_items": missing_scope_ids,
+            "unaccounted_ledger_ids": unaccounted_ledger_ids,
+        },
+        "reference_audit": {
+            "ptr_cycles": ptr_reference_cycles,
+            "report_cycles": report_reference_cycles,
+            "status": "manual" if ptr_reference_cycles or report_reference_cycles else "resolved",
         },
         "llm": {
             "used": False,

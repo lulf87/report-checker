@@ -32,6 +32,8 @@ class PtrReviewPackageTests(unittest.TestCase):
             saved = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["schema_version"], manifest["schema_version"])
             self.assertTrue(saved["rows"])
+            self.assertEqual(saved["coverage_audit"]["status"], "conserved")
+            self.assertEqual(saved["reference_audit"]["status"], "resolved")
             self.assertTrue(all(row["review_status"] in {"pending", "excluded"} for row in saved["rows"]))
             self.assertTrue(all(item["source_sha256"] for item in saved["inputs"].values()))
 
