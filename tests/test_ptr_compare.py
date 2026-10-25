@@ -15,6 +15,7 @@ from mvp.ptr_compare import (
     compare_ptr_report,
     extract_ptr_clauses,
     normalize_comparison_text,
+    run_llm_reviews,
 )
 from mvp.ptr_compare import _compare_text, _numeric_signature
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
@@ -147,6 +148,37 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(updated["coverage_ledger"][0]["decision"], MATCHED)
         self.assertEqual(updated["coverage_ledger"][0]["reason_code"], "LLM_VERIFIED_TEXT_EQUIVALENCE")
         self.assertTrue(updated["coverage_ledger"][0]["llm_review"]["task_input_sha256"])
+        self.assertFalse(updated["publishable"])
+
+    def test_provider_is_explicit_and_cannot_publish_the_draft(self) -> None:
+        result = {
+            "comparison_mode": "rules+llm",
+            "publishable": False,
+            "llm": {"review_queue": [build_review_task(
+                clause_id="2.1", reason_code="LLM_REVIEW_PENDING",
+                ptr_text="稳定输出", report_text="稳定输出", ptr_pages=[1], report_pages=[2]
+            )]},
+            "coverage_ledger": [{
+                "clause_id": "2.1", "decision": MANUAL, "reason_code": "LLM_REVIEW_PENDING",
+                "numeric_comparison": {"status": MATCHED}, "unit_comparison": {"status": MATCHED},
+                "reference_comparison": {"status": MATCHED}, "table_comparison": {"status": MATCHED},
+            }],
+            "summary": {"counts": {MATCHED: 0, MISMATCH: 0, MANUAL: 1, EXCLUDED: 0}},
+        }
+
+        class FakeProvider:
+            provider_id = "test-provider"
+            model_id = "test-model"
+
+            def review(self, task):
+                return {"decision": "equivalent", "missing_concepts": [], "extra_concepts": [],
+                        "numeric_claims": [], "text_evidence": [{"side": "ptr", "quote": "稳定输出", "page": 1}],
+                        "reason": "等价"}
+
+        updated = run_llm_reviews(result, FakeProvider())
+        self.assertTrue(updated["llm"]["used"])
+        self.assertEqual(updated["llm"]["provider_id"], "test-provider")
+        self.assertEqual(updated["coverage_ledger"][0]["decision"], MATCHED)
         self.assertFalse(updated["publishable"])
 
     def test_ocr_adapter_keeps_pdf_point_evidence(self) -> None:

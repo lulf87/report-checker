@@ -1306,6 +1306,51 @@ def apply_llm_review(
     return updated
 
 
+def run_llm_reviews(result: Mapping[str, Any], provider: Any) -> dict[str, Any]:
+    """Run an explicitly supplied provider over the bounded manual queue.
+
+    The provider is an injected object with ``review(task)``; this function is
+    never called by :func:`compare_ptr_report` or the Draft Runner. Every
+    response passes through :func:`apply_llm_review`, so a provider cannot
+    change a numeric, unit, reference, range, or table hard finding.
+    """
+
+    if result.get("comparison_mode") != "rules+llm":
+        raise PtrCompareError("只有 rules+llm 草案可以调用 LLM provider")
+    review = getattr(provider, "review", None)
+    if not callable(review):
+        raise PtrCompareError("LLM provider 必须提供 review(task) 方法")
+    updated = dict(result)
+    provider_id = str(getattr(provider, "provider_id", provider.__class__.__name__))
+    model_id = str(getattr(provider, "model_id", "unknown"))
+    responses: list[dict[str, Any]] = []
+    for task in list((updated.get("llm") or {}).get("review_queue") or []):
+        payload = review(task)
+        if not isinstance(payload, Mapping):
+            raise PtrCompareError("LLM provider 返回值必须是 JSON 对象")
+        updated = apply_llm_review(updated, str(task.get("clause_id")), payload)
+        responses.append(
+            {
+                "clause_id": task.get("clause_id"),
+                "input_sha256": task.get("input_sha256"),
+                "validated": True,
+            }
+        )
+    llm = dict(updated.get("llm") or {})
+    llm.update(
+        {
+            "used": bool(responses),
+            "status": "validated",
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "validated_responses": responses,
+        }
+    )
+    updated["llm"] = llm
+    updated["publishable"] = False
+    return updated
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="生成不可发布的 PTR 与 Report 规则核对草案")
     parser.add_argument("--report", required=True, type=Path)
@@ -1361,5 +1406,6 @@ __all__ = [
     "extract_ptr_clauses",
     "extract_report_clauses",
     "normalize_comparison_text",
+    "run_llm_reviews",
     "write_ptr_report_comparison",
 ]

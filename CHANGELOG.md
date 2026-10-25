@@ -14,6 +14,7 @@
 - 新增 `mvp/ptr_layout.py`：按 PDF 坐标重建 PTR 条款、图注和表格归属，并完整读取 Report 的合并“标准要求”列；无边框或无法绑定的表格继续进入人工复核。
 - 新增 `docs/PTR_VALIDATION_REPORT_2026-10-24.md`：记录 12 组样本的批量冒烟、关键人工验收断言、测试证据和正式启用门槛。
 - 新增 `mvp/ptr_draft_runner.py`：把规则比较结果写成可复核的 Draft Runner JSON/HTML，使用独立草案模式，不进入正式 Worker，也不会产生可发布 PTR 结论。
+- `rules+llm` 增加显式 provider 注入接口：只有调用方传入 provider 才会发起模型请求，返回结果仍须经过引文和硬规则验证。
 
 ## 1.2.7（2026-10-23）
 

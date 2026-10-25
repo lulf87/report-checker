@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 
 PTR_LLM_SCHEMA_VERSION = "ptr-llm-review-0.1"
@@ -22,6 +22,16 @@ ALLOWED_SIDES = {"ptr", "report"}
 
 class PtrLlmReviewError(ValueError):
     """Raised when an LLM review cannot be tied to source evidence."""
+
+
+class PtrLlmProvider(Protocol):
+    """Explicit provider seam; comparison code never instantiates it."""
+
+    provider_id: str
+    model_id: str
+
+    def review(self, task: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Return the constrained JSON payload for one review task."""
 
 
 def normalize_review_text(value: Any) -> str:
@@ -158,6 +168,7 @@ __all__ = [
     "ALLOWED_DECISIONS",
     "PTR_LLM_SCHEMA_VERSION",
     "PtrLlmReviewError",
+    "PtrLlmProvider",
     "build_review_task",
     "validate_llm_review",
 ]
