@@ -194,10 +194,9 @@ class PtrCompareSampleTests(unittest.TestCase):
         rules = compare_ptr_report(report_path, ptr_path, comparison_mode="rules")
         by_clause = {entry["clause_id"]: entry for entry in rules["coverage_ledger"]}
         self.assertEqual(rules["scope"]["included_clause_ids"], ["2.2", "2.5", "2.6"])
-        self.assertEqual(by_clause["2.2.2"]["decision"], MISMATCH)
-        self.assertEqual(by_clause["2.2.2"]["reason_code"], "NUMERIC_FACT_MISMATCH")
-        self.assertEqual(by_clause["2.2.6"]["decision"], MISMATCH)
-        self.assertEqual(by_clause["2.2.6"]["reason_code"], "NUMERIC_FACT_MISMATCH")
+        self.assertEqual(by_clause["2.2.2"]["decision"], MANUAL)
+        self.assertEqual(by_clause["2.2.2"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
+        self.assertEqual(by_clause["2.2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["decision"], MISMATCH)
         self.assertEqual(by_clause["2.1"]["decision"], EXCLUDED)
         self.assertTrue(rules["summary"]["conserved"])
@@ -207,8 +206,8 @@ class PtrCompareSampleTests(unittest.TestCase):
         report_path, ptr_path = sample_paths("1539")
         result = compare_ptr_report(report_path, ptr_path, comparison_mode="rules+llm")
         by_clause = {entry["clause_id"]: entry for entry in result["coverage_ledger"]}
-        self.assertEqual(by_clause["2.2.2"]["decision"], MISMATCH)
-        self.assertEqual(by_clause["2.2.6"]["decision"], MISMATCH)
+        self.assertEqual(by_clause["2.2.2"]["decision"], MANUAL)
+        self.assertEqual(by_clause["2.2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["decision"], MANUAL)
         self.assertEqual(by_clause["2.6"]["reason_code"], "LLM_REVIEW_PENDING")
         self.assertFalse(result["llm"]["used"])
@@ -230,6 +229,15 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.6.1"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
         self.assertEqual(result["summary"]["eligible"], result["summary"]["accounted"])
         self.assertTrue(all(entry["evidence"] for entry in result["coverage_ledger"]))
+
+    def test_0780_deep_lettered_scope_keeps_ledger_ids_unique(self) -> None:
+        report_path, ptr_path = sample_paths("0780")
+        result = compare_ptr_report(report_path, ptr_path)
+        ledger = result["coverage_ledger"]
+        self.assertTrue(result["summary"]["conserved"])
+        self.assertEqual(len(ledger), len({entry["id"] for entry in ledger}))
+        self.assertTrue(any(entry["clause_id"] == "2.3.6.6" for entry in ledger))
+        self.assertTrue(any(entry["clause_id"] == "2.3.13.1" for entry in ledger))
 
     def test_5782_without_text_layer_is_manual_instead_of_missing_or_mismatch(self) -> None:
         report_path, ptr_path = sample_paths("5782")

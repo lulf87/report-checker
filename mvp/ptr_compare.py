@@ -221,6 +221,16 @@ def _numeric_signature(value: Any) -> list[tuple[str, str, str]]:
     return result
 
 
+def _raw_numeric_signature(value: Any) -> list[tuple[str, str, str]]:
+    """Keep the written unit spelling for validating separate unit labels."""
+    text = normalize_comparison_text(value)
+    return [
+        (match.group("operator") or "", match.group("number"),
+         (match.group("unit") or "").replace("µ", "μ").replace("Ω", "Ω"))
+        for match in NUMBER_RE.finditer(text)
+    ]
+
+
 def _decimal_text(value: Decimal) -> str:
     if value == 0:
         return "0"
@@ -496,6 +506,7 @@ def _parse_clause_lines(
     for node in nodes:
         node["normalized_text"] = _text_for_comparison(node["text"])
         node["numeric_signature"] = _numeric_signature(node["text"])
+        node["raw_numeric_signature"] = _raw_numeric_signature(node["text"])
         node["references"] = _references(node["text"])
         node["unit_labels"] = _unit_labels(node["text"])
         node["is_heading_only"] = len(node["text"].splitlines()) == 1 and not node["numeric_signature"]
@@ -503,72 +514,13 @@ def _parse_clause_lines(
 
 
 def extract_ptr_clauses(ptr_path: str | Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
-    """Extract a 2.x requirement tree, optionally adding local OCR observations.
-
-    ``ocr_mode="auto"`` only invokes OCR when the native text layer cannot
-    produce any 2.x node.  OCR-derived nodes carry an ``ocr:*`` evidence
-    method and are kept manual by :func:`compare_ptr_report`; they are never
-    treated as native text facts.
-    """
-
+    """Extract product clauses and tables in physical reading order."""
+    from mvp.ptr_layout import extract_ptr_layout
     if ocr_mode not in {"auto", "never", "required"}:
         raise PtrCompareError("ocr_mode 必须是 auto、never 或 required")
-
-    path = Path(ptr_path).expanduser().resolve()
-    source_sha256 = sha256_file(path)
-    with fitz.open(path) as document:
-        page_count = document.page_count
-        text_length = sum(len(page.get_text("text")) for page in document)
-    nodes, diagnostics = _parse_clause_lines(_iter_text_lines(path), role="ptr", source_sha256=source_sha256)
-    ocr_diagnostics: dict[str, Any] = {
-        "status": "not_requested",
-        "reason_code": "PTR_OCR_NOT_NEEDED" if nodes and ocr_mode != "required" else None,
-        "used_backends": [],
-        "pages_with_text": [],
-    }
-    if (not nodes or ocr_mode == "required") and ocr_mode != "never":
-        ocr_lines, ocr_diagnostics = iter_ptr_ocr_lines(path)
-        if ocr_lines and (not nodes or ocr_mode == "required"):
-            ocr_nodes, ocr_parse = _parse_clause_lines(
-                ocr_lines,
-                role="ptr",
-                source_sha256=source_sha256,
-            )
-            if ocr_nodes:
-                nodes = ocr_nodes
-                diagnostics = ocr_parse
-                diagnostics["ocr_used"] = True
-                diagnostics["text_layer"] = False
-                diagnostics["status"] = "ocr_manual"
-                diagnostics["reason_code"] = "PTR_OCR_CANDIDATES_MANUAL"
-    diagnostics.setdefault("ocr_used", False)
-    table_pages = {
-        int(page)
-        for node in nodes
-        if (node.get("references") or {}).get("tables")
-        for page in node.get("pages", [])
-    }
-    ptr_tables = _extract_ptr_tables(path, source_sha256, pages=table_pages)
-    _attach_ptr_tables(nodes, ptr_tables)
-    diagnostics.update(
-        {
-            "page_count": page_count,
-            "source_sha256": source_sha256,
-            "text_length": text_length,
-            "status": diagnostics.get("status") or ("parsed" if nodes else "manual"),
-            "reason_code": diagnostics.get("reason_code") if nodes else "PTR_TEXT_LAYER_MISSING",
-            "ocr": ocr_diagnostics,
-            "table_count": len(ptr_tables),
-        }
-    )
-    return {
-        "schema_version": PTR_COMPARE_SCHEMA_VERSION,
-        "role": "ptr",
-        "path": str(ptr_path),
-        "source_sha256": source_sha256,
-        "nodes": nodes,
-        "diagnostics": diagnostics,
-    }
+    result = extract_ptr_layout(Path(ptr_path).expanduser().resolve(), ocr_mode=ocr_mode)
+    result["schema_version"] = PTR_COMPARE_SCHEMA_VERSION
+    return result
 
 
 def _report_cell_evidence_all(
@@ -876,48 +828,11 @@ def _report_nodes_from_item(
 
 
 def extract_report_clauses(report_path: str | Path) -> dict[str, Any]:
-    """Extract Report scope and product requirement nodes from formal tables."""
-
-    path = Path(report_path).expanduser().resolve()
-    source_sha256 = sha256_file(path)
-    scope = extract_report_scope(path)
-    with fitz.open(path) as document:
-        items, diagnostics = scan_report_items(document)
-        evidence_by_sequence = _report_cell_evidence_all(document, source_sha256)
-        report_nodes: list[dict[str, Any]] = []
-        formal_item_count = 0
-        for sequence, item in sorted(items.items()):
-            clause = _canonical_clause_id(str(item.get("clause") or ""))
-            if not clause.startswith("2."):
-                continue
-            formal_item_count += 1
-            evidence = evidence_by_sequence.get(sequence, {})
-            report_nodes.extend(_report_nodes_from_item(item, evidence=evidence, source_sha256=source_sha256))
-    # A Report may contain a parent and a nested child in separate rows.  Keep
-    # both candidates; ambiguity is handled by the comparison decision.
-    by_clause: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for node in report_nodes:
-        by_clause[node["clause_id"]].append(node)
-    source = scope.get("source") or {}
-    return {
-        "schema_version": PTR_COMPARE_SCHEMA_VERSION,
-        "role": "report",
-        "path": str(report_path),
-        "source_sha256": source_sha256,
-        "scope": scope,
-        "nodes": report_nodes,
-        "nodes_by_clause": dict(by_clause),
-        "diagnostics": {
-            "report_item_count": len(items),
-            "product_item_count": formal_item_count,
-            "product_node_count": len(report_nodes),
-            "scan": diagnostics,
-            "scope_status": scope.get("status"),
-            "scope_source": source,
-            "status": "parsed" if report_nodes else "manual",
-            "reason_code": None if report_nodes else "REPORT_PRODUCT_ITEMS_MISSING",
-        },
-    }
+    """Extract all physical requirement columns, excluding Report results."""
+    from mvp.ptr_layout import extract_report_layout
+    result = extract_report_layout(Path(report_path).expanduser().resolve())
+    result["schema_version"] = PTR_COMPARE_SCHEMA_VERSION
+    return result
 
 
 def _scope_decision(scope: Mapping[str, Any], clause_id: str) -> tuple[str, str]:
@@ -961,16 +876,25 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     reference_status = MATCHED if ptr_refs == report_refs else MISMATCH
     ptr_units = list(ptr.get("unit_labels") or _unit_labels(ptr.get("text")))
     report_units = list(report.get("unit_labels") or _unit_labels(report.get("text")))
+    ptr_raw_units = {unit for _, _, unit in (ptr.get("raw_numeric_signature") or _raw_numeric_signature(ptr.get("text"))) if unit}
+    report_raw_units = {unit for _, _, unit in (report.get("raw_numeric_signature") or _raw_numeric_signature(report.get("text"))) if unit}
     if ptr_units and report_units:
         unit_status = MATCHED if ptr_units == report_units else MISMATCH
     elif report_units:
         # A Report unit column is acceptable when it repeats a unit already
         # attached to a numeric fact.  A contradictory label is a hard issue.
-        report_fact_units = {unit for _, _, unit in report.get("numeric_signature", []) if unit}
-        unit_status = MATCHED if set(report_units).issubset(report_fact_units) else MISMATCH
+        if report_raw_units:
+            unit_status = MATCHED if set(report_units).issubset(report_raw_units) else MISMATCH
+        else:
+            report_fact_units = {unit for _, _, unit in report.get("numeric_signature", []) if unit}
+            unit_status = MATCHED if set(report_units).issubset(report_fact_units) else MISMATCH
     else:
         unit_status = MATCHED
-    if numeric_status == MISMATCH:
+    table_comparison = _table_comparison(ptr, report)
+    if numeric_status == MISMATCH and not (
+        table_comparison["status"] == MANUAL
+        and ((ptr_refs.get("tables") or report_refs.get("tables")))
+    ):
         decision = MISMATCH
         decision_reason = "NUMERIC_FACT_MISMATCH"
     elif unit_status == MISMATCH:
@@ -982,7 +906,13 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     else:
         decision = text_status
         decision_reason = reason
-    table_comparison = _table_comparison(ptr, report)
+    if (
+        table_comparison["status"] == MANUAL
+        and (ptr_refs.get("tables") or report_refs.get("tables"))
+        and numeric_status == MISMATCH
+    ):
+        decision = MANUAL
+        decision_reason = "TABLE_CONTENT_NOT_EXTRACTED"
     return {
         "title_comparison": {"status": text_status, "reason_code": reason},
         "text_comparison": {
@@ -1023,8 +953,9 @@ def _ledger_entry(
 ) -> dict[str, Any]:
     clause_id = str((ptr or reports[0]).get("clause_id"))
     report_ids = [str(item["node_id"]) for item in reports]
+    identity = str(ptr["node_id"]) if ptr else "|".join(report_ids)
     return {
-        "id": f"comparison:{clause_id}",
+        "id": f"comparison:{clause_id}:{identity}",
         "ptr_node_id": str(ptr["node_id"]) if ptr else None,
         "report_item_ids": report_ids,
         "clause_id": clause_id,
@@ -1107,7 +1038,11 @@ def compare_ptr_report(
             accounted_report_ids.update(str(item["node_id"]) for item in candidates)
             continue
         if not candidates:
-            if report["diagnostics"].get("status") != "parsed":
+            if ptr["diagnostics"].get("status") != "parsed":
+                decision, reason = MANUAL, str(
+                    ptr["diagnostics"].get("reason_code") or "PTR_UNREADABLE"
+                )
+            elif report["diagnostics"].get("status") != "parsed":
                 decision, reason = MANUAL, str(
                     report["diagnostics"].get("reason_code") or "REPORT_UNREADABLE"
                 )

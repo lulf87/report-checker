@@ -6,11 +6,12 @@
 - 新增 `mvp/ptr_scope.py` 及 0596、1539、2795 黄金范围夹具；范围解析仍只生成禁用态草案数据，不启用 PTR 自动结论。
 - `mvp/ptr_p01.py` 的 Report 范围候选改为引用 `ScopeSet`，证据标记为表格单元格提取；规则不确定时继续保留 `manual`。
 - 新增 `mvp/ptr_compare.py`：按范围、条款树、文本、数值/单位、标准/表格引用和覆盖关系生成不可发布的 PTR ↔ Report Coverage Ledger；支持 `rules` 与 `rules+llm` 入口，但当前只执行规则，LLM 不能覆盖硬差异或直接产生通过结论。
-- 新增 `tests/test_ptr_compare.py`：固化 0596 深层条款、1539 已知数值差异、2795 单位/表格人工队列、5782 无文字层人工复核，以及 `ug/μg` 和排版归一规则。
+- 新增 `tests/test_ptr_compare.py`：固化 0596 深层条款、1539 表格人工队列与单位归一后一致、2795 单位/表格人工队列、5782 无文字层人工复核，以及 `ug/μg` 和排版归一规则。
 - 更新 `docs/PTR_REPORT_COMPARISON_PLAN.md`，记录当前比较器边界、状态含义和后续启用门槛；`report_ptr` 能力继续保持禁用。
 - 新增 `mvp/ptr_ocr.py`：复用本机 Apple Vision/RapidOCR 为扫描 PTR 生成带 PDF 坐标和置信度的观察候选；没有 OCR 引擎或候选不稳定时保持 `manual`，不把 OCR 猜测当作通过。
 - 新增 `mvp/ptr_llm.py`：固定受约束 LLM 复核 JSON 和逐字引文校验；`apply_llm_review()` 只有在规则硬字段全部一致时才可消除文本人工项，结果仍不可发布。
 - PTR 比较器增加矢量表格行矩阵证据：双方表格规范化后完全一致才可作为表格匹配，否则继续人工复核，避免缺少行列时被文本相似度掩盖。
+- 新增 `mvp/ptr_layout.py`：按 PDF 坐标重建 PTR 条款、图注和表格归属，并完整读取 Report 的合并“标准要求”列；无边框或无法绑定的表格继续进入人工复核。
 
 ## 1.2.7（2026-10-23）
 
