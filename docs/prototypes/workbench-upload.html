@@ -112,6 +112,14 @@
     .comparison-card > .pdf-grid { flex: 1 0 420px; height: auto; min-height: 420px; }
     .comparison-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 0; padding: 14px 16px 7px; }
     .comparison-head h2 { margin: 0; font-size: 18px; }
+    .comparison-sources { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: stretch; margin: 0 16px 10px; }
+    .comparison-sources.single-source { grid-template-columns: minmax(0, 1fr); }
+    .source-card { min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+    .source-role { display: block; color: var(--muted); font-size: 11px; font-weight: 750; }
+    .source-name { display: block; margin-top: 2px; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .source-meta { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .source-link { display: grid; place-items: center; color: var(--teal); font-size: 18px; font-weight: 800; }
+    .brief-comparison { color: var(--ink); }
     .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin: 0 16px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
     .brief-copy { min-width: 0; }
     .brief-title { overflow: hidden; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
@@ -192,6 +200,8 @@
       .results-workspace:has(.comparison-card.visible) > .findings-card { max-height: 360px; border-right: 0; border-bottom: 1px solid var(--line); }
       .comparison-card { min-height: 760px; }
       .comparison-head, .comparison-brief { display: grid; }
+      .comparison-sources { grid-template-columns: 1fr; }
+      .source-link { min-height: 18px; transform: rotate(90deg); }
       .pdf-grid { grid-template-columns: 1fr; overflow: visible; }
       .pdf-pane { min-height: 620px; }
       .pdf-pane + .pdf-pane { border-top: 1px solid var(--line); border-left: 0; }
@@ -466,6 +476,19 @@
           <button type="button" class="secondary nav-button" id="next-finding" title="下一条（↓ 或 J）">下一条 ›</button>
         </div>
       </div>
+      <div class="comparison-sources single-source" id="comparison-sources" aria-label="本次核对文件">
+        <div class="source-card" id="source-report-card">
+          <span class="source-role" id="source-report-role">Report · 检验报告</span>
+          <strong class="source-name" id="source-report-name">—</strong>
+          <span class="source-meta" id="source-report-meta">等待运行结果</span>
+        </div>
+        <span class="source-link" id="source-link" aria-hidden="true">↔</span>
+        <div class="source-card" id="source-record-card" hidden>
+          <span class="source-role" id="source-record-role">对照文档</span>
+          <strong class="source-name" id="source-record-name">—</strong>
+          <span class="source-meta" id="source-record-meta">等待运行结果</span>
+        </div>
+      </div>
       <div class="comparison-brief" id="comparison-brief" aria-live="polite">
         <span class="finding-status manual">未选择</span>
         <div class="brief-copy"><div class="brief-title">请在左边选择一条结果</div><div class="brief-detail">核对完成后显示原始文件</div></div>
@@ -543,7 +566,7 @@
 
     const MODE_META = Object.freeze({
       self: { apiMode: "report_self", label: "报告自检", recordRole: null, note: "报告自检只需要检验报告。" },
-      ptr: { apiMode: "report_ptr", label: "Report + PTR", recordRole: "ptr", inputField: "ptr_document_id", documentLabel: "PTR", recordKind: "ptr", note: "需要检验报告和 PTR；规则优先，LLM 只辅助文本人工项。" },
+      ptr: { apiMode: "report_ptr", label: "检验报告 ↔ PTR 产品技术要求", recordRole: "ptr", inputField: "ptr_document_id", documentLabel: "PTR", paneLabel: "PTR 产品技术要求", recordKind: "ptr", note: "需要检验报告和 PTR；规则优先，LLM 只辅助文本人工项。" },
       record61: { apiMode: "report_record_9706_1", label: "报告 ↔ GB 9706.1 原始记录", recordRole: "record_9706_1", inputField: "record_document_id", documentLabel: "GB 9706.1 原始记录", recordKind: "record61", note: "需要检验报告和 GB 9706.1 原始记录。" },
       record202: { apiMode: "report_record_9706_202", label: "报告 ↔ GB 9706.202 原始记录", recordRole: "record_9706_202", inputField: "record_document_id", documentLabel: "GB 9706.202 原始记录（表 2）", recordKind: "record202", note: "需要检验报告和 GB 9706.202 原始记录（表 2）。" }
     });
@@ -572,6 +595,16 @@
     const comparisonCard = document.getElementById("comparison-card");
     const comparisonModeLabel = document.getElementById("comparison-mode-label");
     const comparisonBrief = document.getElementById("comparison-brief");
+    const comparisonSources = document.getElementById("comparison-sources");
+    const sourceReportCard = document.getElementById("source-report-card");
+    const sourceReportRole = document.getElementById("source-report-role");
+    const sourceReportName = document.getElementById("source-report-name");
+    const sourceReportMeta = document.getElementById("source-report-meta");
+    const sourceLink = document.getElementById("source-link");
+    const sourceRecordCard = document.getElementById("source-record-card");
+    const sourceRecordRole = document.getElementById("source-record-role");
+    const sourceRecordName = document.getElementById("source-record-name");
+    const sourceRecordMeta = document.getElementById("source-record-meta");
     const modeCards = document.getElementById("mode-cards");
     const verdictCard = document.getElementById("verdict-card");
     const verdictText = document.getElementById("verdict-text");
@@ -949,9 +982,13 @@
     function sourceDocument(role) {
       const source = activeDocuments[role] || (activeRun?.run_inputs || []).find(item => item.role === role);
       if (!source) return null;
+      const name = source.original_filename || source.filename || source.name || role;
       return {
         id: source.document_id || source.id,
-        name: source.original_filename || source.filename || source.name || role
+        name,
+        original_filename: name,
+        page_count: Number(source.page_count || source.pages || 0) || null,
+        role
       };
     }
 
@@ -963,6 +1000,34 @@
         if (item) result[role] = { ...(result[role] || {}), ...item, role };
       });
       return result;
+    }
+
+    function sourceMetaText(documentInfo) {
+      if (!documentInfo) return "未读取文件";
+      const pages = Number(documentInfo.page_count || documentInfo.pages || 0);
+      return pages > 0 ? `${pages} 页 PDF · 已上传` : "PDF · 已上传";
+    }
+
+    function renderComparisonSources(mode) {
+      const meta = MODE_META[mode] || MODE_META.self;
+      const report = sourceDocument("report");
+      const record = meta.recordRole ? sourceDocument(meta.recordRole) : null;
+      sourceReportRole.textContent = "Report · 检验报告";
+      sourceReportName.textContent = report?.name || "检验报告文件";
+      sourceReportName.title = report?.name || "检验报告文件";
+      sourceReportMeta.textContent = sourceMetaText(report);
+      const hasRecord = Boolean(meta.recordRole && record);
+      comparisonSources.classList.toggle("single-source", !hasRecord);
+      sourceLink.hidden = !hasRecord;
+      sourceRecordCard.hidden = !hasRecord;
+      if (!hasRecord) return;
+      const recordRole = meta.recordRole === "ptr"
+        ? "PTR · 产品技术要求"
+        : `${meta.documentLabel || "原始记录"} · 对照文件`;
+      sourceRecordRole.textContent = recordRole;
+      sourceRecordName.textContent = record.name || meta.documentLabel || "对照文件";
+      sourceRecordName.title = record.name || meta.documentLabel || "对照文件";
+      sourceRecordMeta.textContent = sourceMetaText(record);
     }
 
     function setComparisonMessage(message) {
@@ -1043,6 +1108,10 @@
       const d = item.details || {};
       const c = d.comparison || {};
       const fc = c.field_comparisons || {};
+      if (activeMode === "ptr" || item.rule_id === "PTR-P01") {
+        const clause = d.clause_id || String(item.id || "").match(/clause:([^@]+)/)?.[1] || "未编号条款";
+        return `PTR 条款 ${clause} ↔ Report 检验要求 ${clause}`;
+      }
       if (d.record_item !== undefined && d.record_logical_row !== undefined) {
         const project = c.project?.record_project || (c.project?.report_projects || [])[0] || "";
         return `项目${d.record_item} 第${d.record_logical_row}行${project ? ` · ${project}` : ""}`;
@@ -1349,6 +1418,17 @@
       const rawSummary = String(finding.summary || "");
       summary.textContent = /^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—");
       detail.append(summary);
+      const comparedRows = checkRowsFor(finding)
+        .filter(row => row.label !== "条款对应" && (row.a?.text || row.b?.text))
+        .slice(0, 2);
+      comparedRows.forEach(row => {
+        const line = document.createElement("div");
+        const left = row.a?.text ? `${row.a.title || "Report"}：“${clip(row.a.text, 90)}”` : `${row.a.title || "Report"}：—`;
+        const right = row.b?.text ? `${row.b.title || "对照"}：“${clip(row.b.text, 90)}”` : `${row.b.title || "对照"}：—`;
+        line.className = "brief-comparison";
+        line.textContent = `${row.label}：${left} ↔ ${right}`;
+        detail.append(line);
+      });
       const status = String(finding.status || "");
       if (!["error", "manual", "warning"].includes(status)) return;
       const lines = problemLines(finding);
@@ -1379,7 +1459,9 @@
     function checkRowsFor(finding) {
       if (rowCache.has(finding)) return rowCache.get(finding);
       const meta = MODE_META[activeMode] || MODE_META.self;
-      const rows = meta.recordRole ? recordCheckRows(finding, meta.recordRole) : selfCheckRows(finding);
+      const rows = meta.recordRole === "ptr"
+        ? ptrCheckRows(finding)
+        : meta.recordRole ? recordCheckRows(finding, meta.recordRole) : selfCheckRows(finding);
       rowCache.set(finding, rows);
       return rows;
     }
@@ -1717,6 +1799,98 @@
       return rows;
     }
 
+    function ptrStatus(value, fallback = "manual") {
+      const raw = String(value?.status || value?.decision || value || fallback);
+      if (["matched", "match", "eligible", "included", "pass"].includes(raw)) return "pass";
+      if (["mismatch", "error", "invalid"].includes(raw)) return "error";
+      if (["manual", "unresolved", "unknown"].includes(raw)) return "manual";
+      if (raw === "not_applicable" || raw === "excluded") return "info";
+      return normStatus(raw);
+    }
+
+    function ptrComparisonValue(value) {
+      if (value === null || value === undefined || value === "") return "（未提取）";
+      if (Array.isArray(value)) {
+        const values = value.map(item => Array.isArray(item)
+          ? item.filter(part => part !== null && part !== undefined && part !== "").join(" ")
+          : textOf(item)).filter(Boolean);
+        return values.join("；") || "（未提取）";
+      }
+      return textOf(value) || "（未提取）";
+    }
+
+    function ptrReferenceValue(value) {
+      if (!value || typeof value !== "object") return ptrComparisonValue(value);
+      const standards = Array.isArray(value.standards) ? value.standards.filter(Boolean) : [];
+      const tables = Array.isArray(value.tables) ? value.tables.filter(Boolean) : [];
+      const parts = [];
+      if (standards.length) parts.push(`标准：${standards.join("、")}`);
+      if (tables.length) parts.push(`表格：${tables.join("、")}`);
+      return parts.join("；") || "无标准或表格引用";
+    }
+
+    function ptrCheckRows(finding) {
+      const d = finding.details || {};
+      const c = d.comparison || {};
+      const locs = Array.isArray(finding.evidence) ? finding.evidence : [];
+      const ptrLoc = toLoc(locs.find(item => item.role === "ptr"), "ptr", "PTR 条款");
+      const reportLoc = toLoc(locs.find(item => item.role === "report"), "report", "Report 检验要求");
+      const rows = [];
+      const clause = d.clause_id || c.clause_id || String(finding.id || "").match(/clause:([^@]+)/)?.[1] || "";
+      if (clause) {
+        rows.push({ label: "条款对应", sub: "条款编号",
+          a: side(clause, reportLoc, "Report 条款"), b: side(clause, ptrLoc, "PTR 条款"),
+          status: "pass", note: "已按条款编号建立对应关系" });
+      }
+      const textComparison = d.text_comparison || c.text_comparison;
+      if (textComparison) {
+        rows.push({ label: "条款要求", sub: "正文内容",
+          a: side(textComparison.report_normalized ?? textComparison.report, reportLoc, "Report 要求"),
+          b: side(textComparison.ptr_normalized ?? textComparison.ptr, ptrLoc, "PTR 要求"),
+          status: ptrStatus(textComparison, finding.status), note: reasonText(textComparison) || "正文归一化后比较" });
+      }
+      const numeric = d.numeric_comparison || c.numeric_comparison;
+      if (numeric) {
+        rows.push({ label: "数值", sub: "数值与单位",
+          a: side(ptrComparisonValue(numeric.report), reportLoc, "Report 数值"),
+          b: side(ptrComparisonValue(numeric.ptr), ptrLoc, "PTR 数值"),
+          status: ptrStatus(numeric, finding.status), note: reasonText(numeric) || "数值归一化后比较" });
+      }
+      const unit = d.unit_comparison || c.unit_comparison;
+      if (unit) {
+        rows.push({ label: "单位", sub: "单位核对",
+          a: side(ptrComparisonValue(unit.report), reportLoc, "Report 单位"),
+          b: side(ptrComparisonValue(unit.ptr), ptrLoc, "PTR 单位"),
+          status: ptrStatus(unit, finding.status), note: reasonText(unit) || "单位归一化后比较" });
+      }
+      const reference = d.reference_comparison || c.reference_comparison;
+      if (reference) {
+        rows.push({ label: "引用", sub: "标准与表格引用",
+          a: side(ptrReferenceValue(reference.report), reportLoc, "Report 引用"),
+          b: side(ptrReferenceValue(reference.ptr), ptrLoc, "PTR 引用"),
+          status: ptrStatus(reference.binding_status || reference.status, finding.status), note: reasonText(reference) || "标准和表格引用已核对" });
+      }
+      const table = d.table_comparison || c.table_comparison;
+      if (table) {
+        rows.push({ label: "表格", sub: "表格结构与内容",
+          a: side(`Report ${Number(table.report_tables || 0)} 个表格`, reportLoc, "Report 表格"),
+          b: side(`PTR ${Number(table.ptr_tables || 0)} 个表格`, ptrLoc, "PTR 表格"),
+          status: ptrStatus(table, finding.status), note: reasonText(table) || "表格结构已核对" });
+      }
+      if (!rows.length) {
+        locs.forEach((location, index) => {
+          const loc = toLoc(location, location.role, location.semantic_role);
+          if (!loc) return;
+          const isPtr = location.role === "ptr";
+          rows.push({ label: `证据 ${index + 1}`, sub: location.semantic_role || "",
+            a: side(isPtr ? "" : "见高亮位置", isPtr ? null : loc, "Report"),
+            b: side(isPtr ? "见高亮位置" : "", isPtr ? loc : null, "PTR"),
+            status: normStatus(finding.status), note: index === 0 ? (finding.summary || "") : "" });
+        });
+      }
+      return rows;
+    }
+
     function recordCheckRows(finding, recordRole) {
       const d = finding.details || {};
       const c = d.comparison || {};
@@ -1894,7 +2068,9 @@
       const rows = [...checkRowsFor(finding)];
       body.replaceChildren();
       document.getElementById("check-col-a").textContent = meta.recordRole ? "检验报告（位置 · 内容）" : "报告中的位置 · 内容";
-      document.getElementById("check-col-b").textContent = meta.recordRole ? `${meta.documentLabel || "原始记录"}（位置 · 内容）` : "对照对象（首页 / 照片 / 规则）";
+      document.getElementById("check-col-b").textContent = meta.recordRole
+        ? `${meta.paneLabel || meta.documentLabel || "原始记录"}（位置 · 内容）`
+        : "对照对象（首页 / 照片 / 规则）";
       if (!rows.length) { box.hidden = true; return; }
       const order = { error: 0, manual: 1, warning: 2, pass: 3, info: 4 };
       rows.sort((x, y) => (order[normStatus(x.status)] ?? 5) - (order[normStatus(y.status)] ?? 5));
@@ -1960,6 +2136,9 @@
         if (top > window.innerHeight * 0.6 || top < -40) comparisonCard.scrollIntoView({ behavior: "smooth", block: "start" });
       });
       comparisonModeLabel.textContent = meta.label;
+      renderComparisonSources(activeMode);
+      reportPane.root.setAttribute("aria-label", "Report · 检验报告 PDF");
+      recordPane.root.setAttribute("aria-label", `${meta.paneLabel || meta.documentLabel || "对照文档"} PDF`);
       const look = badgeOf(finding);
       const badge = comparisonBrief.querySelector(".finding-status");
       badge.className = `finding-status ${look.cls}`;
@@ -1984,7 +2163,7 @@
       try {
         if (meta.recordRole && !recordDocument) throw new Error("缺少 Record 文档信息。");
         await reportPane.loadDocument(reportDocument, dualReport ? "报告 · 填写处" : "检验报告");
-        if (meta.recordRole) await recordPane.loadDocument(recordDocument, meta.documentLabel || "原始记录");
+        if (meta.recordRole) await recordPane.loadDocument(recordDocument, meta.paneLabel || meta.documentLabel || "原始记录");
         else if (dualReport) await recordPane.loadDocument(reportDocument, "报告 · 照片/首页");
         refreshPageChips();
         if (token !== comparisonToken) return;
@@ -2094,9 +2273,9 @@
       async loadDocument(documentInfo, fallbackLabel) {
         const url = sourceUrl(documentInfo);
         if (!url) { this.setMessage(`${fallbackLabel} 文档不可用。`); return; }
-        const label = documentInfo.original_filename || fallbackLabel;
+        const label = documentInfo.original_filename || documentInfo.name || fallbackLabel;
         this.documentName.textContent = label === fallbackLabel ? fallbackLabel : `${fallbackLabel} · ${label}`;
-        this.documentName.title = label;
+        this.documentName.title = `${fallbackLabel}：${label}`;
         if (this.url === url && this.pdfDocument) return;
         const token = ++this.documentToken;
         this.renderToken += 1;

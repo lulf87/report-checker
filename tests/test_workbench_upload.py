@@ -118,6 +118,9 @@ class UploadWorkbenchTests(unittest.TestCase):
     def test_comparison_view_uses_api_documents_and_evidence_locations(self) -> None:
         for required in (
             'id="comparison-card"',
+            'id="comparison-sources"',
+            'id="source-report-name"',
+            'id="source-record-name"',
             'data-pane-role="report"',
             'data-pane-role="record"',
             'pdf.min.mjs',
@@ -136,6 +139,23 @@ class UploadWorkbenchTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.html if required.startswith(('id=', 'data-pane')) else self.module_source)
         self.assertIn("comparisonCard.scrollIntoView", self.module_source)
+        self.assertIn("renderComparisonSources", self.module_source)
+        self.assertIn("original_filename || documentInfo.name", self.module_source)
+
+    def test_ptr_result_explains_both_documents_and_comparison_fields(self) -> None:
+        for required in (
+            "Report · 检验报告",
+            "PTR · 产品技术要求",
+            "PTR 条款 ${clause} ↔ Report 检验要求 ${clause}",
+            "function ptrCheckRows(finding)",
+            'label: "条款要求"',
+            'label: "数值"',
+            'label: "引用"',
+            'label: "表格"',
+        ):
+            with self.subTest(required=required):
+                source = self.html if required == "Report · 检验报告" else self.module_source
+                self.assertIn(required, source)
 
     def test_comparison_view_is_split_into_findings_and_pdf_stage(self) -> None:
         for required in (
