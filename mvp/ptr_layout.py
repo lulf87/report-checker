@@ -21,7 +21,7 @@ from mvp.checker import compact, header_map, is_formal_report_table, report_page
 PARSER_VERSION = "ptr-layout-1.0"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
-    r"(?:\s+|[.．、，,:：)）]\s*|(?=[\u3400-\u9fff]))(\S.*)$"
+    r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
 )
 STOP = re.compile(r"^\s*3(?:[.．、:]|\s)\s*(?:检验|试验|测试|检测|Test|Inspection)", re.I)
 CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z])(?:\s|[\u3400-\u9fff]|$)")
@@ -340,6 +340,47 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                 events.append({**line, "text": " ".join(v["text"] for v in fragments), "kind": "text"})
             events.extend({**table, "kind": "table", "text": table["caption"]} for table in page_tables)
             events.sort(key=lambda v: (v["bbox"][1], v["bbox"][0]))
+            clause_only = re.compile(r"^\s*(2(?:\s*\.\s*\d+){1,8})\s*$")
+            merged_events: list[dict[str, Any]] = []
+            pending_clause: dict[str, Any] | None = None
+            for event in events:
+                if event["kind"] != "text":
+                    if pending_clause is not None:
+                        merged_events.append(pending_clause)
+                        pending_clause = None
+                    merged_events.append(event)
+                    continue
+                if pending_clause is not None:
+                    previous = pending_clause["bbox"]
+                    current_box = event["bbox"]
+                    same_visual_line = (
+                        current_box[1] <= previous[3] + 3.0
+                        and current_box[3] >= previous[1] - 3.0
+                        and current_box[0] >= previous[2] - 2.0
+                    )
+                    if same_visual_line:
+                        merged_events.append({
+                            **event,
+                            "text": f"{pending_clause['text']} {event['text']}",
+                            "bbox": [
+                                min(previous[0], current_box[0]),
+                                min(previous[1], current_box[1]),
+                                max(previous[2], current_box[2]),
+                                max(previous[3], current_box[3]),
+                            ],
+                            "fragments": [*pending_clause.get("fragments", []), *event.get("fragments", [])],
+                        })
+                        pending_clause = None
+                        continue
+                    merged_events.append(pending_clause)
+                    pending_clause = None
+                if clause_only.match(str(event.get("text") or "")) and event["bbox"][0] < page.rect.width * .32:
+                    pending_clause = event
+                else:
+                    merged_events.append(event)
+            if pending_clause is not None:
+                merged_events.append(pending_clause)
+            events = merged_events
             for event in events:
                 text = event["text"]
                 if event["kind"] == "table":
@@ -364,6 +405,13 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                         nodes.append(current)
                         current["evidence"].append(evidence("ptr", page.number+1, event["bbox"], text, digest))
                         continue
+                standalone = clause_only.match(text)
+                if standalone and event["bbox"][0] < page.rect.width * .32:
+                    clause = compact(standalone.group(1))
+                    current = _new_node("ptr", clause, "", digest)
+                    nodes.append(current)
+                    current["evidence"].append(evidence("ptr", page.number+1, event["bbox"], text, digest))
+                    continue
                 if current is not None:
                     current["parts"].append(text)
                     current["evidence"].append(evidence("ptr", page.number+1, event["bbox"], text, digest))

@@ -283,6 +283,18 @@ class PtrCompareSampleTests(unittest.TestCase):
             self.assertIn(clause_id, ptr_ids)
             self.assertIn(clause_id, report_ids)
 
+    def test_2948_joins_split_clause_number_and_title_columns(self) -> None:
+        report_path, ptr_path = sample_paths("2948")
+        ptr = extract_ptr_clauses(ptr_path)
+        result = compare_ptr_report(report_path, ptr_path, comparison_mode="rules")
+        nodes = {node["clause_id"]: node for node in ptr["nodes"]}
+        self.assertEqual(ptr["diagnostics"]["duplicates"], [])
+        self.assertEqual(nodes["2.4.1"]["title"], "安全通用要求")
+        self.assertEqual(nodes["2.4.2"]["title"], "电磁兼容要求")
+        by_clause = {entry["clause_id"]: entry for entry in result["coverage_ledger"]}
+        self.assertEqual(by_clause["2.4.1"]["decision"], MATCHED)
+        self.assertEqual(by_clause["2.4.2"]["decision"], MATCHED)
+
     def test_1539_known_numeric_differences_remain_hard_mismatches(self) -> None:
         report_path, ptr_path = sample_paths("1539")
         rules = compare_ptr_report(report_path, ptr_path, comparison_mode="rules")

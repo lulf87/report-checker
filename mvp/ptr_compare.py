@@ -57,7 +57,7 @@ EXCLUDED = "excluded"
 # body guard prevents table cells such as ``2.2±20%`` from becoming clauses.
 CLAUSE_LINE_RE = re.compile(
     r"^\s*(?P<clause>\d+(?:\s*\.\s*\d+){1,8})\s*"
-    r"(?:[.．、，,:：)）]\s*|\s+|(?=[\u3400-\u9fff]))(?P<body>.*\S)?\s*$"
+    r"(?:[、，,:：)）]\s*|[.．](?!\s*\d)\s*|\s+|(?=[\u3400-\u9fff]))(?P<body>.*\S)?\s*$"
 )
 # A token must be followed by a clause separator or whitespace plus a human
 # readable title.  This avoids treating decimals such as ``2.76 μs`` and
