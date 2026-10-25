@@ -1062,6 +1062,8 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
             "status": reference_status,
             "ptr": ptr_refs,
             "report": report_refs,
+            "ptr_bindings": list(ptr.get("reference_bindings") or []),
+            "report_bindings": list(report.get("reference_bindings") or []),
         },
         "unit_comparison": {
             "status": unit_status,

@@ -91,10 +91,44 @@ def _enrich(node: dict[str, Any]) -> dict[str, Any]:
     node["numeric_signature"] = _numeric_signature(node["text"])
     node["raw_numeric_signature"] = _raw_numeric_signature(node["text"])
     node["references"] = _references(node["text"])
+    node["reference_bindings"] = _reference_bindings(node)
     node["unit_labels"] = _unit_labels(node["text"])
     node["is_heading_only"] = node["normalized_text"] == _text_for_comparison(node["title"])
     node["pages"] = sorted({v["pdf_page"] for v in node["evidence"]})
     return node
+
+
+def _reference_bindings(node: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Describe whether each table/appendix token has physical evidence."""
+
+    references = (node.get("references") or {}).get("tables", [])
+    tables = list(node.get("table_rows") or [])
+    bindings: list[dict[str, Any]] = []
+    for label in references:
+        wanted = compact(label)
+        candidates = []
+        for table in tables:
+            observed = compact(str(table.get("label") or table.get("caption") or ""))
+            if wanted and wanted in observed:
+                candidates.append(table)
+        if len(candidates) == 1:
+            status = "bound"
+        elif len(candidates) > 1:
+            status = "ambiguous"
+        elif tables:
+            # Report requirement rows may not carry a caption, but their
+            # physical matrix is still evidence for a token printed in the
+            # same requirement cell.
+            status = "bound_physical_rows"
+            candidates = tables
+        else:
+            status = "unresolved"
+        bindings.append({
+            "label": label,
+            "status": status,
+            "table_ids": [str(table.get("table_id")) for table in candidates if table.get("table_id")],
+        })
+    return bindings
 
 
 def _new_node(role: str, clause: str, title: str, digest: str, suffix: str = "") -> dict[str, Any]:
@@ -364,6 +398,7 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
             local = [t for t in node["table_rows"] if t.get("label") == compact(label)]
             if not local and len(candidates) == 1:
                 node["table_rows"].append({**candidates[0], "binding": "reference"})
+        node["reference_bindings"] = _reference_bindings(node)
     duplicates = [c for c in {n["clause_id"] for n in nodes} if sum(n["clause_id"] == c for n in nodes) > 1]
     for node in nodes:
         if node["clause_id"] in duplicates:

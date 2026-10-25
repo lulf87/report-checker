@@ -19,7 +19,7 @@ from mvp.ptr_compare import (
     run_llm_reviews,
 )
 from mvp.ptr_compare import _compare_text, _numeric_signature
-from mvp.ptr_layout import _split_inline_clauses
+from mvp.ptr_layout import _reference_bindings, _split_inline_clauses
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
 from mvp.ptr_ocr import iter_ptr_ocr_lines
 
@@ -94,6 +94,10 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         split = _split_inline_clauses([node])
         self.assertEqual(split[1]["node_id"], "report:item:7:clause:2.10.2.1")
         self.assertEqual(split[1]["role"], "report")
+
+    def test_reference_binding_keeps_unresolved_tokens_manual(self) -> None:
+        node = {"references": {"tables": ["表99"]}, "table_rows": []}
+        self.assertEqual(_reference_bindings(node), [{"label": "表99", "status": "unresolved", "table_ids": []}])
 
     def test_identical_extracted_table_can_leave_manual_state(self) -> None:
         ptr = {
@@ -289,6 +293,7 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["table_comparison"]["reason_code"], "TABLE_SEMANTIC_NORMALIZED_MATCH")
+        self.assertEqual(by_clause["2.6"]["reference_comparison"]["ptr_bindings"][0]["status"], "bound")
         self.assertEqual(by_clause["2.1"]["decision"], EXCLUDED)
         self.assertTrue(rules["summary"]["conserved"])
         self.assertFalse(rules["publishable"])

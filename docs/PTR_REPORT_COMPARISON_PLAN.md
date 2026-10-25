@@ -13,7 +13,7 @@
 - 入口是 `mvp.ptr_compare.compare_ptr_report(report, ptr, comparison_mode="rules")`，也提供 `rules+llm` 入口；两种模式都先执行同一套规则，当前没有实际调用模型。
 - PTR 先按 2.x 条款号和父子关系生成条款树；Report 先读取第三页 `检验项目` 得到范围，再从正式检验表读取 `检验项目/标准条款/标准要求`，把嵌在父条目中的子条款拆出来。
 - 比较顺序是文本规范化、数值/单位/比较符、GB/YY 标准引用、表/附录引用和覆盖关系。空白、换行、全半角和 `ug/μg` 这类受控写法可以归一；数值、单位、上下限、引用缺失和条款缺失仍是硬差异。
-- 每个条款都会进入 Coverage Ledger，状态只有 `matched`、`mismatch`、`manual`、`excluded`。规则无法确认时进入 `manual`，不会被当作一致；当前草案对明确范围外内容使用 `excluded`，不把未解析内容伪装成排除。
+- 每个条款都会进入 Coverage Ledger，状态只有 `matched`、`mismatch`、`manual`、`excluded`。规则无法确认时进入 `manual`，不会被当作一致；当前草案对明确范围外内容使用 `excluded`，不把未解析内容伪装成排除。表/附录引用另外保存 `bound`、`bound_physical_rows`、`ambiguous` 或 `unresolved` 绑定状态，未绑定不会被当作通过。
 - `rules+llm` 只把规则识别出的文本歧义标记为待接入的 LLM 复核队列；表格结构、数值、单位、范围和引用硬差异不会送入可清除文本结论的队列。每个任务固定提示词版本和输入哈希，显式 provider 的返回会保存验证后的 JSON、模型信息和处理动作。输出固定 `publishable: false`，也不会改变 `report_ptr` 的禁用开关。
 - 扫描 PTR 的 OCR 走本机已安装的 Apple Vision/RapidOCR 适配器；若没有引擎、引擎失败或候选条款不稳定，保存诊断、bbox 和置信度并保持 `manual`。OCR 只提供观察，不反向从 Report 补写 PTR。
 - 能被 PyMuPDF 识别的矢量表格会作为物理行矩阵挂在条款节点上；双方矩阵规范化后完全相同才算表格一致，否则缺少结构证据时进入 `manual`。复杂无边框表格仍需人工标注和后续行列映射规则。
