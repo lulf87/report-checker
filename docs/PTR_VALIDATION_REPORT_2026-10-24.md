@@ -48,6 +48,10 @@
 - `2.2.6`：PTR 和 Report 都是“单个脉冲最大输出能量小于 258mJ”；单位归一后为同一数值事实，状态为 `matched`。
 - `2.6`：软件功能表跨页物理行已按组件列和功能列重建，续行归并后与 PTR 表 6 的语义矩阵一致，状态为 `matched / TABLE_SEMANTIC_NORMALIZED_MATCH`；`2.2.2` 仍因波形表结构证据不足保留 `manual`。
 
+### 2948
+
+- PTR 的 `2.4.1`、`2.4.2` 条款号与标题在 PDF 中分列，按同一视觉行合并后分别进入账本，均与 Report 匹配。
+
 ### 2795
 
 - `2.5`：正文写 `5MΩ`，Report 单独单位栏写 `GΩ`，状态为 `mismatch / UNIT_MISMATCH`。
@@ -68,12 +72,14 @@
 在项目 `.venv`（Python 3.13）中，PTR 比较相关回归通过：
 
 ```text
-test_ptr_compare.py  18 tests OK
+test_ptr_compare.py  21 tests OK
 test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
 test_ptr_draft_runner.py  2 tests OK
 git diff --check       OK
 ```
+
+另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
 正式启用前仍需完成：
 
