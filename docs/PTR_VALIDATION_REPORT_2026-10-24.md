@@ -77,10 +77,13 @@ test_ptr_compare.py  24 tests OK
 test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
 test_ptr_draft_runner.py  2 tests OK
+test_ptr_review_package.py  1 test OK
 git diff --check       OK
 ```
 
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
+
+三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v2/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。
 
 正式启用前仍需完成：
 
