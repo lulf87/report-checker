@@ -15,6 +15,8 @@
 5. 表格引用如果没有双方可确认的行列矩阵，状态为 `manual`；OCR 候选也只能为 `manual`。
 6. `rules+llm` 只生成最小人工队列。LLM 引文必须逐字存在于原文，且不能修改数值、单位、范围或引用。
 
+本轮补充了内联条款拆分：当 PDF 把子条款写成 `2.10.1.2.1，…`、`2.10.1.2.2. …` 或 `2.11.4碰撞保护` 时，PTR 和 Report 两侧都会按条款号建立独立节点；只有换行/标点边界且候选是当前条款的子项或同级项才拆分，`符合：2.1.4 的要求` 仍保留在正文。0775 的四个子条款现在均有双方节点和唯一账本映射，`eligible == accounted` 且 `conserved=true`。
+
 另有 `mvp.ptr_draft_runner.run_ptr_draft()` 将上述结果写成可浏览的 `result.json` 和 `index.html`。它使用独立的 `report_ptr_draft` mode 名称，不注册到正式 Run/Worker，且始终 `publishable=false`。`mvp.ptr_compare.run_llm_reviews()` 提供显式 provider 注入点；没有注入 provider 时不会调用模型。
 
 所有结果仍写为不可发布草案，`publishable=false`，正式 `report_ptr` capability 仍保持 `PTR_NOT_VALIDATED`。
@@ -63,12 +65,13 @@
 
 ## 测试证据
 
-在项目 `.venv`（Python 3.13）中通过：
+在项目 `.venv`（Python 3.13）中，PTR 比较相关回归通过：
 
 ```text
-test_ptr_compare.py  14 tests OK
+test_ptr_compare.py  18 tests OK
 test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
+test_ptr_draft_runner.py  2 tests OK
 git diff --check       OK
 ```
 

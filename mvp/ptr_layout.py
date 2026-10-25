@@ -19,9 +19,24 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
 PARSER_VERSION = "ptr-layout-1.0"
-CLAUSE = re.compile(r"^\s*(2(?:\s*\.\s*\d+){1,8})(?:\s+|[、:：．]\s*)(\S.*)$")
+CLAUSE = re.compile(
+    r"^\s*(2(?:\s*\.\s*\d+){1,8})"
+    r"(?:\s+|[.．、，,:：)）]\s*|(?=[\u3400-\u9fff]))(\S.*)$"
+)
 STOP = re.compile(r"^\s*3(?:[.．、:]|\s)\s*(?:检验|试验|测试|检测|Test|Inspection)", re.I)
 CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z])(?:\s|[\u3400-\u9fff]|$)")
+RESULT_QUALIFIER = re.compile(r"^\s*(?:470066|470067)\s*(?:[:：].*)?$|^\s*(?:左路|右路)\s*$")
+
+
+def _clean_requirement_text(value: str) -> str:
+    """Remove sample-result qualifiers that were printed in the requirement cell."""
+    lines = []
+    for line in str(value or "").splitlines():
+        line = line.strip()
+        if not line or RESULT_QUALIFIER.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _box(rect: Any) -> list[float]:
@@ -87,6 +102,83 @@ def _new_node(role: str, clause: str, title: str, digest: str, suffix: str = "")
             "parent_clause_id": clause.rsplit(".", 1)[0], "title": title, "parts": [title] if title else [],
             "source_sha256": digest, "evidence": [], "table_rows": [], "figures": [],
             "extraction_issues": []}
+
+
+def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split clause headings that a PDF text block placed on one line."""
+    from mvp.ptr_compare import _canonical_clause_id, _clause_parent
+
+    marker = re.compile(
+        r"(?<![\w.])(?P<clause>2(?:\s*\.\s*\d+){1,8})"
+        r"(?=(?:\s+|[.．、，,:：;；)）]\s*)?[\u3400-\u9fffA-Za-z])"
+    )
+    existing_ids = {str(node.get("clause_id")) for node in nodes}
+    result: list[dict[str, Any]] = []
+    for node in nodes:
+        raw = "\n".join(node.get("parts", [node.get("text", "")]))
+        # Keep indexes aligned with the match spans.  Noise is removed later
+        # by the comparison normalizer; segmentation must use source text.
+        raw_for_context = raw
+        current_clause = _canonical_clause_id(str(node.get("clause_id") or ""))
+
+        def is_heading_boundary(match: re.Match[str]) -> bool:
+            if match.start() <= 0:
+                return False
+            previous = raw_for_context[match.start() - 1]
+            if previous not in "\r\n 、,，;；。.:：)）":
+                return False
+            # A reference can be placed after punctuation or on its own line:
+            # ``符合：2.1.4 的要求`` must remain part of the current body.
+            prefix = raw_for_context[:match.start()].rstrip()
+            if re.search(r"(?:符合|满足|见|第|条款|章节|引用|参见|按照)\s*[:：,，;；。．、.)]?\s*$", prefix[-32:]):
+                return False
+            candidate = _canonical_clause_id(match.group("clause"))
+            if candidate == current_clause or candidate in existing_ids:
+                return False
+            # A newly discovered inline item should be a child or a sibling
+            # of the node whose text swallowed it.  This rejects unrelated
+            # cross-references that happen to start a new extracted line.
+            current_parent = _clause_parent(current_clause)
+            return candidate.startswith(current_clause + ".") or _clause_parent(candidate) == current_parent
+
+        matches = [
+            m for m in marker.finditer(raw)
+            if is_heading_boundary(m)
+        ]
+        if not matches:
+            result.append(node)
+            continue
+        boundaries = [0] + [match.start() for match in matches]
+        clauses = [node.get("clause_id", "")] + [_canonical_clause_id(m.group("clause")) for m in matches]
+        for index, (start, clause) in enumerate(zip(boundaries, clauses)):
+            end = boundaries[index + 1] if index + 1 < len(boundaries) else len(raw)
+            if index == 0:
+                body = raw[start:end].strip()
+                child = dict(node)
+                child["parts"] = [body]
+            else:
+                marker_match = matches[index - 1]
+                body = raw[marker_match.end():end]
+                body = re.sub(r"^\s*", "", body)
+                body = re.sub(r"^[.．、，,:：;；)）]\s*", "", body)
+                body = body.strip()
+                child = dict(node)
+                role = str(node.get("role") or "ptr")
+                child["clause_id"] = clause
+                child["parent_clause_id"] = _clause_parent(clause)
+                sequence = child.get("sequence")
+                child["node_id"] = (
+                    f"{role}:item:{sequence}:clause:{clause}"
+                    if role == "report" and sequence is not None
+                    else f"{role}:clause:{clause}"
+                )
+                child["title"] = body.splitlines()[0] if body else clause
+                child["parts"] = [body]
+                child["table_rows"] = []
+                child["figures"] = []
+                child["extraction_issues"] = ["INLINE_CLAUSE_SPLIT"]
+            result.append(child)
+    return result
 
 
 def _table(page: fitz.Page, table: Any, digest: str, lines: Sequence[Mapping[str, Any]], index: int) -> dict[str, Any]:
@@ -261,6 +353,7 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                 ocr["observations"] = [list(v) for v in observations]
                 for node in nodes:
                     node.update(table_rows=[], figures=[], extraction_issues=["OCR_REVIEW_REQUIRED"])
+    nodes = _split_inline_clauses(nodes)
     for node in nodes:
         if "parts" in node:
             _enrich(node)
@@ -297,8 +390,8 @@ def _requirement_cells(page: fitz.Page, table: Any, row_index: int, left: float,
         # as the ownership boundary; testing x1 would discard that cell.
         if rect.x0 < left - 1.5 or rect.x0 >= right - 1.5:
             continue
-        text = page.get_text("text", clip=rect).strip()
-        result.append({"text": text, "bbox": _box(rect)})
+        raw_text = page.get_text("text", clip=rect).strip()
+        result.append({"text": _clean_requirement_text(raw_text), "raw_text": raw_text, "bbox": _box(rect)})
     return sorted(result, key=lambda c: c["bbox"][0])
 
 
@@ -339,7 +432,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                         nodes.append(node)
                     group = groups[key]
                     cells = _requirement_cells(page, table, row_index, left, right)
-                    if not cells:
+                    if not cells or not any(cell.get("text") for cell in cells):
                         continue
                     text = "\n".join(cell["text"] for cell in cells if cell["text"])
                     # A multi-column row belongs to the active requirement
@@ -351,7 +444,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             "cells": cells, "matrix_row": [cell["text"] for cell in cells],
                             "rows": [[cell["text"] for cell in cells]], "source_sha256": digest,
                             "extraction_method": "report_requirement_columns", "binding": "physical"})
-                        group["current"]["evidence"].extend(evidence("report", page.number+1, c["bbox"], c["text"], digest,
+                        group["current"]["evidence"].extend(evidence("report", page.number+1, c["bbox"], c.get("raw_text", c["text"]), digest,
                                 "report_requirement_cell") for c in cells)
                         continue
                     for cell in cells:
@@ -374,11 +467,12 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                                 group["current"] = node
                             else:
                                 group["current"]["parts"].append(line)
-                            group["current"]["evidence"].append(evidence("report", page.number+1, cell["bbox"], line, digest,
+                            group["current"]["evidence"].append(evidence("report", page.number+1, cell["bbox"], cell.get("raw_text", line), digest,
                                     "report_requirement_cell"))
                     if not group["parent"]["evidence"]:
                         group["parent"]["evidence"].append(evidence("report", page.number+1,
                             [left, cells[0]["bbox"][1], right, cells[-1]["bbox"][3]], group["parent"]["title"], digest))
+    nodes = _split_inline_clauses(nodes)
     by_clause: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for node in nodes:
         _enrich(node)

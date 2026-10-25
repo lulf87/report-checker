@@ -14,10 +14,12 @@ from mvp.ptr_compare import (
     apply_llm_review,
     compare_ptr_report,
     extract_ptr_clauses,
+    extract_report_clauses,
     normalize_comparison_text,
     run_llm_reviews,
 )
 from mvp.ptr_compare import _compare_text, _numeric_signature
+from mvp.ptr_layout import _split_inline_clauses
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
 from mvp.ptr_ocr import iter_ptr_ocr_lines
 
@@ -48,7 +50,50 @@ class PtrCompareNormalizationTests(unittest.TestCase):
     def test_controlled_si_prefixes_compare_in_base_units(self) -> None:
         self.assertEqual(_numeric_signature("0.5mA"), _numeric_signature("500μA"))
         self.assertEqual(_numeric_signature("1N·m"), _numeric_signature("100N·cm"))
+        self.assertEqual(_numeric_signature("0.06米"), _numeric_signature("0.06m"))
         self.assertNotEqual(_numeric_signature("5MΩ"), _numeric_signature("5mΩ"))
+
+    def test_inline_clause_split_accepts_punctuation_but_rejects_references(self) -> None:
+        node = {
+            "node_id": "ptr:clause:2.10.1.2",
+            "role": "ptr",
+            "clause_id": "2.10.1.2",
+            "parent_clause_id": "2.10.1",
+            "title": "主从操作距离准确度和距离重复性",
+            "parts": [
+                "主从操作距离准确度和距离重复性",
+                "2.10.1.2.1，距离准确度：≤ 5mm",
+                "2.10.1.2.2. 距离重复性：≤ 5mm",
+                "测试结果符合：2.1.4 的要求",
+            ],
+            "evidence": [],
+            "table_rows": [],
+            "figures": [],
+            "extraction_issues": [],
+        }
+        split = _split_inline_clauses([node])
+        self.assertEqual([item["clause_id"] for item in split], ["2.10.1.2", "2.10.1.2.1", "2.10.1.2.2"])
+        self.assertEqual(split[1]["title"], "距离准确度：≤ 5mm")
+        self.assertEqual(split[2]["title"], "距离重复性：≤ 5mm")
+        self.assertIn("2.1.4", split[-1]["parts"][0])
+
+    def test_inline_clause_split_preserves_report_identity(self) -> None:
+        node = {
+            "node_id": "report:item:7:clause:2.10.2",
+            "role": "report",
+            "sequence": 7,
+            "clause_id": "2.10.2",
+            "parent_clause_id": "2.10",
+            "title": "有效工作空间",
+            "parts": ["有效工作空间", "2.10.2.1，MTM 工作空间 ≥ 0.06m3"],
+            "evidence": [],
+            "table_rows": [],
+            "figures": [],
+            "extraction_issues": [],
+        }
+        split = _split_inline_clauses([node])
+        self.assertEqual(split[1]["node_id"], "report:item:7:clause:2.10.2.1")
+        self.assertEqual(split[1]["role"], "report")
 
     def test_identical_extracted_table_can_leave_manual_state(self) -> None:
         ptr = {
@@ -220,6 +265,16 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(node["parent_clause_id"], "2.8.1")
         self.assertTrue(node["evidence"][0]["source_sha256"])
         self.assertEqual(node["evidence"][0]["role"], "ptr")
+
+    def test_0775_recovers_punctuation_separated_children(self) -> None:
+        report_path, ptr_path = sample_paths("0775")
+        ptr = extract_ptr_clauses(ptr_path)
+        report = extract_report_clauses(report_path)
+        ptr_ids = {node["clause_id"] for node in ptr["nodes"]}
+        report_ids = {node["clause_id"] for node in report["nodes"]}
+        for clause_id in ("2.10.1.2.1", "2.10.1.2.2", "2.10.2.1", "2.10.2.2"):
+            self.assertIn(clause_id, ptr_ids)
+            self.assertIn(clause_id, report_ids)
 
     def test_1539_known_numeric_differences_remain_hard_mismatches(self) -> None:
         report_path, ptr_path = sample_paths("1539")

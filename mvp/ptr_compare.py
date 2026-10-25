@@ -57,7 +57,7 @@ EXCLUDED = "excluded"
 # body guard prevents table cells such as ``2.2±20%`` from becoming clauses.
 CLAUSE_LINE_RE = re.compile(
     r"^\s*(?P<clause>\d+(?:\s*\.\s*\d+){1,8})\s*"
-    r"(?:[.．、:：)）]\s*|\s+)(?P<body>.*\S)?\s*$"
+    r"(?:[.．、，,:：)）]\s*|\s+|(?=[\u3400-\u9fff]))(?P<body>.*\S)?\s*$"
 )
 # A token must be followed by a clause separator or whitespace plus a human
 # readable title.  This avoids treating decimals such as ``2.76 μs`` and
@@ -204,17 +204,28 @@ def normalize_comparison_text(value: Any) -> str:
     return text.strip(".;。；")
 
 
+def _strip_document_noise(value: str) -> str:
+    """Remove repeating document watermarks before comparing requirements."""
+    value = re.sub(
+        r"intuitivesurgicalinc\.?专有机密文件.*?产品",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"技术要求修订版[:：]?[A-Z](?=[\u3400-\u9fffA-Z0-9]|$)", "", value, flags=re.IGNORECASE)
+
+
 def _numeric_signature(value: Any) -> list[tuple[str, str, str]]:
     """Return ordered numeric facts as ``(operator, value, unit)`` tuples."""
 
-    text = normalize_comparison_text(value)
+    text = _numeric_source_text(value)
     result: list[tuple[str, str, str]] = []
     for match in NUMBER_RE.finditer(text):
         number = match.group("number")
         # Clause IDs have already been removed from individual node text.  Keep
         # all other numbers because a changed threshold or standard year must
         # remain a hard difference.
-        unit = (match.group("unit") or "").replace("µ", "μ").replace("Ω", "Ω")
+        unit = _clean_numeric_unit(match.group("unit") or "")
         operator = match.group("operator") or ""
         number, unit = _canonical_numeric_fact(number, unit)
         result.append((operator, number, unit))
@@ -223,12 +234,45 @@ def _numeric_signature(value: Any) -> list[tuple[str, str, str]]:
 
 def _raw_numeric_signature(value: Any) -> list[tuple[str, str, str]]:
     """Keep the written unit spelling for validating separate unit labels."""
-    text = normalize_comparison_text(value)
+    text = _numeric_source_text(value)
     return [
         (match.group("operator") or "", match.group("number"),
-         (match.group("unit") or "").replace("µ", "μ").replace("Ω", "Ω"))
+         _clean_numeric_unit(match.group("unit") or ""))
         for match in NUMBER_RE.finditer(text)
     ]
+
+
+def _numeric_source_text(value: Any) -> str:
+    """Remove references that look numeric but are not measured facts."""
+
+    text = _strip_document_noise(normalize_comparison_text(value))
+    # Chinese unit words in the source PDF are equivalent to their controlled
+    # Latin spellings when they directly follow a number.
+    text = re.sub(r"(?<=\d)(?:微米|μ米)", "μm", text)
+    text = re.sub(r"(?<=\d)毫米", "mm", text)
+    text = re.sub(r"(?<=\d)厘米", "cm", text)
+    text = re.sub(r"(?<=\d)米", "m", text)
+    text = re.sub(r"(?<=\d)秒", "s", text)
+    text = re.sub(r"(?<!\d)(?:470066|470067)(?=(?:左路|右路|:))", "", text)
+    text = STANDARD_RE.sub("", text)
+    text = TABLE_RE.sub("", text)
+    # Deep clause references (2.10.1.2) cannot be a scalar measurement.
+    text = re.sub(r"\d+\.\d+(?:\.\d+)+", "", text)
+    # Short references such as “符合2.1.4的要求” need their local context.
+    text = re.sub(r"(?:符合|满足|见|第|条款|章节|引用|参见|按照)\d+(?:\.\d+)?", "", text)
+    # Product/document identifiers such as IEEE802.3, RS485 and R2 are not
+    # requirement measurements. Numeric values after a letter remain in the
+    # text channel, but do not enter the numeric fact signature.
+    text = re.sub(r"(?<=[A-Za-z])\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)?", "", text)
+    return text
+
+
+def _clean_numeric_unit(value: str) -> str:
+    unit = value.replace("µ", "μ").replace("Ω", "Ω")
+    # PDF extraction can join a), b) list markers to the preceding unit:
+    # ``10 nmb)`` means 10 nm, while ``12 Nmb)`` means 12 Nm.  Keep
+    # uppercase base-unit letters (``mA``/``mV``) intact.
+    return re.sub(r"(nm|μm|mm|cm|m|n|N|Ω|V|A|W|s)[ab]$", r"\1", unit)
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -285,7 +329,7 @@ def _canonical_numeric_fact(number: str, unit: str) -> tuple[str, str]:
 
 
 def _references(value: Any) -> dict[str, list[str]]:
-    text = normalize_comparison_text(value)
+    text = _strip_document_noise(normalize_comparison_text(value))
     standards = sorted({normalize_comparison_text(item) for item in STANDARD_RE.findall(text)})
     tables = sorted({normalize_comparison_text(item) for item in TABLE_RE.findall(text)})
     return {"standards": standards, "tables": tables}
@@ -295,6 +339,10 @@ def _unit_labels(value: Any) -> list[str]:
     labels = []
     for match in UNIT_LABEL_RE.finditer(unicodedata.normalize("NFKC", str(value or ""))):
         label = normalize_comparison_text(match.group(1)).replace("µ", "μ").replace("Ω", "Ω")
+        # ``N·m`` and ``Nm`` are two common PDF spellings of the same
+        # controlled product unit.  Keep the original numeric facts intact;
+        # this only canonicalizes a separately printed unit label.
+        label = label.replace("·", "")
         if label:
             labels.append(label)
     return sorted(set(labels))
@@ -311,7 +359,9 @@ def _text_for_comparison(value: Any) -> str:
 
     text = unicodedata.normalize("NFKC", str(value or ""))
     text = UNIT_LABEL_RE.sub("", text)
-    return normalize_comparison_text(text)
+    text = re.sub(r"(?<!\d)(?:470066|470067)(?=(?:左路|右路|:))", "", text)
+    text = re.sub(r"(?:左路|右路)", "", text)
+    return _strip_document_noise(normalize_comparison_text(text))
 
 
 def _report_clause_matches(combined: str) -> list[re.Match[str]]:
@@ -712,6 +762,22 @@ def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict
     }
 
 
+def _numeric_facts_equal(left: Sequence[Any], right: Sequence[Any]) -> bool:
+    """Treat a repeated Report table row as the same fact set."""
+    left_list, right_list = list(left), list(right)
+    if left_list == right_list:
+        return True
+    if left_list and len(right_list) % len(left_list) == 0:
+        repeat = len(right_list) // len(left_list)
+        if right_list == left_list * repeat:
+            return True
+    if right_list and len(left_list) % len(right_list) == 0:
+        repeat = len(left_list) // len(right_list)
+        if left_list == right_list * repeat:
+            return True
+    return False
+
+
 def _node_table_evidence(node: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Turn attached table observations into ordinary auditable evidence."""
 
@@ -883,7 +949,7 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
         reason = "TEXT_MISMATCH"
     ptr_numbers = list(ptr.get("numeric_signature") or _numeric_signature(ptr.get("text")))
     report_numbers = list(report.get("numeric_signature") or _numeric_signature(report.get("text")))
-    numeric_status = MATCHED if ptr_numbers == report_numbers else MISMATCH
+    numeric_status = MATCHED if _numeric_facts_equal(ptr_numbers, report_numbers) else MISMATCH
     ptr_refs = ptr.get("references") or _references(ptr.get("text"))
     report_refs = report.get("references") or _references(report.get("text"))
     reference_status = MATCHED if ptr_refs == report_refs else MISMATCH
@@ -896,7 +962,11 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     elif report_units:
         # A Report unit column is acceptable when it repeats a unit already
         # attached to a numeric fact.  A contradictory label is a hard issue.
-        if report_raw_units:
+        if not report_numbers:
+            unit_status = MATCHED
+        elif ptr_raw_units:
+            unit_status = MATCHED if set(report_units).issubset(ptr_raw_units) else MISMATCH
+        elif report_raw_units:
             unit_status = MATCHED if set(report_units).issubset(report_raw_units) else MISMATCH
         else:
             report_fact_units = {unit for _, _, unit in report.get("numeric_signature", []) if unit}
