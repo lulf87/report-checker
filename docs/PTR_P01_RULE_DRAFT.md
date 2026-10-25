@@ -50,7 +50,7 @@
 
 ## Finding 契约样例
 
-正式 Runner 尚未发布 Finding。禁用态草案只带一个不可发布的模板，字段冻结为：
+`mvp.run_ptr_report` 已实现正式 Finding/WorkerResult 形状，但能力开关和 PTR-P01 规则目录仍为 disabled，因此当前不会发布正式 Finding。禁用态草案只带一个不可发布的模板，字段冻结为：
 
 ```json
 {

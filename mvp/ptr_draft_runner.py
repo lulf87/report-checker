@@ -58,6 +58,7 @@ def _finding(entry: Mapping[str, Any], *, rule_version: str) -> dict[str, Any]:
             continue
         evidence.append(
             {
+                "role": item.get("role"),
                 "document_role": item.get("role"),
                 "pdf_page": item.get("pdf_page"),
                 "bbox": item.get("bbox"),

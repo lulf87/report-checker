@@ -482,7 +482,7 @@ class RunStateRequestHandler(CapabilityRequestHandler):
         if mode in PTR_REPORT_MODES:
             input_contract = mode_input_contract_payload(mode)
             input_documents = input_document_descriptors(mode, normalized, input_snapshot)
-            mode_contract = copy_ptr_report_contract(mode)
+            mode_contract = copy_ptr_report_contract(mode, enabled=bool(capability["enabled"]))
             result_contract = mode_contract["result_contract"]
         else:
             input_contract = {

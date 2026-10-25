@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pymupdf as fitz
 
 from mvp.checker import REPORT_SELF_RULE_ORDER, SAMPLE_CONFIGS
+from mvp.capabilities import RULE_CATALOG
 from mvp.run_modes import (
     MODE_CAPABILITIES,
     ModeDisabledError,
@@ -154,6 +155,25 @@ class FourModeDispatcherTests(unittest.TestCase):
             self.assertEqual(context.exception.code, "MODE_DISABLED")
             self.assertEqual(context.exception.reason_code, "PTR_NOT_VALIDATED")
             self.assertFalse(output.exists())
+
+    def test_formal_ptr_dispatch_is_reachable_only_after_catalog_enablement(self) -> None:
+        expected = {"mode": "report_ptr", "publishable": True}
+        with patch.dict(MODE_CAPABILITIES["report_ptr"], {"enabled": True, "status": "enabled"}), patch.dict(
+            RULE_CATALOG["PTR-P01"], {"enabled": True, "status": "validated", "catalog_status": "enabled"}
+        ), patch("mvp.run_modes.run_ptr_report", return_value=expected) as runner:
+            result = run_mode(
+                mode="report_ptr",
+                report_path="report.pdf",
+                ptr_path="ptr.pdf",
+                output_dir="output",
+            )
+        self.assertEqual(result, expected)
+        runner.assert_called_once_with(
+            report_path="report.pdf",
+            ptr_path="ptr.pdf",
+            output_dir="output",
+            allow_formal_publish=True,
+        )
 
     def test_report_self_dispatches_without_record(self) -> None:
         expected = {"mode": "report_self", "machine_overall_status": "pass"}

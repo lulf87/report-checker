@@ -277,6 +277,8 @@ reason_code
 
 签字后的切换前置校验由 `mvp.ptr_enablement` 执行：业务签字 JSON 必须绑定当前验收门文件 SHA-256、当前 `PTR-P01` 版本和三份试点样本；校验器只返回 `approved_for_enablement` 决策，不直接修改能力目录。
 
+正式 Runner 已实现为 `mvp.run_ptr_report`，但默认参数拒绝生成可发布结果；只有统一调度器在能力目录显式启用后才会传入正式发布参数。它输出与 Worker/publish 契约一致的双角色 Evidence、Coverage Ledger 和源文件完整性信息。
+
 在此之前，PTR 可以生成“解析草案/人工复核队列”，但不能生成空通过或对外宣称已经完成 PTR 自动核对。
 
 ## 7. 最终建议

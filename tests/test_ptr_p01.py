@@ -113,7 +113,7 @@ class PtrP01DraftTests(unittest.TestCase):
 
     def test_capability_remains_disabled(self) -> None:
         self.assertFalse(MODE_CATALOG["report_ptr"]["enabled"])
-        self.assertIsNone(MODE_CATALOG["report_ptr"]["runner"])
+        self.assertEqual(MODE_CATALOG["report_ptr"]["runner"], "mvp.run_ptr_report:run_ptr_report")
         self.assertEqual(MODE_CATALOG["report_ptr"]["disabled_reason_code"], PTR_P01_DISABLED_REASON)
         self.assertFalse(MODE_CATALOG["report_ptr_report"]["enabled"])
 

@@ -60,6 +60,26 @@ def validate_mode(mode: str, *, operation: str = "execute") -> dict[str, Any]:
             },
             "capability": capability,
         }
+    disabled_rules = [
+        rule_id
+        for rule_id in capability.get("rule_ids", ())
+        if not RULE_CATALOG.get(rule_id, {}).get("enabled", False)
+        or RULE_CATALOG.get(rule_id, {}).get("catalog_status") != "enabled"
+    ]
+    if disabled_rules:
+        return {
+            "enabled": False,
+            "code": "MODE_DISABLED",
+            "message": "模式规则尚未完成启用验收",
+            "status": 409,
+            "details": {
+                "mode": mode,
+                "operation": operation,
+                "disabled_reason_code": capability.get("disabled_reason_code") or "RULE_NOT_VALIDATED",
+                "disabled_rule_ids": disabled_rules,
+            },
+            "capability": capability,
+        }
     return {
         "enabled": True,
         "code": None,
@@ -110,7 +130,7 @@ MODE_CATALOG: dict[str, dict[str, Any]] = {
         "forbidden_roles": ("record_9706_1", "record_9706_202"),
         "includes_report_self": False,
         "rule_ids": ("PTR-P01",),
-        "runner": None,
+        "runner": "mvp.run_ptr_report:run_ptr_report",
         "disabled_reason_code": "PTR_NOT_VALIDATED",
         "disabled_message": "PTR 检查尚未启用",
         "input_contract": mode_input_contract_payload("report_ptr"),
@@ -681,6 +701,11 @@ def _mode_payload(mode_id: str, mode: dict[str, Any]) -> dict[str, Any]:
     payload["id"] = mode_id
     for field in ("required_roles", "forbidden_roles", "rule_ids"):
         payload[field] = list(payload[field])
+    if mode_id in {"report_ptr", "report_ptr_report"}:
+        payload["result_contract"] = mode_result_contract_payload(
+            mode_id,
+            enabled=bool(mode.get("enabled")),
+        )
     return payload
 
 

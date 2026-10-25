@@ -86,7 +86,8 @@ test_ptr_review_package.py  1 test OK
 test_ptr_acceptance.py  6 tests OK
 test_ptr_lifecycle_gate.py  5 tests OK
 test_ptr_enablement.py  3 tests OK
-unittest discover -s tests -q  425 tests OK
+test_ptr_formal_runner.py  2 tests OK
+unittest discover -s tests -q  430 tests OK
 git diff --check       OK
 ```
 

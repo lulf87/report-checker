@@ -250,16 +250,16 @@ def mode_input_contract_payload(mode: str) -> dict[str, Any]:
     }
 
 
-def mode_result_contract_payload(mode: str) -> dict[str, Any]:
-    """Return the disabled-mode result shape exposed by capabilities."""
+def mode_result_contract_payload(mode: str, *, enabled: bool = False) -> dict[str, Any]:
+    """Return the mode result shape exposed by capabilities."""
 
-    contract = ptr_report_contract_payload(mode, enabled=False)
+    contract = ptr_report_contract_payload(mode, enabled=enabled)
     return deepcopy(contract["result_contract"])
 
 
-def copy_ptr_report_contract(mode: str = "report_ptr") -> dict[str, Any]:
+def copy_ptr_report_contract(mode: str = "report_ptr", *, enabled: bool = False) -> dict[str, Any]:
     """Return a defensive copy suitable for API responses."""
 
-    contract = ptr_report_contract_payload(mode, enabled=False)
+    contract = ptr_report_contract_payload(mode, enabled=enabled)
     validate_ptr_report_contract(contract, expected_mode=mode)
     return deepcopy(contract)

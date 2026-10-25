@@ -6,14 +6,17 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 from mvp.capabilities import (
     MODE_CATALOG,
     RULE_CATALOG,
     capabilities_payload,
     rules_payload,
+    validate_mode,
 )
 from mvp.capability_server import create_server
+from mvp.ptr_report_contract import copy_ptr_report_contract
 
 
 class CapabilityCatalogTests(unittest.TestCase):
@@ -82,6 +85,21 @@ class CapabilityCatalogTests(unittest.TestCase):
         self.assertTrue(all("disabled_reason_code" in rule for rule in rules["rules"]))
         capabilities["modes"]["report_self"]["required_roles"].append("mutated")
         self.assertEqual(MODE_CATALOG["report_self"]["required_roles"], ("report",))
+
+    def test_future_ptr_enablement_exposes_enabled_result_contract(self) -> None:
+        with patch.dict(MODE_CATALOG["report_ptr"], {"enabled": True, "status": "enabled"}):
+            payload = capabilities_payload()
+            contract = copy_ptr_report_contract("report_ptr", enabled=True)
+        self.assertTrue(payload["modes"]["report_ptr"]["result_contract"]["publishable"])
+        self.assertEqual(contract["status"], "enabled")
+        self.assertTrue(contract["result_contract"]["publishable"])
+
+    def test_ptr_mode_cannot_run_if_its_rule_catalog_is_still_disabled(self) -> None:
+        with patch.dict(MODE_CATALOG["report_ptr"], {"enabled": True, "status": "enabled"}):
+            decision = validate_mode("report_ptr", operation="runner")
+        self.assertFalse(decision["enabled"])
+        self.assertEqual(decision["code"], "MODE_DISABLED")
+        self.assertEqual(decision["details"]["disabled_rule_ids"], ["PTR-P01"])
 
     def test_frozen_real_results_use_registered_rules_only(self) -> None:
         root = Path(__file__).resolve().parents[1]

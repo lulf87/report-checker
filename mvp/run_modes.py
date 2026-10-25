@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from mvp.capabilities import MODE_CATALOG, validate_mode
 from mvp.run_full_records import run_full_records
+from mvp.run_ptr_report import run_ptr_report
 from mvp.run_report_self import run_report_self
 
 
@@ -81,6 +82,13 @@ def run_mode(
                 mode,
                 str(capability.get("disabled_reason_code")),
                 str(capability.get("disabled_message", "该模式尚未启用")),
+            )
+        if mode == "report_ptr":
+            return run_ptr_report(
+                report_path=report_path,
+                ptr_path=ptr_path,
+                output_dir=output_dir,
+                allow_formal_publish=True,
             )
         raise ValueError(f"{mode} runner contract is not registered")
     if record_path is None:
