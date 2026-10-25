@@ -7,7 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mvp.capabilities import MODE_CATALOG, RULE_CATALOG
+from mvp.document_store import DocumentStore
 from mvp.ptr_compare import MATCHED
+from mvp.run_store import RunStore
 from mvp.run_ptr_report import FORMAL_RESULT_SCHEMA_VERSION, PtrFormalRunnerError, run_ptr_report
 
 
@@ -79,6 +81,69 @@ class PtrFormalRunnerTests(unittest.TestCase):
         self.assertTrue(result["publishable"])
         self.assertEqual(result["findings"][0]["evidence_locations"][0]["role"], "ptr")
         self.assertTrue(saved["publishable"])
+
+    @unittest.skipUnless((Path(__file__).resolve().parents[1] / "素材" / "report" / "2948").is_dir(), "本地试点素材不存在")
+    def test_formal_result_round_trips_through_publish_gate(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        report = next((root / "素材/report/2948").glob("*.pdf"))
+        ptr = next((root / "素材/ptr/2948").glob("*.pdf"))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "formal"
+            store = RunStore(Path(temporary) / "state.sqlite3")
+            try:
+                with patch.dict(MODE_CATALOG["report_ptr"], {"enabled": True, "status": "enabled"}), patch.dict(
+                    RULE_CATALOG["PTR-P01"], {"enabled": True, "status": "validated", "catalog_status": "enabled"}
+                ):
+                    result = run_ptr_report(
+                        report_path=report,
+                        ptr_path=ptr,
+                        output_dir=output,
+                        allow_formal_publish=True,
+                        ocr_mode="never",
+                    )
+                    case = store.create_case("formal PTR publish gate")
+                    documents = DocumentStore(store, Path(temporary) / "blobs")
+                    report_document = documents.upload_pdf(
+                        case_id=case["id"],
+                        role="report",
+                        original_filename=report.name,
+                        content=report.read_bytes(),
+                    )
+                    ptr_document = documents.upload_pdf(
+                        case_id=case["id"],
+                        role="ptr",
+                        original_filename=ptr.name,
+                        content=ptr.read_bytes(),
+                    )
+                    inputs = {
+                        "report_document_id": report_document["id"],
+                        "ptr_document_id": ptr_document["id"],
+                    }
+                    input_snapshot = documents.validate_inputs(
+                        case_id=case["id"], mode="report_ptr", inputs=inputs
+                    )
+                    run = store.create_run(
+                        case_id=case["id"],
+                        mode="report_ptr",
+                        inputs=inputs,
+                        input_snapshot=input_snapshot,
+                    )
+                    store.transition_run(run["id"], "running")
+                    execution = store.get_rule_executions(run["id"])[0]
+                    store.transition_rule_execution(run["id"], execution["rule_id"], "running")
+                    store.transition_rule_execution(
+                        run["id"],
+                        execution["rule_id"],
+                        "succeeded",
+                        finding_count=len(result["findings"]),
+                    )
+                    published = store.publish_result(run["id"], result)
+                self.assertEqual(published["lifecycle_status"], "succeeded")
+                self.assertEqual(published["finding_counts"]["error"], result["status_counts"]["error"])
+                self.assertEqual(len(store.list_findings(run["id"])), len(result["findings"]))
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":
