@@ -149,13 +149,24 @@ class UploadWorkbenchTests(unittest.TestCase):
             "PTR 条款 ${clause} ↔ Report 检验要求 ${clause}",
             "function ptrCheckRows(finding)",
             'label: "条款要求"',
-            'label: "数值"',
+            'label: "要求数值"',
             'label: "引用"',
             'label: "表格"',
         ):
             with self.subTest(required=required):
                 source = self.html if required == "Report · 检验报告" else self.module_source
                 self.assertIn(required, source)
+
+    def test_ptr_results_are_sorted_by_clause_number_and_scope_is_explicit(self) -> None:
+        for required in (
+            "function compareClauseIds(left, right)",
+            "function compareFindings(left, right)",
+            ".sort(compareFindings)",
+            "标准要求中的数值与单位",
+            "Report 的“检验结果”是否满足要求由报告自检单独检查",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.module_source if required.startswith("function") or required.startswith(".") else self.html)
 
     def test_comparison_view_is_split_into_findings_and_pdf_stage(self) -> None:
         for required in (

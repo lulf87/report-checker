@@ -119,6 +119,7 @@
     .source-name { display: block; margin-top: 2px; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
     .source-meta { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
     .source-link { display: grid; place-items: center; color: var(--teal); font-size: 18px; font-weight: 800; }
+    .comparison-scope-note { margin: 0 16px 10px; padding: 7px 10px; border-left: 3px solid var(--teal); color: var(--muted); background: var(--soft); font-size: 11px; line-height: 1.45; }
     .brief-comparison { color: var(--ink); }
     .comparison-brief { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; margin: 0 16px 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
     .brief-copy { min-width: 0; }
@@ -489,6 +490,7 @@
           <span class="source-meta" id="source-record-meta">等待运行结果</span>
         </div>
       </div>
+      <p class="comparison-scope-note" id="comparison-scope-note" hidden></p>
       <div class="comparison-brief" id="comparison-brief" aria-live="polite">
         <span class="finding-status manual">未选择</span>
         <div class="brief-copy"><div class="brief-title">请在左边选择一条结果</div><div class="brief-detail">核对完成后显示原始文件</div></div>
@@ -605,6 +607,7 @@
     const sourceRecordRole = document.getElementById("source-record-role");
     const sourceRecordName = document.getElementById("source-record-name");
     const sourceRecordMeta = document.getElementById("source-record-meta");
+    const comparisonScopeNote = document.getElementById("comparison-scope-note");
     const modeCards = document.getElementById("mode-cards");
     const verdictCard = document.getElementById("verdict-card");
     const verdictText = document.getElementById("verdict-text");
@@ -1016,6 +1019,10 @@
       sourceReportName.textContent = report?.name || "检验报告文件";
       sourceReportName.title = report?.name || "检验报告文件";
       sourceReportMeta.textContent = sourceMetaText(report);
+      comparisonScopeNote.hidden = mode !== "ptr";
+      comparisonScopeNote.textContent = mode === "ptr"
+        ? "PTR 模式当前核对 PTR 与 Report 的“标准要求”（条款、正文、要求数值、单位、引用和表格）；Report 的“检验结果”是否满足要求由报告自检单独检查，这里的“一致”不代替实测结果判定。"
+        : "";
       const hasRecord = Boolean(meta.recordRole && record);
       comparisonSources.classList.toggle("single-source", !hasRecord);
       sourceLink.hidden = !hasRecord;
@@ -1061,6 +1068,7 @@
     }
 
     const TODO_STATUSES = new Set(["error", "manual", "warning"]);
+    const SECTION_RANK = Object.freeze({ error: 0, suspect: 1, manual: 2, warning: 3, pass: 4 });
     function matchesFilter(item, filter = activeFilter) {
       if (filter === "all") return true;
       if (filter === "todo") return TODO_STATUSES.has(item.status) && notesByKey.get(findingKey(item))?.decision !== "not_problem";
@@ -1123,6 +1131,44 @@
         return `${sequence ? `序号${sequence} · ` : ""}${clause} ${clip(requirement, 26)}`.trim();
       }
       return item.title || item.rule_id || "核对结果";
+    }
+    function ptrClauseId(item) {
+      const details = item?.details || {};
+      const raw = details.clause_id || details.comparison?.clause_id || String(item?.id || "");
+      return String(raw).match(/(?:^|clause:)(\d+(?:\.\d+)*(?:[a-z]+)?)/i)?.[1]?.toLowerCase() || "";
+    }
+    function compareClauseIds(left, right) {
+      if (!left && !right) return 0;
+      if (!left) return 1;
+      if (!right) return -1;
+      const leftParts = left.split(".").map(part => {
+        const match = part.match(/^(\d+)([a-z]*)$/i);
+        return { number: Number(match?.[1] || Number.MAX_SAFE_INTEGER), suffix: (match?.[2] || "").toLowerCase() };
+      });
+      const rightParts = right.split(".").map(part => {
+        const match = part.match(/^(\d+)([a-z]*)$/i);
+        return { number: Number(match?.[1] || Number.MAX_SAFE_INTEGER), suffix: (match?.[2] || "").toLowerCase() };
+      });
+      const length = Math.min(leftParts.length, rightParts.length);
+      for (let index = 0; index < length; index += 1) {
+        const leftPart = leftParts[index];
+        const rightPart = rightParts[index];
+        if (leftPart.number !== rightPart.number) return leftPart.number - rightPart.number;
+        if (leftPart.suffix !== rightPart.suffix) {
+          if (!leftPart.suffix) return -1;
+          if (!rightPart.suffix) return 1;
+          return leftPart.suffix.localeCompare(rightPart.suffix);
+        }
+      }
+      return leftParts.length - rightParts.length;
+    }
+    function compareFindings(left, right) {
+      if (activeMode === "ptr" || left.item.rule_id === "PTR-P01" || right.item.rule_id === "PTR-P01") {
+        const clauseOrder = compareClauseIds(ptrClauseId(left.item), ptrClauseId(right.item));
+        if (clauseOrder) return clauseOrder;
+      }
+      const sectionOrder = (SECTION_RANK[sectionOf(left.item)] ?? 5) - (SECTION_RANK[sectionOf(right.item)] ?? 5);
+      return sectionOrder || (left.index - right.index);
     }
     function chapterOf(item) {
       const clause = item.details?.comparison?.field_comparisons?.clause?.record_value || item.details?.comparison?.field_comparisons?.clause?.report_value;
@@ -1851,16 +1897,16 @@
       }
       const numeric = d.numeric_comparison || c.numeric_comparison;
       if (numeric) {
-        rows.push({ label: "数值", sub: "数值与单位",
-          a: side(ptrComparisonValue(numeric.report), reportLoc, "Report 数值"),
-          b: side(ptrComparisonValue(numeric.ptr), ptrLoc, "PTR 数值"),
+        rows.push({ label: "要求数值", sub: "标准要求中的数值与单位",
+          a: side(ptrComparisonValue(numeric.report), reportLoc, "Report 要求值"),
+          b: side(ptrComparisonValue(numeric.ptr), ptrLoc, "PTR 要求值"),
           status: ptrStatus(numeric, finding.status), note: reasonText(numeric) || "数值归一化后比较" });
       }
       const unit = d.unit_comparison || c.unit_comparison;
       if (unit) {
-        rows.push({ label: "单位", sub: "单位核对",
-          a: side(ptrComparisonValue(unit.report), reportLoc, "Report 单位"),
-          b: side(ptrComparisonValue(unit.ptr), ptrLoc, "PTR 单位"),
+        rows.push({ label: "要求单位", sub: "标准要求中的单位",
+          a: side(ptrComparisonValue(unit.report), reportLoc, "Report 要求单位"),
+          b: side(ptrComparisonValue(unit.ptr), ptrLoc, "PTR 要求单位"),
           status: ptrStatus(unit, finding.status), note: reasonText(unit) || "单位归一化后比较" });
       }
       const reference = d.reference_comparison || c.reference_comparison;
@@ -2088,9 +2134,10 @@
           const chip = document.createElement("button");
           chip.type = "button"; chip.className = "loc-chip";
           chip.dataset.pageRole = paneFor(sideValue.loc, key) === reportPane ? "report" : "record";
-          chip.dataset.who = sideValue.loc.role === "report" ? "报告" : "记录";
+          const locationLabel = sideValue.loc.role === "report" ? "报告" : (meta.recordRole === "ptr" ? "PTR" : "记录");
+          chip.dataset.who = locationLabel;
           chip.dataset.pdfPage = String(sideValue.loc.pdf_page);
-          chip.textContent = `${sideValue.loc.role === "report" ? "报告" : "记录"} 第 ${sideValue.loc.pdf_page} 页`;
+          chip.textContent = `${locationLabel} 第 ${sideValue.loc.pdf_page} 页`;
           chip.addEventListener("click", event => { event.stopPropagation(); setActive(); focusCheckRow(row, key); });
           td.append(document.createElement("br"), chip);
         }
@@ -2119,6 +2166,20 @@
       box.hidden = false;
     }
 
+    function configureComparisonPaneLabels(meta) {
+      const recordLabel = meta.paneLabel || meta.documentLabel || "对照文档";
+      recordPane.root.setAttribute("aria-label", `${recordLabel} PDF`);
+      recordPane.evidencePicker.setAttribute("aria-label", `选择 ${recordLabel} 证据位置`);
+      recordPane.root.querySelector(".page-controls")?.setAttribute("aria-label", `${recordLabel} 翻页`);
+      recordPane.previousButton.setAttribute("aria-label", `${recordLabel} 上一页`);
+      recordPane.pageInput.setAttribute("aria-label", `${recordLabel} 页码`);
+      recordPane.nextButton.setAttribute("aria-label", `${recordLabel} 下一页`);
+      recordPane.root.querySelector(".zoom-controls")?.setAttribute("aria-label", `${recordLabel} 缩放`);
+      recordPane.fitPageButton.setAttribute("aria-label", `适应 ${recordLabel} 窗格宽度`);
+      recordPane.zoomOut.setAttribute("aria-label", `缩小 ${recordLabel}`);
+      recordPane.zoomIn.setAttribute("aria-label", `放大 ${recordLabel}`);
+    }
+
     async function showFindingComparison(finding) {
       if (!finding || !activeRun) return;
       const token = ++comparisonToken;
@@ -2138,7 +2199,7 @@
       comparisonModeLabel.textContent = meta.label;
       renderComparisonSources(activeMode);
       reportPane.root.setAttribute("aria-label", "Report · 检验报告 PDF");
-      recordPane.root.setAttribute("aria-label", `${meta.paneLabel || meta.documentLabel || "对照文档"} PDF`);
+      configureComparisonPaneLabels(meta);
       const look = badgeOf(finding);
       const badge = comparisonBrief.querySelector(".finding-status");
       badge.className = `finding-status ${look.cls}`;
@@ -2466,10 +2527,9 @@
         status: item.status || item.machine_status || "manual"
       }));
       // 疑似不一致排在其余待确认之前（稳定排序，其他顺序不变）。
-      const SECTION_RANK = { error: 0, suspect: 1, manual: 2, warning: 3, pass: 4 };
       activeFindings = activeFindings
         .map((item, index) => ({ item, index }))
-        .sort((a, b) => ((SECTION_RANK[sectionOf(a.item)] ?? 5) - (SECTION_RANK[sectionOf(b.item)] ?? 5)) || (a.index - b.index))
+        .sort(compareFindings)
         .map(entry => entry.item);
       showRun(run, mode);
       runCount.textContent = String(activeFindings.length);
