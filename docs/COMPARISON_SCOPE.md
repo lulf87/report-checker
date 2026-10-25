@@ -7,6 +7,8 @@
 
 `report_ptr` 的当前比较对象是 **PTR 条款/要求 ↔ Report 的“标准要求（接受标准）”栏**，包括条款、正文、要求数值、单位、引用和表格；它不把 Report“检验结果”栏直接作为 PTR-P01 的通过条件。Report 实测结果与 Report 自身接受标准的核对属于 `report_self`：`REPORT-R07-B` 检查可解析的数值结果，`REPORT-R07` 检查结果与单项结论的聚合一致性。接受标准无法安全解释时必须保留为 `manual`，不能因 PTR 与 Report 的要求文本一致而自动推出实测结果合格。
 
+`REPORT-R07-B` 对“最大/最高输出电压、输出电流、输出能量、输出功率或输出幅度 + 裸数值”（例如“单个脉冲最大输出电压4800V”）按**含等号上限**解释，即实测值 `≤` 该数值；该解释会在证据中的 `criterion.rule` 标记为 `bare_maximum_as_upper_bound`。包含“额定、标称、设定值、为/应为”或允差的精确目标不套用此规则，继续保留为 `manual`，直到接受标准明确给出比较关系。
+
 `report_ptr_report` 与 `report_diff` 已在能力目录中显式保留为禁用边界：前者沿用 `PTR_NOT_VALIDATED`，后者使用 `DIFF_NOT_SPECIFIED`。两者仍没有可执行规则计划；输入角色和规则冻结前必须在 preflight/create/worker/publish 全链路拒绝，不能从现有 `report_ptr` 或 Record 模式推导。
 
 本文件是范围确认文件，不把“已列入范围”表述为“已经全部自动实现”。“实现状态”用于说明当前规则目录中已有的规则和仍需接入的检查项。`confirmed` 仅表示范围已确认；`validated` 表示当前实现、运行结果、证据与测试已闭合；`partial` 表示已接入但仍有字段、语义、发现范围或判定细节待扩展；`planned` 表示已纳入范围但尚未接入当前规则目录。纳入范围的对象在运行结果中必须进入 Coverage Ledger；无法可靠识别时记为 `manual`，不能静默跳过。

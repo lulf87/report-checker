@@ -31,6 +31,9 @@ LOWER_WORDS = ("不应小于", "应不小于", "不小于", "至少")
 
 _NUMERIC_UNITS = r"%|mA|µA|μA|Ω|kΩ|MΩ|GΩ|Hz|KHz|kHz|s|ns|V|Vp|mm|dB(?:\(A\))?|pF|PF"
 _SIMPLE_UNITS = r"mA|µA|μA|Ω|kΩ|MΩ|GΩ|Hz|KHz|kHz|s|ns|V|Vp|mm|dB\(A\)|pF|PF|%"
+# “最大输出电压4800V”这类接受标准没有显式比较符，但“最大”本身
+# 已经给出了上限语义。把 A/J/W 也放进来，覆盖同一组常见的输出量。
+_MAXIMUM_OUTPUT_UNITS = rf"(?:{_NUMERIC_UNITS}|mJ|J|A|W)"
 
 
 def _compact(value: Any) -> str:
@@ -278,6 +281,26 @@ def _criterion_from_requirement(requirement: str) -> dict[str, Any] | None:
             "inclusive": True,
             "unit": "%",
             "source": unchanged.group(0),
+        }
+
+    # 接受标准常把“最大输出值”直接写成“最大输出电压4800V”，不再重复写
+    # “≤”。在没有“为/应为/额定/标称/设定值”等精确目标语义时，按“实测值
+    # 不超过该最大值”处理；显式比较符仍由上面的规则优先解析。
+    maximum_output = re.search(
+        rf"(?P<label>(?:单个脉冲)?(?:最大|最高)输出(?:电压|电流|能量|功率|幅度))"
+        rf"(?P<separator>[:：])?(?P<n>\d+(?:\.\d+)?)(?P<u>{_MAXIMUM_OUTPUT_UNITS})?"
+        rf"(?![A-Za-zµμΩ])",
+        text,
+    )
+    if maximum_output:
+        number = _parse_number(maximum_output.group("n"))
+        return {
+            "kind": "upper",
+            "value": number,
+            "inclusive": True,
+            "unit": maximum_output.group("u") or _declared_unit(text),
+            "source": maximum_output.group(0),
+            "rule": "bare_maximum_as_upper_bound",
         }
     return None
 

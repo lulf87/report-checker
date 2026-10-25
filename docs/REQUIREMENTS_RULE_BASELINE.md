@@ -46,7 +46,7 @@
 | R02–R04 | 样品描述、中文标签、生产日期和照片页字段核对 | `full_report_photo.py`、`photo_ocr.py`；OCR 不可靠时 `manual` |
 | R05–R06 | 适用实物对象有实物照片和中文标签照片 | `full_report_photo.py` |
 | R07 | 多行检验结果与单项结论聚合一致 | `run_report_self.py`、`checker.py` |
-| R07-B | 实测结果符合同行接受标准，支持单位、区间、允差、精度和极性语义 | `mvp/full_report_attempt.py`、`mvp/run_report_self.py` |
+| R07-B | 实测结果符合同行接受标准，支持单位、区间、允差、精度和极性语义；“最大/最高输出 + 裸数值”按含等号上限比较，额定/标称/应为等精确目标仍转人工 | `mvp/full_report_attempt.py`、`mvp/run_report_self.py` |
 | R08 | 项目、条款、标准要求、结果和单项结论无漏填 | `report_format_rules.py` |
 | R09 | 新检验项目序号连续、无重复或跳号 | `checker.py`、`run_report_self.py` |
 | R10 | 每页表头和跨页“续 N”标记 | `checker.py`、`report_headerless` 相关测试 |

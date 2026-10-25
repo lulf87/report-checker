@@ -142,6 +142,38 @@ class NumericCriterionExtensionTests(unittest.TestCase):
         # “不小于”不能被误读为上限“小于”。
         self.assertEqual(self.check("绝缘电阻应不小于5MΩ 单位：MΩ", "6")[0], "pass")
 
+    def test_bare_maximum_output_value_is_an_inclusive_upper_bound(self) -> None:
+        requirement = "设备的单个脉冲最大输出电压4800V。 单位：V"
+        passed = evaluate_numeric_measurement(requirement, "4680")
+        self.assertEqual((passed["status"], passed["reason"]), ("pass", "value_within_bound"))
+        self.assertEqual(
+            passed["criterion"],
+            {
+                "kind": "upper",
+                "value": "4800",
+                "inclusive": True,
+                "unit": "V",
+                "source": "单个脉冲最大输出电压4800V",
+                "rule": "bare_maximum_as_upper_bound",
+            },
+        )
+        self.assertEqual(self.check(requirement, "4800"), ("pass", "value_within_bound"))
+        self.assertEqual(self.check(requirement, "4801"), ("error", "value_exceeds_bound"))
+
+        # 同一规则覆盖能量、电流及结果区间；2.1.7 的 0.145～0.196J 应在 5J 上限内。
+        self.assertEqual(
+            self.check("设备的单个脉冲最大输出能量5J。 单位：J", "0.145～0.196"),
+            ("pass", "range_within_bound"),
+        )
+        self.assertEqual(
+            self.check("设备的单个脉冲最大输出电流72A。 单位：A", "73"),
+            ("error", "value_exceeds_bound"),
+        )
+
+    def test_bare_maximum_rule_does_not_guess_exact_target_wording(self) -> None:
+        self.assertEqual(self.check("额定电压4800V。 单位：V", "4680")[0], "manual")
+        self.assertEqual(self.check("最大输出电压应为4800V。 单位：V", "4680")[0], "manual")
+
     def test_si_prefix_conversion(self) -> None:
         self.assertEqual(self.check("绝缘电阻应不小于 5MΩ. 单位：GΩ", "1.1～2.6")[0], "pass")
         self.assertEqual(self.check("绝缘电阻应不小于 5MΩ. 单位：GΩ", "0.004")[0], "error")
