@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -21,6 +22,7 @@ from mvp.ptr_compare import (
 from mvp.ptr_compare import _compare_text, _numeric_signature
 from mvp.ptr_layout import _reference_bindings, _split_inline_clauses
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
+from mvp.ptr_llm_http import OpenAICompatiblePtrLlmProvider, PtrLlmHttpError
 from mvp.ptr_ocr import iter_ptr_ocr_lines
 
 
@@ -199,6 +201,48 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(len(task["input_sha256"]), 64)
         self.assertTrue(task["prompt_version"])
         self.assertNotIn("model", task)
+
+    def test_openai_compatible_provider_is_explicit_and_json_only(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"decision\\":\\"uncertain\\"}"}}]}'
+
+        provider = OpenAICompatiblePtrLlmProvider(
+            endpoint="https://llm.example.test/v1/chat/completions",
+            api_key="secret-key",
+            model_id="test-model",
+        )
+        with patch("mvp.ptr_llm_http.urlopen", return_value=Response()) as request:
+            payload = provider.review({"instructions": ["返回 JSON"], "clause_id": "2.1"})
+        self.assertEqual(payload["decision"], "uncertain")
+        sent = json.loads(request.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(sent["model"], "test-model")
+        self.assertNotIn("secret-key", json.dumps(sent, ensure_ascii=False))
+
+    def test_openai_compatible_provider_rejects_malformed_response(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"not-json"
+
+        provider = OpenAICompatiblePtrLlmProvider(
+            endpoint="https://llm.example.test/v1/chat/completions",
+            api_key="secret-key",
+            model_id="test-model",
+        )
+        with patch("mvp.ptr_llm_http.urlopen", return_value=Response()), self.assertRaises(PtrLlmHttpError):
+            provider.review({"instructions": []})
 
     def test_validated_llm_equivalence_can_only_clear_text_manual(self) -> None:
         result = {
