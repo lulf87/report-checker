@@ -64,6 +64,21 @@ class PtrReviewPackageTests(unittest.TestCase):
             self.assertFalse(reviewed["publishable"])
             self.assertEqual(len(reviewed["review"]["actions"]), len(saved["rows"]))
 
+            tampered = output / "tampered.csv"
+            tampered_rows = [dict(row) for row in rows]
+            tampered_rows[0]["reason_code"] = "TAMPERED"
+            with tampered.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=tampered_rows[0].keys())
+                writer.writeheader()
+                writer.writerows(tampered_rows)
+            with self.assertRaises(ValueError):
+                apply_review_csv(
+                    manifest_path=output / "manifest.json",
+                    csv_path=tampered,
+                    output_path=output / "tampered-reviewed.json",
+                    reviewer="test-reviewer",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
