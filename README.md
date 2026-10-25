@@ -284,6 +284,10 @@ docs/prototypes/workbench-upload.html
 .venv/bin/python -m mvp.static_server --mode upload --bind 127.0.0.1 --port 8765
 ```
 
+双击项目根目录的 `启动报告核对工具.command` 或程序坞里的“报告核对工具”时，启动器会先检查并停止本项目在 `8765`（工作台）和 `8767`（状态服务）上的旧监听进程，等待端口释放后再启动新进程。它只会停止工作目录属于本项目的进程；如果端口被其他项目占用，会保留对方进程并提示，不会误杀。
+
+上面的两条 Python 命令适合调试时手动启动；如果希望每次启动都自动替换旧服务，请使用项目根目录的启动脚本。
+
 访问 `http://127.0.0.1:8765/` 进入报告核对前端；也可以直接访问 `http://127.0.0.1:8765/workbench-upload.html`。历史地址 `http://127.0.0.1:8765/docs/prototypes/workbench-upload.html` 继续兼容。安全静态启动器固定监听 `127.0.0.1`，上传模式只允许 `docs/prototypes` 下的页面和依赖，不会暴露项目根目录中的素材、运行结果、SQLite 数据库或 Git 元数据。选择 Report 自检、GB 9706.1 Record、GB 9706.202 Record 或 PTR，上传对应 PDF 后页面会创建 Case、上传 Document、执行 preflight、创建 Run，并轮询展示 Finding。页面不引用项目素材、生成结果或真实样本。
 
 9706.1 Record 如果不是已验证的 851 状态框模板，会生成一条带双侧证据的 `manual` 输入变体 Finding，并将未执行的规则标记为 `unsupported`，保留实际库存、模板期望和复核动作。Worker 不会把该情况报告成通用运行崩溃。
