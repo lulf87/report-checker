@@ -275,6 +275,8 @@ reason_code
 
 验收包全部完成后，验收门只进入 `ready_for_signoff`，不会直接切换能力目录。业务签字前，`report_ptr` 仍必须在 preflight、create、Worker、coordinator 和 publish 五个边界返回 `MODE_DISABLED / PTR_NOT_VALIDATED`；遗留的旧 Run 也必须失败收口，不能产生空 Finding 或 `succeeded` 结果。
 
+签字后的切换前置校验由 `mvp.ptr_enablement` 执行：业务签字 JSON 必须绑定当前验收门文件 SHA-256、当前 `PTR-P01` 版本和三份试点样本；校验器只返回 `approved_for_enablement` 决策，不直接修改能力目录。
+
 在此之前，PTR 可以生成“解析草案/人工复核队列”，但不能生成空通过或对外宣称已经完成 PTR 自动核对。
 
 ## 7. 最终建议

@@ -8,6 +8,7 @@
 - 比较草案：`PTR-P01@0.4.0-draft`
 - 三份试点包：`output/ptr-review-package-20261024-v5/`
 - 验收门输出：`output/ptr-review-package-20261024-v5/acceptance-gate.json`
+- 签字文件模板：`docs/PTR_SIGNOFF_TEMPLATE.json`
 - 验收门当前状态：`ready_for_signoff`
 - `can_enable_report_ptr`：`false`
 - 下一步：`BUSINESS_SIGNOFF_REQUIRED`
@@ -68,3 +69,14 @@
 批准备注：
 
 在上述签字完成前，正式能力必须继续保持 `MODE_DISABLED / PTR_NOT_VALIDATED`；草案结果不能写入正式 Run，也不能作为业务通过结论。
+
+签字完成后，先把模板填写为单独的 JSON 文件，再运行：
+
+```bash
+.venv/bin/python -m mvp.ptr_enablement \
+  --gate output/ptr-review-package-20261024-v5/acceptance-gate.json \
+  --signoff /绝对路径/ptr-business-signoff.json \
+  --output output/ptr-review-package-20261024-v5/enablement-decision.json
+```
+
+该命令只验证签字是否绑定到当前验收门和规则版本，不修改能力目录；返回 `approved_for_enablement` 后，仍需单独执行启用变更和完整回归。

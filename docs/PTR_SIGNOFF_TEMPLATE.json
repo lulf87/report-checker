@@ -1,0 +1,17 @@
+{
+  "schema_version": "ptr-business-signoff-0.1",
+  "mode": "report_ptr",
+  "approved": false,
+  "reviewer": "",
+  "signed_at": "",
+  "acceptance_gate_sha256": "",
+  "rule": {
+    "id": "PTR-P01",
+    "version": "0.4.0-draft"
+  },
+  "samples": [
+    {"sample": "2948", "approved": false, "note": ""},
+    {"sample": "0775", "approved": false, "note": ""},
+    {"sample": "1539", "approved": false, "note": ""}
+  ]
+}
