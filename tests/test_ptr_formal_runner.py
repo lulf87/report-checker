@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from mvp.capabilities import MODE_CATALOG, RULE_CATALOG
 from mvp.document_store import DocumentStore
-from mvp.ptr_compare import MATCHED
+from mvp.ptr_compare import MATCHED, PTR_COMPARE_RULE_VERSION
 from mvp.run_store import RunStore
 from mvp.run_ptr_report import FORMAL_RESULT_SCHEMA_VERSION, PtrFormalRunnerError, run_ptr_report
 
@@ -37,7 +37,7 @@ class PtrFormalRunnerTests(unittest.TestCase):
             "reference_comparison": {"status": MATCHED},
         }
         return {
-            "rule": {"id": "PTR-P01", "version": "0.4.0-draft"},
+            "rule": {"id": "PTR-P01", "version": PTR_COMPARE_RULE_VERSION},
             "scope": {"status": "parsed"},
             "coverage_ledger": [entry],
             "summary": {"counts": {"matched": 1, "mismatch": 0, "manual": 0, "excluded": 0}, "eligible": 1, "accounted": 1, "conserved": True},

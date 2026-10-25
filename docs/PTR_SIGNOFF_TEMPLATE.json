@@ -7,7 +7,7 @@
   "acceptance_gate_sha256": "",
   "rule": {
     "id": "PTR-P01",
-    "version": "0.4.0-draft"
+    "version": "0.5.0-draft"
   },
   "samples": [
     {"sample": "2948", "approved": false, "note": ""},

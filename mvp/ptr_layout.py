@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
-PARSER_VERSION = "ptr-layout-1.2"
+PARSER_VERSION = "ptr-layout-1.3"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
@@ -85,15 +85,26 @@ def _inside(a: Any, b: Any) -> bool:
 
 def _enrich(node: dict[str, Any]) -> dict[str, Any]:
     # Imported at call time so the comparison facade can expose the legacy API.
-    from mvp.ptr_compare import _numeric_signature, _raw_numeric_signature, _references, _text_for_comparison, _unit_labels
+    from mvp.ptr_compare import (
+        _numeric_signature,
+        _raw_numeric_signature,
+        _references,
+        _split_report_auxiliary_lines,
+        _text_for_comparison,
+        _unit_labels,
+    )
+    role = str(node.get("role") or "")
     node["text"] = "\n".join(node.pop("parts", [node.get("text", "")]))
-    node["normalized_text"] = _text_for_comparison(node["text"])
-    node["numeric_signature"] = _numeric_signature(node["text"])
-    node["raw_numeric_signature"] = _raw_numeric_signature(node["text"])
+    node["normalized_text"] = _text_for_comparison(node["text"], role=role)
+    node["numeric_signature"] = _numeric_signature(node["text"], role=role)
+    node["raw_numeric_signature"] = _raw_numeric_signature(node["text"], role=role)
     node["references"] = _references(node["text"])
     node["reference_bindings"] = _reference_bindings(node)
     node["unit_labels"] = _unit_labels(node["text"])
-    node["is_heading_only"] = node["normalized_text"] == _text_for_comparison(node["title"])
+    node["auxiliary_lines"] = (
+        _split_report_auxiliary_lines(node["text"])[1] if role == "report" else []
+    )
+    node["is_heading_only"] = node["normalized_text"] == _text_for_comparison(node["title"], role=role)
     node["pages"] = sorted({v["pdf_page"] for v in node["evidence"]})
     return node
 

@@ -1894,6 +1894,14 @@
           a: side(textComparison.report_normalized ?? textComparison.report, reportLoc, "Report 要求"),
           b: side(textComparison.ptr_normalized ?? textComparison.ptr, ptrLoc, "PTR 要求"),
           status: ptrStatus(textComparison, finding.status), note: reasonText(textComparison) || "正文归一化后比较" });
+        const auxiliary = Array.isArray(textComparison.report_auxiliary_lines)
+          ? textComparison.report_auxiliary_lines.filter(Boolean) : [];
+        if (auxiliary.length) {
+          rows.push({ label: "Report 附加信息", sub: "不参与 PTR 接受标准比对",
+            a: side(auxiliary.join("\n"), reportLoc, "Report 测试条件/型号"),
+            b: side("不参与接受标准一致性判断", null, "核对规则"), status: "info",
+            note: "已从 Report 标准要求的接受标准视图中分离，原文仍保留在证据中" });
+        }
       }
       const numeric = d.numeric_comparison || c.numeric_comparison;
       if (numeric) {

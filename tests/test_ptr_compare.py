@@ -19,7 +19,14 @@ from mvp.ptr_compare import (
     normalize_comparison_text,
     run_llm_reviews,
 )
-from mvp.ptr_compare import _clause_parent, _compare_text, _numeric_signature, _reference_cycle_candidates
+from mvp.ptr_compare import (
+    _clause_parent,
+    _compare_text,
+    _numeric_signature,
+    _raw_numeric_signature,
+    _reference_cycle_candidates,
+    _unit_labels,
+)
 from mvp.ptr_layout import _reference_bindings, _split_inline_clauses
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
 from mvp.ptr_llm_http import OpenAICompatiblePtrLlmProvider, PtrLlmHttpError
@@ -54,6 +61,93 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(_numeric_signature("1N·m"), _numeric_signature("100N·cm"))
         self.assertEqual(_numeric_signature("0.06米"), _numeric_signature("0.06m"))
         self.assertNotEqual(_numeric_signature("5MΩ"), _numeric_signature("5mΩ"))
+
+    def test_numeric_parser_keeps_dimensions_and_drops_layout_numbers(self) -> None:
+        self.assertEqual(_numeric_signature("0.06m³"), [("", "0.06", "m^3")])
+        self.assertEqual(_numeric_signature("60000000mm3"), [("", "0.06", "m^3")])
+        self.assertEqual(
+            _raw_numeric_signature("0.88毫米≤A≤0.89毫米\n0.96毫米≤B≤1毫米"),
+            [("", "0.88", "mm"), ("≤", "0.89", "mm"), ("", "0.96", "mm"), ("≤", "1", "mm")],
+        )
+        self.assertEqual(_numeric_signature("第2/17页 图2-1"), [])
+
+    def test_report_auxiliary_lines_are_not_acceptance_facts(self) -> None:
+        from mvp.ptr_compare import _split_report_auxiliary_lines
+
+        acceptance, auxiliary = _split_report_auxiliary_lines("设置性能应顺利\n型号：471006")
+        self.assertEqual(acceptance, "设置性能应顺利")
+        self.assertEqual(auxiliary, ["型号：471006"])
+        ptr = {
+            "role": "ptr",
+            "text": "距离准确度：≤5mm",
+            "normalized_text": "距离准确度:≤5mm",
+            "numeric_signature": _numeric_signature("距离准确度：≤5mm"),
+            "raw_numeric_signature": _raw_numeric_signature("距离准确度：≤5mm"),
+            "references": {"standards": [], "tables": []},
+            "reference_bindings": [],
+            "unit_labels": [],
+            "is_heading_only": False,
+            "table_rows": [],
+        }
+        report_text = "距离准确度：≤5mm\n单位：mm\n运动距离缩放：Quick (1.5:1)\n型号：471006"
+        report = {
+            "role": "report",
+            "text": report_text,
+            "normalized_text": "距离准确度:≤5mm",
+            "numeric_signature": _numeric_signature(report_text, role="report"),
+            "raw_numeric_signature": _raw_numeric_signature(report_text, role="report"),
+            "references": {"standards": [], "tables": []},
+            "reference_bindings": [],
+            "unit_labels": _unit_labels(report_text),
+            "auxiliary_lines": ["运动距离缩放：Quick (1.5:1)", "型号：471006"],
+            "is_heading_only": False,
+            "table_rows": [],
+        }
+        comparison = _compare_text(ptr, report, has_children=False)
+        self.assertEqual(comparison["decision"], MATCHED)
+        self.assertEqual(comparison["numeric_comparison"]["status"], MATCHED)
+        self.assertEqual(comparison["unit_comparison"]["status"], MATCHED)
+
+    def test_unit_equivalence_is_safe_and_scale_mismatch_stays_hard(self) -> None:
+        ptr = {
+            "role": "ptr",
+            "text": "输出：3333V（峰值）57A（峰值）",
+            "normalized_text": "输出:3333V(峰值)57A(峰值)",
+            "numeric_signature": _numeric_signature("3333V（峰值）57A（峰值）"),
+            "raw_numeric_signature": _raw_numeric_signature("3333V（峰值）57A（峰值）"),
+            "references": {"standards": [], "tables": []},
+            "reference_bindings": [],
+            "unit_labels": [],
+            "is_heading_only": False,
+            "table_rows": [],
+        }
+        peak_report = dict(ptr)
+        peak_report.update(
+            role="report",
+            text="输出：3333V（峰值）单位：Vp 57A（峰值）单位：Ap",
+            normalized_text="输出:3333V(峰值)57A(峰值)",
+            numeric_signature=_numeric_signature("3333V（峰值）单位：Vp 57A（峰值）单位：Ap", role="report"),
+            raw_numeric_signature=_raw_numeric_signature("3333V（峰值）单位：Vp 57A（峰值）单位：Ap", role="report"),
+            unit_labels=_unit_labels("单位：Vp 单位：Ap"),
+        )
+        comparison = _compare_text(ptr, peak_report, has_children=False)
+        self.assertEqual(comparison["unit_comparison"]["status"], MATCHED)
+        self.assertEqual(comparison["unit_comparison"]["reason_code"], "UNIT_PEAK_SUFFIX_EQUIVALENT")
+
+        scale_report = dict(peak_report)
+        scale_report.update(
+            text="输出：5MΩ 单位：GΩ",
+            normalized_text="输出:5MΩ",
+            numeric_signature=_numeric_signature("5MΩ", role="report"),
+            raw_numeric_signature=_raw_numeric_signature("5MΩ", role="report"),
+            unit_labels=_unit_labels("单位：GΩ"),
+        )
+        scale_ptr = dict(ptr, text="输出：5MΩ", normalized_text="输出:5MΩ",
+                         numeric_signature=_numeric_signature("5MΩ"),
+                         raw_numeric_signature=_raw_numeric_signature("5MΩ"))
+        mismatch = _compare_text(scale_ptr, scale_report, has_children=False)
+        self.assertEqual(mismatch["unit_comparison"]["status"], MISMATCH)
+        self.assertEqual(mismatch["unit_comparison"]["reason_code"], "UNIT_SCALE_MISMATCH")
 
     def test_inline_clause_split_accepts_punctuation_but_rejects_references(self) -> None:
         node = {

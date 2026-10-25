@@ -38,7 +38,9 @@ class PtrDraftRunnerTests(unittest.TestCase):
             result = run_ptr_draft(report_path=report, ptr_path=ptr, output_dir=Path(temporary) / "draft", ocr_mode="never")
         self.assertEqual([item["role"] for item in result["files"]], ["report", "ptr"])
         self.assertTrue(all(item["unchanged"] for item in result["source_integrity"]))
-        self.assertEqual(result["status_counts"]["error"], 1)
+        # Vp/Ap and V/A are equivalent here because both sides explicitly
+        # state 峰值; the remaining table item stays in the manual queue.
+        self.assertEqual(result["status_counts"]["error"], 0)
         self.assertEqual(result["status_counts"]["manual"], 1)
 
 

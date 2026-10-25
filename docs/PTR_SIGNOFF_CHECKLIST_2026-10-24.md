@@ -5,7 +5,7 @@
 ## 当前机器证据
 
 - 当前分支：`codex/ptr-report-comparison`
-- 比较草案：`PTR-P01@0.4.0-draft`
+- 比较草案：`PTR-P01@0.5.0-draft`
 - 三份试点包：`output/ptr-review-package-20261024-v5/`
 - 验收门输出：`output/ptr-review-package-20261024-v5/acceptance-gate.json`
 - 签字文件模板：`docs/PTR_SIGNOFF_TEMPLATE.json`

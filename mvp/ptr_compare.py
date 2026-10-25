@@ -45,8 +45,8 @@ from mvp.ptr_ocr import iter_ptr_ocr_lines
 from mvp.ptr_llm import build_review_task, validate_llm_review
 
 
-PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.4"
-PTR_COMPARE_RULE_VERSION = "0.4.0-draft"
+PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.5"
+PTR_COMPARE_RULE_VERSION = "0.5.0-draft"
 PTR_COMPARE_RULE_ID = "PTR-P01"
 
 MATCHED = "matched"
@@ -68,16 +68,50 @@ CLAUSE_TOKEN_RE = re.compile(
     r"(?=(?:\s+[A-Za-z\u3400-\u9fff]|[.．、:：)）]\s*[A-Za-z\u3400-\u9fff]))"
 )
 STANDARD_RE = re.compile(r"(?:GB|YY)\s*\d+(?:\.\d+)+\s*-\s*\d{4}", re.IGNORECASE)
-TABLE_RE = re.compile(r"(?:表|附录)\s*[0-9A-Za-z一二三四五六七八九十]+", re.IGNORECASE)
-NUMBER_RE = re.compile(
-    r"(?P<operator>[<>≤≥=≈~～±+\-])?\s*"
-    r"(?P<number>\d+(?:\.\d+)?)\s*"
-    r"(?P<unit>%|[A-Za-zμµΩΩ°℃·]+(?:\s*/\s*(?:[A-Za-zμµΩΩ°℃·]+|件|器械))?)?"
-)
-UNIT_LABEL_RE = re.compile(
-    r"单位\s*[:：]\s*([A-Za-zμµΩΩ°℃·]+(?:\s*/\s*(?:[A-Za-zμµΩΩ°℃·]+|件|器械))?)(?:\s*[pP])?",
+TABLE_RE = re.compile(
+    r"(?:表|附录)\s*(?:[A-Za-z]?\d+|[A-Za-z]+)(?:[.\-－]\d+)*",
     re.IGNORECASE,
 )
+FIGURE_RE = re.compile(
+    r"(?:图|Fig(?:ure)?\.?)[ \t]*[A-Za-z]?\d+(?:[.\-－]\d+)*",
+    re.IGNORECASE,
+)
+PROTOCOL_IDENTIFIER_RE = re.compile(
+    r"\b(?:IEEE|RS|USB|CAN)\s*[-/]?\s*\d+(?:[.\-]\d+)*(?:-[A-Za-z0-9]+)?\b"
+    r"|\bISO\s*[-/]?\s*\d+(?:[.\-]\d+)*(?:-[A-Za-z0-9]+)?\b",
+    re.IGNORECASE,
+)
+NUMBER_RE = re.compile(
+    r"(?:(?P<operator>[<>≤≥=≈~～±+\-])\s*)?"
+    r"(?<![A-Za-zμµΩΩ])"
+    r"(?P<number>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>%|[A-Za-zμµΩΩ°℃·]+(?:\^?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)?"
+    r"(?:\s*/\s*(?:[A-Za-zμµΩΩ°℃·]+(?:\^?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)?|件|器械))?)?"
+)
+UNIT_LABEL_RE = re.compile(
+    r"单位\s*[:：]\s*(%|[A-Za-zμµΩΩ°℃·]+(?:\^?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)?"
+    r"(?:\s*/\s*(?:[A-Za-zμµΩΩ°℃·]+(?:\^?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)?|件|器械))?)",
+    re.IGNORECASE,
+)
+
+# Report 的标准要求单元格经常同时携带“接受标准”和执行测试时的附加
+# 参数。下面这些行不是接受标准本身：它们在 Report 中作为测试模式、缩放
+# 档位或适用型号出现。只按明确的标签识别，避免把普通正文中的数字泛化
+# 地删掉。原文仍保留在 evidence 中，并通过 auxiliary_lines 输出供审计。
+REPORT_AUXILIARY_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"运动距离缩放|"
+    r"(?:产品)?型号(?:规格)?|适用型号|"
+    r"测试条件|试验条件|检验条件|检测条件|测量条件|"
+    r"测试参数|试验参数|检验参数|检测参数|"
+    r"测试模式|试验模式|检验模式|检测模式|"
+    r"模式参数|工作模式|"
+    r"设置|参数"
+    r")\s*(?:[:：]|(?=\d|[A-Za-z]))",
+    re.IGNORECASE,
+)
+
+_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 
 _UNIT_PREFIX_SCALE = {
     "p": Decimal("1e-12"),
@@ -221,10 +255,66 @@ def _strip_document_noise(value: str) -> str:
     return re.sub(r"技术要求修订版[:：]?[A-Z](?=[\u3400-\u9fffA-Z0-9]|$)", "", value, flags=re.IGNORECASE)
 
 
-def _numeric_signature(value: Any) -> list[tuple[str, str, str]]:
+def _split_report_auxiliary_lines(value: Any) -> tuple[str, list[str]]:
+    """Separate clearly labelled Report test metadata from acceptance text.
+
+    Report templates sometimes append model lists, motion scaling presets or
+    test-mode parameters to the same ``标准要求`` cell.  Those lines are
+    useful evidence, but they are not the PTR acceptance criterion.  The
+    classifier is deliberately label-based and conservative; an unlabelled
+    line remains part of the acceptance text.
+    """
+
+    lines = str(value or "").splitlines()
+    acceptance: list[str] = []
+    auxiliary: list[str] = []
+    for line in lines:
+        if REPORT_AUXILIARY_LINE_RE.match(line.strip()):
+            auxiliary.append(line.strip())
+        else:
+            acceptance.append(line)
+    return "\n".join(acceptance), auxiliary
+
+
+def _normalization_for_numeric(value: Any) -> str:
+    """Normalize numeric input without joining adjacent line values.
+
+    ``normalize_comparison_text`` intentionally removes all whitespace for
+    text equality.  Doing that before numeric parsing can join ``mm`` with
+    the first digit on the next line (``mm0.96``), turning two facts into a
+    bogus unit.  Numeric parsing keeps a single separator instead.
+    """
+
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    replacements = {
+        "—": "-",
+        "–": "-",
+        "－": "-",
+        "～": "~",
+        "，": ",",
+        "；": ";",
+        "：": ":",
+        "（": "(",
+        "）": ")",
+        "【": "[",
+        "】": "]",
+        "µ": "μ",
+        "Ω": "Ω",
+        "×": "x",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"(?i)(?<=\d)\s*u\s*(?=[gGlLmMnNsSvVaApPΩ])", "μ", text)
+    text = re.sub(r"(?i)usec", "μs", text)
+    text = re.sub(r"(?i)msec", "ms", text)
+    text = re.sub(r"(?<=[\u3400-\u9fff]):\s*(?=[\u3400-\u9fff])", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _numeric_signature(value: Any, *, role: str | None = None) -> list[tuple[str, str, str]]:
     """Return ordered numeric facts as ``(operator, value, unit)`` tuples."""
 
-    text = _numeric_source_text(value)
+    text = _numeric_source_text(value, role=role)
     result: list[tuple[str, str, str]] = []
     for match in NUMBER_RE.finditer(text):
         number = match.group("number")
@@ -238,9 +328,9 @@ def _numeric_signature(value: Any) -> list[tuple[str, str, str]]:
     return result
 
 
-def _raw_numeric_signature(value: Any) -> list[tuple[str, str, str]]:
+def _raw_numeric_signature(value: Any, *, role: str | None = None) -> list[tuple[str, str, str]]:
     """Keep the written unit spelling for validating separate unit labels."""
-    text = _numeric_source_text(value)
+    text = _numeric_source_text(value, role=role)
     return [
         (match.group("operator") or "", match.group("number"),
          _clean_numeric_unit(match.group("unit") or ""))
@@ -248,10 +338,13 @@ def _raw_numeric_signature(value: Any) -> list[tuple[str, str, str]]:
     ]
 
 
-def _numeric_source_text(value: Any) -> str:
+def _numeric_source_text(value: Any, *, role: str | None = None) -> str:
     """Remove references that look numeric but are not measured facts."""
 
-    text = _strip_document_noise(normalize_comparison_text(value))
+    source = value
+    if str(role or "").lower() == "report":
+        source, _ = _split_report_auxiliary_lines(value)
+    text = _strip_document_noise(_normalization_for_numeric(source))
     # Chinese unit words in the source PDF are equivalent to their controlled
     # Latin spellings when they directly follow a number.
     text = re.sub(r"(?<=\d)(?:微米|μ米)", "μm", text)
@@ -262,23 +355,52 @@ def _numeric_source_text(value: Any) -> str:
     text = re.sub(r"(?<!\d)(?:470066|470067)(?=(?:左路|右路|:))", "", text)
     text = STANDARD_RE.sub("", text)
     text = TABLE_RE.sub("", text)
+    text = FIGURE_RE.sub("", text)
+    # Printed page counters and cross-page markers are layout evidence, not
+    # acceptance values (for example ``第 2/17 页``).
+    text = re.sub(r"第\s*\d+\s*(?:/\s*\d+\s*)?页", "", text)
+    text = re.sub(r"\b\d+\s*/\s*\d+\s*页", "", text)
+    # Document numbers and protocol identifiers are metadata in the PTR
+    # header/protocol matrix, not acceptance values.  Keep the surrounding
+    # text so a wording difference can still enter the manual text queue.
+    text = re.sub(
+        r"(?:文件|文档|图纸|编号)\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = PROTOCOL_IDENTIFIER_RE.sub("", text)
     # Deep clause references (2.10.1.2) cannot be a scalar measurement.
     text = re.sub(r"\d+\.\d+(?:\.\d+)+", "", text)
     # Short references such as “符合2.1.4的要求” need their local context.
     text = re.sub(r"(?:符合|满足|见|第|条款|章节|引用|参见|按照)\d+(?:\.\d+)?", "", text)
     # Product/document identifiers such as IEEE802.3, RS485 and R2 are not
-    # requirement measurements. Numeric values after a letter remain in the
-    # text channel, but do not enter the numeric fact signature.
-    text = re.sub(r"(?<=[A-Za-z])\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)?", "", text)
+    # requirement measurements. Keep a digit when it is a unit exponent
+    # (m3/mm3) or a known reciprocal-unit suffix (min-1); those are physical
+    # facts rather than identifiers.
+    product_number_re = re.compile(r"(?<=[A-Za-z])\d+(?:\.\d+)?(?:-[A-Za-z0-9]+)?")
+
+    def drop_product_number(match: re.Match[str]) -> str:
+        start = match.start()
+        prefix = text[max(0, start - 8) : start]
+        if re.search(r"(?:mm|cm|μm|nm|m|V|A|W|Hz|s|Ω|N|Pa|J|C|g|L|min)$", prefix):
+            return match.group(0)
+        return ""
+
+    text = product_number_re.sub(drop_product_number, text)
     return text
 
 
 def _clean_numeric_unit(value: str) -> str:
     unit = value.replace("µ", "μ").replace("Ω", "Ω")
+    unit = unit.translate(_SUPERSCRIPT_DIGITS)
+    unit = re.sub(r"\s+", "", unit).replace("^", "")
     # PDF extraction can join a), b) list markers to the preceding unit:
     # ``10 nmb)`` means 10 nm, while ``12 Nmb)`` means 12 Nm.  Keep
-    # uppercase base-unit letters (``mA``/``mV``) intact.
-    return re.sub(r"(nm|μm|mm|cm|m|n|N|Ω|V|A|W|s)[ab]$", r"\1", unit)
+    # uppercase base-unit letters (``mA``/``mV``) intact.  The same pattern
+    # handles c) and d) markers, but only after a known unit token.
+    unit = re.sub(r"(nm|μm|mm|cm|m|n|N|Ω|V|A|W|s)(?:[a-d])$", r"\1", unit)
+    return unit
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -291,20 +413,30 @@ def _parse_unit_product(value: str) -> tuple[str, Decimal] | None:
     """Return a base-unit product and scale for a controlled unit token."""
 
     raw = value.replace("µ", "μ").replace("Ω", "Ω")
+    raw = raw.translate(_SUPERSCRIPT_DIGITS)
+    raw = re.sub(r"\s+", "", raw).replace("^", "")
     if raw in _BASE_UNITS:
         return _BASE_UNITS[raw], Decimal(1)
     pieces = raw.split("·")
     canonical: list[str] = []
     scale = Decimal(1)
     for piece in pieces:
+        exponent = 1
+        exponent_match = re.fullmatch(r"(?P<body>.*?)(?P<exponent>\d+)", piece)
+        if exponent_match:
+            piece = exponent_match.group("body")
+            exponent = int(exponent_match.group("exponent"))
+            if exponent <= 0:
+                return None
         if piece in _BASE_UNITS:
-            canonical.append(_BASE_UNITS[piece])
+            canonical.append(f"{_BASE_UNITS[piece]}^{exponent}" if exponent != 1 else _BASE_UNITS[piece])
             continue
         match = re.fullmatch(r"(?P<prefix>[pnuμmckKMG])(?P<base>.+)", piece)
         if not match or match.group("base") not in _BASE_UNITS:
             return None
-        canonical.append(_BASE_UNITS[match.group("base")])
-        scale *= _UNIT_PREFIX_SCALE[match.group("prefix")]
+        canonical_base = _BASE_UNITS[match.group("base")]
+        canonical.append(f"{canonical_base}^{exponent}" if exponent != 1 else canonical_base)
+        scale *= _UNIT_PREFIX_SCALE[match.group("prefix")] ** exponent
     return "·".join(canonical), scale
 
 
@@ -334,6 +466,22 @@ def _canonical_numeric_fact(number: str, unit: str) -> tuple[str, str]:
     return _decimal_text(scaled), canonical_unit
 
 
+def _canonical_unit_label(value: str) -> str:
+    """Normalize a separately printed unit label without erasing scale."""
+
+    label = str(value or "").replace("µ", "μ").replace("Ω", "Ω")
+    label = label.translate(_SUPERSCRIPT_DIGITS)
+    label = re.sub(r"\s+", "", label).replace("^", "")
+    # Common PDF spellings of torque units omit the middle dot.  The alias is
+    # intentionally narrow: MΩ/GΩ and m³/mm³ remain distinct.
+    label = {
+        "Nm": "N·m",
+        "Ncm": "N·cm",
+        "Nmm": "N·mm",
+    }.get(label, label)
+    return label
+
+
 def _references(value: Any) -> dict[str, list[str]]:
     text = _strip_document_noise(normalize_comparison_text(value))
     standards = sorted({normalize_comparison_text(item) for item in STANDARD_RE.findall(text)})
@@ -344,17 +492,13 @@ def _references(value: Any) -> dict[str, list[str]]:
 def _unit_labels(value: Any) -> list[str]:
     labels = []
     for match in UNIT_LABEL_RE.finditer(unicodedata.normalize("NFKC", str(value or ""))):
-        label = normalize_comparison_text(match.group(1)).replace("µ", "μ").replace("Ω", "Ω")
-        # ``N·m`` and ``Nm`` are two common PDF spellings of the same
-        # controlled product unit.  Keep the original numeric facts intact;
-        # this only canonicalizes a separately printed unit label.
-        label = label.replace("·", "")
+        label = _canonical_unit_label(match.group(1))
         if label:
             labels.append(label)
     return sorted(set(labels))
 
 
-def _text_for_comparison(value: Any) -> str:
+def _text_for_comparison(value: Any, *, role: str | None = None) -> str:
     """Drop redundant Report ``单位：X`` labels from the text channel.
 
     The labels are compared separately by ``_compare_text``.  This keeps a
@@ -363,7 +507,10 @@ def _text_for_comparison(value: Any) -> str:
     ``单位：GΩ``) as a hard unit finding.
     """
 
-    text = unicodedata.normalize("NFKC", str(value or ""))
+    source = value
+    if str(role or "").lower() == "report":
+        source, _ = _split_report_auxiliary_lines(value)
+    text = unicodedata.normalize("NFKC", str(source or ""))
     text = UNIT_LABEL_RE.sub("", text)
     text = re.sub(r"(?<!\d)(?:470066|470067)(?=(?:左路|右路|:))", "", text)
     text = re.sub(r"(?:左路|右路)", "", text)
@@ -560,11 +707,16 @@ def _parse_clause_lines(
             )
     flush_current()
     for node in nodes:
-        node["normalized_text"] = _text_for_comparison(node["text"])
-        node["numeric_signature"] = _numeric_signature(node["text"])
-        node["raw_numeric_signature"] = _raw_numeric_signature(node["text"])
+        node["normalized_text"] = _text_for_comparison(node["text"], role=role)
+        node["numeric_signature"] = _numeric_signature(node["text"], role=role)
+        node["raw_numeric_signature"] = _raw_numeric_signature(node["text"], role=role)
         node["references"] = _references(node["text"])
         node["unit_labels"] = _unit_labels(node["text"])
+        node["auxiliary_lines"] = (
+            _split_report_auxiliary_lines(node["text"])[1]
+            if role == "report"
+            else []
+        )
         node["is_heading_only"] = len(node["text"].splitlines()) == 1 and not node["numeric_signature"]
     return nodes, {"candidate_count": len(nodes), "text_layer": bool(nodes)}
 
@@ -975,6 +1127,7 @@ def _report_nodes_from_item(
         }:
             requirement_parts.append(wide_requirement)
     requirement = "\n".join(requirement_parts)
+    report_acceptance_text, report_auxiliary_lines = _split_report_auxiliary_lines(requirement)
     combined = requirement
     matches = _report_clause_matches(combined) if combined else []
     segments: list[tuple[str, str]] = []
@@ -1011,11 +1164,12 @@ def _report_nodes_from_item(
                 "sequence": sequence,
                 "title": project,
                 "text": parent_text,
-                "normalized_text": _text_for_comparison(parent_text),
-                "numeric_signature": _numeric_signature(parent_text),
+                "normalized_text": _text_for_comparison(parent_text, role="report"),
+                "numeric_signature": _numeric_signature(parent_text, role="report"),
                 "references": _references(parent_text),
                 "unit_labels": _unit_labels(parent_text),
-                "is_heading_only": not _numeric_signature(parent_text),
+                "auxiliary_lines": report_auxiliary_lines,
+                "is_heading_only": not _numeric_signature(parent_text, role="report"),
                 "pages": sorted({int(page) for page in item.get("pages", [])}),
                 "evidence": physical_evidence,
                 "table_rows": table_rows,
@@ -1032,11 +1186,12 @@ def _report_nodes_from_item(
                 "sequence": sequence,
                 "title": body.splitlines()[0] if body else "",
                 "text": body,
-                "normalized_text": _text_for_comparison(body),
-                "numeric_signature": _numeric_signature(body),
+                "normalized_text": _text_for_comparison(body, role="report"),
+                "numeric_signature": _numeric_signature(body, role="report"),
                 "references": _references(body),
                 "unit_labels": _unit_labels(body),
-                "is_heading_only": len(body.splitlines()) == 1 and not _numeric_signature(body),
+                "auxiliary_lines": _split_report_auxiliary_lines(body)[1],
+                "is_heading_only": len(body.splitlines()) == 1 and not _numeric_signature(body, role="report"),
                 "pages": sorted({int(page) for page in item.get("pages", [])}),
                 "evidence": physical_evidence,
                 "table_rows": table_rows,
@@ -1103,9 +1258,80 @@ def _reference_binding_status(node: Mapping[str, Any]) -> tuple[str, str | None]
     return MATCHED, None
 
 
+def _unit_peak_context(*values: Any) -> bool:
+    text = " ".join(str(value or "") for value in values)
+    return bool(re.search(r"(?:峰值|peak(?:\s*[- ]?to[- ]?peak)?|peak\s*value)", text, re.IGNORECASE))
+
+
+def _unit_equivalent(left: str, right: str, *, peak_context: bool = False) -> tuple[bool, str]:
+    """Compare two printed units while retaining scale and peak semantics."""
+
+    left_label = _canonical_unit_label(left)
+    right_label = _canonical_unit_label(right)
+    if left_label == right_label:
+        return True, "EXACT_UNIT_MATCH"
+    left_peak = left_label.endswith("p") and len(left_label) > 1
+    right_peak = right_label.endswith("p") and len(right_label) > 1
+    left_base = left_label[:-1] if left_peak else left_label
+    right_base = right_label[:-1] if right_peak else right_label
+    if left_peak != right_peak and not peak_context:
+        return False, "UNIT_PEAK_SEMANTICS_UNRESOLVED"
+    left_parsed = _parse_unit_product(left_base)
+    right_parsed = _parse_unit_product(right_base)
+    if left_parsed is None or right_parsed is None:
+        return False, "UNIT_SPELLING_DIFFERENCE"
+    if left_parsed == right_parsed:
+        if left_peak != right_peak:
+            return True, "UNIT_PEAK_SUFFIX_EQUIVALENT"
+        return True, "UNIT_SI_EQUIVALENT"
+    # Same physical dimension with different prefix scales is deliberately a
+    # risk, not an equivalence.  This keeps MΩ/GΩ and m³/mm³ visible.
+    if left_parsed[0] == right_parsed[0]:
+        return False, "UNIT_SCALE_MISMATCH"
+    return False, "UNIT_DIMENSION_MISMATCH"
+
+
+def _unit_labels_match_numeric(
+    labels: Sequence[str],
+    raw_units: Sequence[str],
+    *,
+    peak_context: bool,
+) -> tuple[bool, str | None]:
+    if not labels:
+        return True, None
+    if not raw_units:
+        return True, None
+    reasons: list[str] = []
+    for label in labels:
+        matches: list[str] = []
+        for raw_unit in raw_units:
+            equivalent, reason = _unit_equivalent(label, raw_unit, peak_context=peak_context)
+            if equivalent:
+                matches.append(reason)
+        if not matches:
+            # Prefer a scale-specific explanation when dimensions agree.
+            for raw_unit in raw_units:
+                _, reason = _unit_equivalent(label, raw_unit, peak_context=peak_context)
+                if reason == "UNIT_SCALE_MISMATCH":
+                    return False, reason
+            return False, "UNIT_LABEL_CONTRADICTS_NUMERIC"
+        reasons.extend(matches)
+    if "UNIT_PEAK_SUFFIX_EQUIVALENT" in reasons:
+        return True, "UNIT_PEAK_SUFFIX_EQUIVALENT"
+    if "UNIT_SI_EQUIVALENT" in reasons:
+        return True, "UNIT_SI_EQUIVALENT"
+    return True, "EXACT_UNIT_MATCH"
+
+
 def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_children: bool) -> dict[str, Any]:
-    ptr_text = str(ptr.get("normalized_text") or _text_for_comparison(ptr.get("text")))
-    report_text = str(report.get("normalized_text") or _text_for_comparison(report.get("text")))
+    ptr_text = str(
+        ptr.get("normalized_text")
+        or _text_for_comparison(ptr.get("text"), role=str(ptr.get("role") or ""))
+    )
+    report_text = str(
+        report.get("normalized_text")
+        or _text_for_comparison(report.get("text"), role=str(report.get("role") or ""))
+    )
     if ptr_text == report_text:
         text_status = MATCHED
         reason = "EXACT_NORMALIZED_MATCH"
@@ -1118,8 +1344,14 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     else:
         text_status = MISMATCH
         reason = "TEXT_MISMATCH"
-    ptr_numbers = list(ptr.get("numeric_signature") or _numeric_signature(ptr.get("text")))
-    report_numbers = list(report.get("numeric_signature") or _numeric_signature(report.get("text")))
+    ptr_numbers = list(
+        ptr.get("numeric_signature")
+        or _numeric_signature(ptr.get("text"), role=str(ptr.get("role") or ""))
+    )
+    report_numbers = list(
+        report.get("numeric_signature")
+        or _numeric_signature(report.get("text"), role=str(report.get("role") or ""))
+    )
     numeric_status = MATCHED if _numeric_facts_equal(ptr_numbers, report_numbers) else MISMATCH
     ptr_refs = ptr.get("references") or _references(ptr.get("text"))
     report_refs = report.get("references") or _references(report.get("text"))
@@ -1134,24 +1366,76 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     binding_reason = ptr_binding_reason or report_binding_reason
     ptr_units = list(ptr.get("unit_labels") or _unit_labels(ptr.get("text")))
     report_units = list(report.get("unit_labels") or _unit_labels(report.get("text")))
-    ptr_raw_units = {unit for _, _, unit in (ptr.get("raw_numeric_signature") or _raw_numeric_signature(ptr.get("text"))) if unit}
-    report_raw_units = {unit for _, _, unit in (report.get("raw_numeric_signature") or _raw_numeric_signature(report.get("text"))) if unit}
-    if ptr_units and report_units:
-        unit_status = MATCHED if ptr_units == report_units else MISMATCH
-    elif report_units:
-        # A Report unit column is acceptable when it repeats a unit already
-        # attached to a numeric fact.  A contradictory label is a hard issue.
-        if not report_numbers:
+    ptr_raw_units = {
+        unit
+        for _, _, unit in (
+            ptr.get("raw_numeric_signature")
+            or _raw_numeric_signature(ptr.get("text"), role=str(ptr.get("role") or ""))
+        )
+        if unit
+    }
+    report_raw_units = {
+        unit
+        for _, _, unit in (
+            report.get("raw_numeric_signature")
+            or _raw_numeric_signature(report.get("text"), role=str(report.get("role") or ""))
+        )
+        if unit
+    }
+    peak_context = _unit_peak_context(ptr.get("text"), report.get("text"))
+    ptr_label_ok, ptr_label_reason = _unit_labels_match_numeric(
+        ptr_units, sorted(ptr_raw_units), peak_context=peak_context
+    )
+    report_label_ok, report_label_reason = _unit_labels_match_numeric(
+        report_units, sorted(report_raw_units), peak_context=peak_context
+    )
+    if not ptr_label_ok or not report_label_ok:
+        unit_status = MISMATCH
+        unit_reason = ptr_label_reason or report_label_reason or "UNIT_LABEL_CONTRADICTS_NUMERIC"
+    elif ptr_units and report_units:
+        pair_reasons: list[str] = []
+        all_left_match = True
+        for left in ptr_units:
+            left_matches = []
+            for right in report_units:
+                equivalent, reason = _unit_equivalent(left, right, peak_context=peak_context)
+                if equivalent:
+                    left_matches.append(reason)
+            if not left_matches:
+                all_left_match = False
+            pair_reasons.extend(left_matches)
+        all_right_match = all(
+            any(_unit_equivalent(right, left, peak_context=peak_context)[0] for left in ptr_units)
+            for right in report_units
+        )
+        if pair_reasons and all_left_match and all_right_match:
             unit_status = MATCHED
-        elif ptr_raw_units:
-            unit_status = MATCHED if set(report_units).issubset(ptr_raw_units) else MISMATCH
-        elif report_raw_units:
-            unit_status = MATCHED if set(report_units).issubset(report_raw_units) else MISMATCH
+            unit_reason = (
+                "UNIT_PEAK_SUFFIX_EQUIVALENT"
+                if "UNIT_PEAK_SUFFIX_EQUIVALENT" in pair_reasons
+                else "UNIT_SI_EQUIVALENT"
+                if "UNIT_SI_EQUIVALENT" in pair_reasons
+                else "EXACT_UNIT_MATCH"
+            )
         else:
-            report_fact_units = {unit for _, _, unit in report.get("numeric_signature", []) if unit}
-            unit_status = MATCHED if set(report_units).issubset(report_fact_units) else MISMATCH
+            unit_status = MISMATCH
+            mismatch_reasons = [
+                _unit_equivalent(left, right, peak_context=peak_context)[1]
+                for left in ptr_units
+                for right in report_units
+            ]
+            unit_reason = (
+                "UNIT_SCALE_MISMATCH"
+                if "UNIT_SCALE_MISMATCH" in mismatch_reasons
+                else "UNIT_DIMENSION_MISMATCH"
+                if "UNIT_DIMENSION_MISMATCH" in mismatch_reasons
+                else "UNIT_PEAK_SEMANTICS_UNRESOLVED"
+                if "UNIT_PEAK_SEMANTICS_UNRESOLVED" in mismatch_reasons
+                else "UNIT_SPELLING_DIFFERENCE"
+            )
     else:
         unit_status = MATCHED
+        unit_reason = ptr_label_reason or report_label_reason or "NO_CONTRADICTORY_UNIT_LABEL"
     table_comparison = _table_comparison(ptr, report)
     if numeric_status == MISMATCH and not (
         table_comparison["status"] == MANUAL
@@ -1187,6 +1471,12 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
             "status": text_status,
             "ptr_normalized": ptr_text,
             "report_normalized": report_text,
+            "ptr_source": str(ptr.get("text") or ""),
+            "report_source": str(report.get("text") or ""),
+            "report_auxiliary_lines": list(
+                report.get("auxiliary_lines")
+                or _split_report_auxiliary_lines(report.get("text"))[1]
+            ),
         },
         "numeric_comparison": {
             "status": numeric_status,
@@ -1206,6 +1496,17 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
             "status": unit_status,
             "ptr": ptr_units,
             "report": report_units,
+            "reason_code": unit_reason,
+            "risk": "safe_equivalent"
+            if unit_status == MATCHED and unit_reason in {
+                "UNIT_SI_EQUIVALENT",
+                "UNIT_PEAK_SUFFIX_EQUIVALENT",
+                "EXACT_UNIT_MATCH",
+                "NO_CONTRADICTORY_UNIT_LABEL",
+            }
+            else "hard_mismatch"
+            if unit_status == MISMATCH
+            else "unresolved",
         },
         "table_comparison": table_comparison,
         "decision": decision,
