@@ -97,8 +97,18 @@ class RunStateServerTests(unittest.TestCase):
             csrf=True,
         )
         self.assertEqual(status, 200)
+        self.assertFalse(preflight["enabled"])
         self.assertFalse(preflight["can_create_run"])
         self.assertIn("PTR_NOT_VALIDATED", preflight["blocking_issues"])
+        self.assertEqual(
+            preflight["coverage"],
+            {"planned": 1, "ready": 0, "not_applicable": 0, "unsupported": 0, "blocked": 1},
+        )
+        self.assertEqual(
+            [(item["role"], item["input_field"]) for item in preflight["input_documents"]],
+            [("report", "report_document_id"), ("ptr", "ptr_document_id")],
+        )
+        self.assertEqual(preflight["planned_rules"][0]["disposition"], "blocked")
         request = Request(
             self.base_url + f"/api/v1/cases/{case['id']}/runs",
             method="POST",

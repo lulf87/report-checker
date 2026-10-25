@@ -14,9 +14,18 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from mvp.capabilities import validate_mode
+
 
 PTR_ACCEPTANCE_SCHEMA_VERSION = "ptr-acceptance-gate-0.1"
 DEFAULT_TRIAL_SAMPLES = ("2948", "0775", "1539")
+PTR_LIFECYCLE_OPERATIONS = (
+    "preflight",
+    "create_run",
+    "worker_job",
+    "coordinator",
+    "publish_result",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -25,6 +34,38 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def ptr_lifecycle_gate_diagnostics() -> dict[str, Any]:
+    """Describe the formal PTR gate at every Run lifecycle boundary.
+
+    A complete trial review is evidence for business sign-off.  It is not a
+    capability switch.  Keeping the operation checks in the acceptance
+    report makes that distinction visible and gives regression tests one
+    stable diagnostic to assert against.
+    """
+
+    operation_checks: dict[str, dict[str, Any]] = {}
+    capability: dict[str, Any] | None = None
+    for operation in PTR_LIFECYCLE_OPERATIONS:
+        decision = validate_mode("report_ptr", operation=operation)
+        capability = decision.get("capability") or capability
+        details = decision.get("details") or {}
+        operation_checks[operation] = {
+            "allowed": bool(decision.get("enabled")),
+            "code": decision.get("code"),
+            "status": decision.get("status"),
+            "disabled_reason_code": details.get("disabled_reason_code"),
+            "effect": "blocked_plan" if operation == "preflight" else "rejected",
+        }
+    capability = capability or {}
+    return {
+        "mode": "report_ptr",
+        "catalog_status": capability.get("status"),
+        "enabled": bool(capability.get("enabled")),
+        "disabled_reason_code": capability.get("disabled_reason_code"),
+        "operations": operation_checks,
+    }
 
 
 def audit_review_batch(
@@ -84,11 +125,14 @@ def audit_review_batch(
             item["error"] = str(error)
         all_ready = all_ready and bool(item.get("ready"))
         results.append(item)
+    capability_gate = ptr_lifecycle_gate_diagnostics()
+    capability_gate["next_action"] = "BUSINESS_SIGNOFF_REQUIRED" if all_ready else "COMPLETE_TRIAL_REVIEW"
     return {
         "schema_version": PTR_ACCEPTANCE_SCHEMA_VERSION,
         "status": "ready_for_signoff" if all_ready else "blocked",
         "can_enable_report_ptr": False,
         "reason_code": "PTR_NOT_VALIDATED",
+        "capability_gate": capability_gate,
         "samples": results,
     }
 
@@ -110,4 +154,10 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["DEFAULT_TRIAL_SAMPLES", "PTR_ACCEPTANCE_SCHEMA_VERSION", "audit_review_batch"]
+__all__ = [
+    "DEFAULT_TRIAL_SAMPLES",
+    "PTR_ACCEPTANCE_SCHEMA_VERSION",
+    "PTR_LIFECYCLE_OPERATIONS",
+    "audit_review_batch",
+    "ptr_lifecycle_gate_diagnostics",
+]

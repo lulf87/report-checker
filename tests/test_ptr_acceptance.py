@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mvp.ptr_acceptance import audit_review_batch
+from mvp.ptr_acceptance import audit_review_batch, ptr_lifecycle_gate_diagnostics
 from mvp.ptr_compare import EXCLUDED, MANUAL, MATCHED, MISMATCH
 from mvp.ptr_review_package import apply_review_csv, build_ptr_review_package
 
@@ -21,6 +21,7 @@ class PtrAcceptanceGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertFalse(result["can_enable_report_ptr"])
         self.assertEqual(result["samples"][0]["reason_code"], "REVIEWED_PACKAGE_MISSING")
+        self.assertEqual(result["capability_gate"]["next_action"], "COMPLETE_TRIAL_REVIEW")
 
     def test_complete_reviewed_package_is_ready_only_for_signoff(self) -> None:
         report = next((ROOT / "素材/report/1539").glob("*.pdf"))
@@ -53,6 +54,36 @@ class PtrAcceptanceGateTests(unittest.TestCase):
             result = audit_review_batch(root=ROOT, batch_dir=batch, samples=("1539",))
         self.assertEqual(result["status"], "ready_for_signoff")
         self.assertFalse(result["can_enable_report_ptr"])
+        gate = result["capability_gate"]
+        self.assertEqual(gate["next_action"], "BUSINESS_SIGNOFF_REQUIRED")
+        self.assertEqual(gate["catalog_status"], "disabled")
+        self.assertFalse(gate["enabled"])
+        self.assertEqual(gate["disabled_reason_code"], "PTR_NOT_VALIDATED")
+        self.assertEqual(
+            set(gate["operations"]),
+            {"preflight", "create_run", "worker_job", "coordinator", "publish_result"},
+        )
+        self.assertTrue(all(not check["allowed"] for check in gate["operations"].values()))
+        self.assertTrue(all(check["code"] == "MODE_DISABLED" for check in gate["operations"].values()))
+        self.assertEqual(gate["operations"]["preflight"]["effect"], "blocked_plan")
+        self.assertTrue(
+            all(
+                gate["operations"][name]["effect"] == "rejected"
+                for name in ("create_run", "worker_job", "coordinator", "publish_result")
+            )
+        )
+
+    def test_lifecycle_diagnostic_is_closed_over_the_formal_boundaries(self) -> None:
+        diagnostic = ptr_lifecycle_gate_diagnostics()
+        self.assertEqual(diagnostic["mode"], "report_ptr")
+        self.assertFalse(diagnostic["enabled"])
+        self.assertEqual(diagnostic["catalog_status"], "disabled")
+        self.assertEqual(diagnostic["disabled_reason_code"], "PTR_NOT_VALIDATED")
+        for operation, check in diagnostic["operations"].items():
+            with self.subTest(operation=operation):
+                self.assertFalse(check["allowed"])
+                self.assertEqual(check["code"], "MODE_DISABLED")
+                self.assertEqual(check["disabled_reason_code"], "PTR_NOT_VALIDATED")
 
 
 if __name__ == "__main__":

@@ -33,7 +33,10 @@ class JobSpec:
             raise WorkerProtocolError("run_id 必须是非空字符串")
         decision = validate_mode(self.mode, operation="worker_job")
         if not decision["enabled"]:
-            raise WorkerProtocolError(f"{decision['code']}: {decision['message']}")
+            details = decision.get("details") or {}
+            reason_code = details.get("disabled_reason_code")
+            suffix = f" [{reason_code}]" if reason_code else ""
+            raise WorkerProtocolError(f"{decision['code']}{suffix}: {decision['message']}")
         if not self.report_path.is_absolute() or not self.output_dir.is_absolute():
             raise WorkerProtocolError("Worker JobSpec 的路径必须是绝对路径")
         required_roles = tuple(decision["capability"]["required_roles"])

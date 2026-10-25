@@ -271,6 +271,8 @@ reason_code
 - 规则、解析器、单位词典、提示词、模型和结果 schema 都有版本号；
 - 全流程通过 preflight、worker、publish 和双 PDF 定位回归。
 
+验收包全部完成后，验收门只进入 `ready_for_signoff`，不会直接切换能力目录。业务签字前，`report_ptr` 仍必须在 preflight、create、Worker、coordinator 和 publish 五个边界返回 `MODE_DISABLED / PTR_NOT_VALIDATED`；遗留的旧 Run 也必须失败收口，不能产生空 Finding 或 `succeeded` 结果。
+
 在此之前，PTR 可以生成“解析草案/人工复核队列”，但不能生成空通过或对外宣称已经完成 PTR 自动核对。
 
 ## 7. 最终建议

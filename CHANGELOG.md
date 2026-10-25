@@ -25,6 +25,7 @@
 - 增加 `mvp.ptr_review_package`，可为 2948/0775/1539 生成带源哈希、证据页码、硬字段状态和待复核栏的人工验收包；包内容不能发布或改写机器结论。
 - Review Package 增加 CSV 复核导入校验：必须逐条填写确认动作，机器状态、原因码、证据和源哈希不可改写，导入结果仍保持不可发布。
 - 增加 `mvp.ptr_acceptance` 试点验收门，校验三份复核包覆盖完整、源 PDF 哈希未变；门结果只能是 `ready_for_signoff`，不会自行开启 `report_ptr`。
+- 补充 PTR 验收门诊断和生命周期回归：验收包就绪仍保持 `report_ptr` 禁用，preflight、create、Worker、coordinator、publish 及遗留 Run 路径均拒绝 `PTR_NOT_VALIDATED`，不产生空通过。
 - PTR 文本措辞差异现在保守进入 `manual / TEXT_REVIEW_REQUIRED`；只有数值、单位、引用、条款覆盖等确定性硬差异保留 `mismatch`，表格结构不足继续使用 `TABLE_CONTENT_NOT_EXTRACTED`。
 - PTR 页面中条款号与标题分列时（如 2948 的 `2.4.1`/“安全通用要求”），解析器会按同一视觉行合并，避免把子条款并入父条款正文。
 - Report 无边框表格状态按当前条款节点隔离，避免同一序号前一条款的表格布局影响后续条款正文；2948 的 2.1.13/2.1.14 续行现在完整保留。
