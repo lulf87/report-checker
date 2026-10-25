@@ -284,7 +284,8 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.2.2"]["decision"], MANUAL)
         self.assertEqual(by_clause["2.2.2"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
         self.assertEqual(by_clause["2.2.6"]["decision"], MATCHED)
-        self.assertEqual(by_clause["2.6"]["decision"], MISMATCH)
+        self.assertEqual(by_clause["2.6"]["decision"], MATCHED)
+        self.assertEqual(by_clause["2.6"]["table_comparison"]["reason_code"], "TABLE_SEMANTIC_NORMALIZED_MATCH")
         self.assertEqual(by_clause["2.1"]["decision"], EXCLUDED)
         self.assertTrue(rules["summary"]["conserved"])
         self.assertFalse(rules["publishable"])
@@ -295,10 +296,11 @@ class PtrCompareSampleTests(unittest.TestCase):
         by_clause = {entry["clause_id"]: entry for entry in result["coverage_ledger"]}
         self.assertEqual(by_clause["2.2.2"]["decision"], MANUAL)
         self.assertEqual(by_clause["2.2.6"]["decision"], MATCHED)
-        self.assertEqual(by_clause["2.6"]["decision"], MANUAL)
-        self.assertEqual(by_clause["2.6"]["reason_code"], "LLM_REVIEW_PENDING")
+        self.assertEqual(by_clause["2.6"]["decision"], MATCHED)
+        self.assertEqual(by_clause["2.6"]["reason_code"], "EXACT_NORMALIZED_MATCH")
         self.assertFalse(result["llm"]["used"])
         self.assertGreater(result["llm"]["queue_count"], 0)
+        self.assertNotIn("2.6", {task["clause_id"] for task in result["llm"]["review_queue"]})
         self.assertTrue(result["llm"]["review_queue"][0]["instructions"])
         self.assertFalse(result["publishable"])
 
@@ -316,6 +318,16 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.6.1"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
         self.assertEqual(result["summary"]["eligible"], result["summary"]["accounted"])
         self.assertTrue(all(entry["evidence"] for entry in result["coverage_ledger"]))
+
+    def test_1539_cross_page_table_rows_are_reconstructed(self) -> None:
+        report_path, _ = sample_paths("1539")
+        report = extract_report_clauses(report_path)
+        node = next(node for node in report["nodes"] if node.get("clause_id") == "2.6")
+        rows = node["table_rows"]
+        self.assertGreaterEqual(len(rows), 20)
+        self.assertEqual({row["table_id"] for row in rows}, {"report:table:item:159:clause:2.6"})
+        self.assertEqual(node["text"], "软件功能\n射频脉冲电场消融系统软件应具备以下功能：\n表6 软件功能")
+        self.assertTrue(any(row["matrix_row"][0] == "" and row["matrix_row"][1] == "显示消融图" for row in rows))
 
     def test_0780_deep_lettered_scope_keeps_ledger_ids_unique(self) -> None:
         report_path, ptr_path = sample_paths("0780")

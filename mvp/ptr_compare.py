@@ -721,6 +721,45 @@ def _table_fingerprint(rows: Any) -> tuple[tuple[str, ...], ...]:
     return tuple(normalized)
 
 
+def _table_cell_items(value: Any) -> tuple[str, ...]:
+    """Normalize a cell into bullet items without losing wrapped text."""
+
+    raw = unicodedata.normalize("NFKC", str(value or ""))
+    parts = re.split(r"[\uf09f●•]\s*", raw)
+    result = []
+    for part in parts:
+        normalized = _text_for_comparison(part)
+        if normalized:
+            result.append(normalized)
+    return tuple(result)
+
+
+def _semantic_table_fingerprint(rows: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Group vertically continued rows by their first physical column."""
+
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return ()
+    grouped: dict[str, list[str]] = {}
+    order: list[str] = []
+    current = ""
+    for row in rows:
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
+            continue
+        cells = [str(value or "") for value in row]
+        if len(cells) < 2:
+            continue
+        key = _text_for_comparison(cells[0])
+        if key:
+            current = key
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+        if not current:
+            continue
+        grouped[current].extend(_table_cell_items(cells[1]))
+    return tuple((key, tuple(grouped[key])) for key in order if grouped[key])
+
+
 def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict[str, Any]:
     """Compare only physically extracted table matrices; otherwise stay manual."""
 
@@ -730,6 +769,7 @@ def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict
     ptr_tables = list(ptr.get("table_rows") or [])
     report_tables = list(report.get("table_rows") or [])
     ptr_fingerprints = {_table_fingerprint(table.get("rows")) for table in ptr_tables}
+    ptr_semantic_fingerprints = {_semantic_table_fingerprint(table.get("rows")) for table in ptr_tables}
     grouped_report: dict[str, list[list[str]]] = defaultdict(list)
     for index, table in enumerate(report_tables):
         table_id = str(table.get("table_id") or f"row:{index}")
@@ -745,14 +785,24 @@ def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict
         if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
             grouped_report[table_id].append([str(value or "") for value in row])
     report_fingerprints = {_table_fingerprint(rows) for rows in grouped_report.values()}
+    report_semantic_fingerprints = {_semantic_table_fingerprint(rows) for rows in grouped_report.values()}
     ptr_fingerprints.discard(())
     report_fingerprints.discard(())
+    ptr_semantic_fingerprints.discard(())
+    report_semantic_fingerprints.discard(())
     if ptr_fingerprints and report_fingerprints and ptr_fingerprints & report_fingerprints:
         return {
             "status": MATCHED,
             "reason_code": "TABLE_NORMALIZED_MATCH",
             "ptr_tables": len(ptr_fingerprints),
             "report_tables": len(report_fingerprints),
+        }
+    if ptr_semantic_fingerprints and report_semantic_fingerprints and ptr_semantic_fingerprints & report_semantic_fingerprints:
+        return {
+            "status": MATCHED,
+            "reason_code": "TABLE_SEMANTIC_NORMALIZED_MATCH",
+            "ptr_tables": len(ptr_semantic_fingerprints),
+            "report_tables": len(report_semantic_fingerprints),
         }
     return {
         "status": MANUAL,

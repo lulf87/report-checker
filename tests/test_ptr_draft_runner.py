@@ -36,7 +36,8 @@ class PtrDraftRunnerTests(unittest.TestCase):
             result = run_ptr_draft(report_path=report, ptr_path=ptr, output_dir=Path(temporary) / "draft", ocr_mode="never")
         self.assertEqual([item["role"] for item in result["files"]], ["report", "ptr"])
         self.assertTrue(all(item["unchanged"] for item in result["source_integrity"]))
-        self.assertEqual(result["status_counts"]["error"], 2)
+        self.assertEqual(result["status_counts"]["error"], 1)
+        self.assertEqual(result["status_counts"]["manual"], 1)
 
 
 if __name__ == "__main__":

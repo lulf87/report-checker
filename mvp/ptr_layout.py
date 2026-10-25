@@ -377,7 +377,26 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                 "duplicates": duplicates, "ocr": ocr}}
 
 
-def _requirement_cells(page: fitz.Page, table: Any, row_index: int, left: float, right: float) -> list[dict[str, Any]]:
+def _requirement_column_starts(table: Any, left: float, right: float) -> list[float]:
+    """Return physical x starts for the merged Report requirement columns."""
+
+    starts = {
+        round(float(cell[0]), 3)
+        for row in table.rows
+        for cell in row.cells
+        if cell is not None and float(cell[0]) >= left - 1.5 and float(cell[0]) < right - 1.5
+    }
+    return sorted(starts)
+
+
+def _requirement_cells(
+    page: fitz.Page,
+    table: Any,
+    row_index: int,
+    left: float,
+    right: float,
+    starts: Sequence[float] = (),
+) -> list[dict[str, Any]]:
     result = []
     seen = set()
     for cell in table.rows[row_index].cells:
@@ -391,7 +410,17 @@ def _requirement_cells(page: fitz.Page, table: Any, row_index: int, left: float,
         if rect.x0 < left - 1.5 or rect.x0 >= right - 1.5:
             continue
         raw_text = page.get_text("text", clip=rect).strip()
-        result.append({"text": _clean_requirement_text(raw_text), "raw_text": raw_text, "bbox": _box(rect)})
+        column_index = None
+        if starts:
+            nearest = min(range(len(starts)), key=lambda index: abs(float(starts[index]) - rect.x0))
+            if abs(float(starts[nearest]) - rect.x0) <= 3.0:
+                column_index = nearest
+        result.append({
+            "text": _clean_requirement_text(raw_text),
+            "raw_text": raw_text,
+            "bbox": _box(rect),
+            "column_index": column_index,
+        })
     return sorted(result, key=lambda c: c["bbox"][0])
 
 
@@ -428,21 +457,86 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                         title = str(row[mapping["检验项目"]] or "").strip()
                         node = _new_node("report", active_clause, title, digest, f"item:{active_sequence}:")
                         node["sequence"] = active_sequence
-                        groups[key] = {"parent": node, "current": node, "nodes": {active_clause: node}, "table": []}
+                        groups[key] = {
+                            "parent": node,
+                            "current": node,
+                            "nodes": {active_clause: node},
+                            "table": [],
+                            "table_mode": False,
+                            "table_starts": [],
+                        }
                         nodes.append(node)
                     group = groups[key]
-                    cells = _requirement_cells(page, table, row_index, left, right)
+                    starts = _requirement_column_starts(table, left, right)
+                    if len(starts) > len(group.get("table_starts", [])):
+                        group["table_starts"] = starts
+                    cells = _requirement_cells(page, table, row_index, left, right, group.get("table_starts", starts))
                     if not cells or not any(cell.get("text") for cell in cells):
                         continue
                     text = "\n".join(cell["text"] for cell in cells if cell["text"])
+                    has_clause_heading = any(CLAUSE.match(line.strip()) for line in text.splitlines())
+                    physical_columns = [
+                        int(cell["column_index"])
+                        for cell in cells
+                        if cell.get("column_index") is not None
+                    ]
+                    has_split_requirement_columns = len(physical_columns) > 1 or any(
+                        index > 0 for index in physical_columns
+                    )
+                    if has_split_requirement_columns and not has_clause_heading:
+                        group["table_mode"] = True
+                    if group.get("table_mode") and not has_clause_heading:
+                        width = max(
+                            len(group.get("table_starts", [])),
+                            max(physical_columns, default=-1) + 1,
+                        )
+                        matrix_row = [""] * width
+                        for cell in cells:
+                            index = cell.get("column_index")
+                            if index is None:
+                                index = 0
+                            value = str(cell.get("text") or "")
+                            matrix_row[index] = (
+                                f"{matrix_row[index]}\n{value}" if matrix_row[index] and value else matrix_row[index] or value
+                            ).strip()
+                        table_id = f"report:table:item:{active_sequence}:clause:{active_clause}"
+                        group["current"]["table_rows"].append({
+                            "pdf_page": page.number + 1,
+                            "table_id": table_id,
+                            "cells": cells,
+                            "matrix_row": matrix_row,
+                            "rows": [matrix_row],
+                            "source_sha256": digest,
+                            "extraction_method": "report_requirement_columns",
+                            "binding": "physical",
+                        })
+                        group["current"]["evidence"].extend(
+                            evidence(
+                                "report",
+                                page.number + 1,
+                                cell["bbox"],
+                                cell.get("raw_text", cell["text"]),
+                                digest,
+                                "report_requirement_cell",
+                            )
+                            for cell in cells
+                        )
+                        continue
                     # A multi-column row belongs to the active requirement
                     # table. All physical columns, including blank values,
                     # survive; merged keys are inherited only by table logic.
-                    if len(cells) > 1 and not any(CLAUSE.match(t.strip()) for t in text.splitlines()):
+                    if len(cells) > 1 and not has_clause_heading:
+                        width = max(len(group.get("table_starts", [])), max(physical_columns, default=-1) + 1)
+                        matrix_row = [""] * width
+                        for cell in cells:
+                            index = cell.get("column_index")
+                            if index is None:
+                                index = 0
+                            matrix_row[index] = str(cell.get("text") or "")
                         group["current"]["table_rows"].append({"pdf_page": page.number+1,
-                            "table_id": f"report:table:p{page.number+1}:{table_index}",
-                            "cells": cells, "matrix_row": [cell["text"] for cell in cells],
-                            "rows": [[cell["text"] for cell in cells]], "source_sha256": digest,
+                            "table_id": f"report:table:item:{active_sequence}:clause:{active_clause}",
+                            "cells": cells, "matrix_row": matrix_row,
+                            "rows": [matrix_row], "source_sha256": digest,
                             "extraction_method": "report_requirement_columns", "binding": "physical"})
                         group["current"]["evidence"].extend(evidence("report", page.number+1, c["bbox"], c.get("raw_text", c["text"]), digest,
                                 "report_requirement_cell") for c in cells)
