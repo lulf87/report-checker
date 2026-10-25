@@ -545,15 +545,19 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             "current": node,
                             "nodes": {active_clause: node},
                             "table": [],
-                            "table_mode": False,
-                            "table_starts": [],
+                            "table_states": {},
                         }
                         nodes.append(node)
                     group = groups[key]
+                    current_node = group["current"]
+                    state_key = str(current_node.get("node_id") or "")
+                    table_state = group.setdefault("table_states", {}).setdefault(
+                        state_key, {"mode": False, "starts": []}
+                    )
                     starts = _requirement_column_starts(table, left, right)
-                    if len(starts) > len(group.get("table_starts", [])):
-                        group["table_starts"] = starts
-                    cells = _requirement_cells(page, table, row_index, left, right, group.get("table_starts", starts))
+                    if len(starts) > len(table_state.get("starts", [])):
+                        table_state["starts"] = starts
+                    cells = _requirement_cells(page, table, row_index, left, right, table_state.get("starts", starts))
                     if not cells or not any(cell.get("text") for cell in cells):
                         continue
                     text = "\n".join(cell["text"] for cell in cells if cell["text"])
@@ -567,10 +571,10 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                         index > 0 for index in physical_columns
                     )
                     if has_split_requirement_columns and not has_clause_heading:
-                        group["table_mode"] = True
-                    if group.get("table_mode") and not has_clause_heading:
+                        table_state["mode"] = True
+                    if table_state.get("mode") and not has_clause_heading:
                         width = max(
-                            len(group.get("table_starts", [])),
+                            len(table_state.get("starts", [])),
                             max(physical_columns, default=-1) + 1,
                         )
                         matrix_row = [""] * width
@@ -582,7 +586,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             matrix_row[index] = (
                                 f"{matrix_row[index]}\n{value}" if matrix_row[index] and value else matrix_row[index] or value
                             ).strip()
-                        table_id = f"report:table:item:{active_sequence}:clause:{active_clause}"
+                        table_id = f"report:table:item:{active_sequence}:clause:{current_node.get('clause_id', active_clause)}"
                         group["current"]["table_rows"].append({
                             "pdf_page": page.number + 1,
                             "table_id": table_id,
@@ -609,7 +613,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                     # table. All physical columns, including blank values,
                     # survive; merged keys are inherited only by table logic.
                     if len(cells) > 1 and not has_clause_heading:
-                        width = max(len(group.get("table_starts", [])), max(physical_columns, default=-1) + 1)
+                        width = max(len(table_state.get("starts", [])), max(physical_columns, default=-1) + 1)
                         matrix_row = [""] * width
                         for cell in cells:
                             index = cell.get("column_index")
@@ -617,7 +621,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                                 index = 0
                             matrix_row[index] = str(cell.get("text") or "")
                         group["current"]["table_rows"].append({"pdf_page": page.number+1,
-                            "table_id": f"report:table:item:{active_sequence}:clause:{active_clause}",
+                            "table_id": f"report:table:item:{active_sequence}:clause:{current_node.get('clause_id', active_clause)}",
                             "cells": cells, "matrix_row": matrix_row,
                             "rows": [matrix_row], "source_sha256": digest,
                             "extraction_method": "report_requirement_columns", "binding": "physical"})

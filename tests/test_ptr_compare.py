@@ -381,9 +381,12 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(ptr["diagnostics"]["duplicates"], [])
         self.assertEqual(nodes["2.4.1"]["title"], "安全通用要求")
         self.assertEqual(nodes["2.4.2"]["title"], "电磁兼容要求")
+        self.assertIn("50-350", nodes["2.1.13"]["text"])
+        self.assertIn("e) 具有心电R 波识别功能", nodes["2.1.14"]["text"])
         by_clause = {entry["clause_id"]: entry for entry in result["coverage_ledger"]}
         self.assertEqual(by_clause["2.4.1"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.4.2"]["decision"], MATCHED)
+        self.assertEqual(result["summary"]["counts"][MISMATCH], 0)
 
     def test_1539_known_numeric_differences_remain_hard_mismatches(self) -> None:
         report_path, ptr_path = sample_paths("1539")
