@@ -72,7 +72,7 @@
 在项目 `.venv`（Python 3.13）中，PTR 比较相关回归通过：
 
 ```text
-test_ptr_compare.py  21 tests OK
+test_ptr_compare.py  22 tests OK
 test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
 test_ptr_draft_runner.py  2 tests OK

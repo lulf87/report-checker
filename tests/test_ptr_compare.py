@@ -99,6 +99,52 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         node = {"references": {"tables": ["表99"]}, "table_rows": []}
         self.assertEqual(_reference_bindings(node), [{"label": "表99", "status": "unresolved", "table_ids": []}])
 
+    def test_coverage_ledger_keeps_report_only_clause_as_missing(self) -> None:
+        def node(role: str, clause_id: str, text: str) -> dict:
+            return {
+                "node_id": f"{role}:clause:{clause_id}",
+                "role": role,
+                "clause_id": clause_id,
+                "parent_clause_id": clause_id.rsplit(".", 1)[0],
+                "title": text,
+                "text": text,
+                "normalized_text": text,
+                "numeric_signature": [],
+                "raw_numeric_signature": [],
+                "references": {"standards": [], "tables": []},
+                "reference_bindings": [],
+                "unit_labels": [],
+                "is_heading_only": False,
+                "pages": [1],
+                "evidence": [{"role": role, "pdf_page": 1, "bbox": [1, 1, 10, 10], "source_sha256": role}],
+                "table_rows": [],
+                "source_sha256": role,
+            }
+
+        report_node = node("report", "2.1", "同一要求")
+        report_only = node("report", "2.2", "Report 额外要求")
+        ptr_node = node("ptr", "2.1", "同一要求")
+        report = {
+            "source_sha256": "report",
+            "nodes": [report_node, report_only],
+            "nodes_by_clause": {"2.1": [report_node], "2.2": [report_only]},
+            "scope": {"status": "parsed", "included_clause_ids": ["2.1", "2.2"], "excluded_clause_ids": []},
+            "diagnostics": {"status": "parsed"},
+        }
+        ptr = {
+            "source_sha256": "ptr",
+            "nodes": [ptr_node],
+            "diagnostics": {"status": "parsed", "ocr_used": False},
+        }
+        with patch("mvp.ptr_compare.extract_report_clauses", return_value=report), patch(
+            "mvp.ptr_compare.extract_ptr_clauses", return_value=ptr
+        ):
+            result = compare_ptr_report("report.pdf", "ptr.pdf", comparison_mode="rules")
+        missing = next(entry for entry in result["coverage_ledger"] if entry["clause_id"] == "2.2")
+        self.assertEqual(missing["decision"], MISMATCH)
+        self.assertEqual(missing["reason_code"], "PTR_CLAUSE_MISSING")
+        self.assertTrue(result["summary"]["conserved"])
+
     def test_identical_extracted_table_can_leave_manual_state(self) -> None:
         ptr = {
             "text": "表1 参数",
