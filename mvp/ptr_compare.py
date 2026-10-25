@@ -532,7 +532,7 @@ def _report_cell_evidence_all(
     values: dict[int, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     active_sequence: int | None = None
     for page in document:
-        for table in report_page_tables(page):
+        for table_index, table in enumerate(report_page_tables(page), start=1):
             if not is_formal_report_table(table):
                 continue
             rows = table.extract()
@@ -550,6 +550,7 @@ def _report_cell_evidence_all(
                 table_row = {
                     "pdf_page": page.number + 1,
                     "row_index": row_index,
+                    "table_id": f"report:table:p{page.number + 1}:{table_index}",
                     "cells": [],
                     "all_cells": [
                         {
@@ -566,6 +567,10 @@ def _report_cell_evidence_all(
                         for value in row[mapping["标准要求"] : mapping["检验结果"]]
                         if display_text(value)
                     ),
+                    "matrix_row": [
+                        display_text(value)
+                        for value in row[mapping["标准要求"] : mapping["检验结果"]]
+                    ],
                     "extraction_method": "pymupdf_report_table_cell",
                 }
                 for column, semantic_role in (
@@ -675,13 +680,21 @@ def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict
     ptr_tables = list(ptr.get("table_rows") or [])
     report_tables = list(report.get("table_rows") or [])
     ptr_fingerprints = {_table_fingerprint(table.get("rows")) for table in ptr_tables}
-    report_fingerprints = {
-        _table_fingerprint(
-            table.get("rows")
-            or [[cell.get("text", "") for cell in (table.get("all_cells") or table.get("cells", []))]]
-        )
-        for table in report_tables
-    }
+    grouped_report: dict[str, list[list[str]]] = defaultdict(list)
+    for index, table in enumerate(report_tables):
+        table_id = str(table.get("table_id") or f"row:{index}")
+        row = table.get("matrix_row")
+        if row is None:
+            whole_rows = table.get("rows")
+            if isinstance(whole_rows, Sequence) and whole_rows and all(
+                isinstance(item, Sequence) and not isinstance(item, (str, bytes)) for item in whole_rows
+            ):
+                grouped_report[table_id].extend([[str(value or "") for value in item] for item in whole_rows])
+                continue
+            row = whole_rows or [cell.get("text", "") for cell in (table.get("all_cells") or table.get("cells", []))]
+        if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
+            grouped_report[table_id].append([str(value or "") for value in row])
+    report_fingerprints = {_table_fingerprint(rows) for rows in grouped_report.values()}
     ptr_fingerprints.discard(())
     report_fingerprints.discard(())
     if ptr_fingerprints and report_fingerprints and ptr_fingerprints & report_fingerprints:

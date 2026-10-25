@@ -102,6 +102,79 @@ def _table(page: fitz.Page, table: Any, digest: str, lines: Sequence[Mapping[str
             "source_sha256": digest, "extraction_method": "pymupdf_grid", "binding": "physical"}
 
 
+def _cluster_starts(values: Sequence[float], tolerance: float = 14.0) -> list[float]:
+    starts: list[float] = []
+    for value in sorted(values):
+        if not starts or value - starts[-1] > tolerance:
+            starts.append(value)
+    return starts
+
+
+def _text_table(page: fitz.Page, caption: Mapping[str, Any], lines: Sequence[Mapping[str, Any]],
+                digest: str, index: int) -> dict[str, Any] | None:
+    """Recover a no-border table from text span x/y positions.
+
+    The result is deliberately marked ``text_table``. It is evidence for
+    review and exact fingerprinting only; a low-confidence or irregular table
+    stays manual in the comparison layer.
+    """
+    caption_y = float(caption["bbox"][3])
+    after = [line for line in lines if float(line["bbox"][1]) > caption_y + 2]
+    end = float(page.rect.height) - 24
+    for line in after:
+        text = str(line.get("text") or "")
+        if STOP.match(text) or CLAUSE.match(text):
+            end = float(line["bbox"][1]) - 2
+            break
+    candidates = [line for line in after if float(line["bbox"][1]) < end and line.get("fragments")]
+    if len(candidates) < 2:
+        return None
+    fragments = [fragment for line in candidates for fragment in line["fragments"]]
+    starts = _cluster_starts([float(fragment["bbox"][0]) for fragment in fragments])
+    if len(starts) < 2 or len(starts) > 8:
+        return None
+    grouped: list[list[dict[str, Any]]] = []
+    for line in candidates:
+        center = (float(line["bbox"][1]) + float(line["bbox"][3])) / 2
+        if grouped:
+            previous = grouped[-1]
+            previous_center = sum((float(item["bbox"][1]) + float(item["bbox"][3])) / 2 for item in previous) / len(previous)
+            if abs(center - previous_center) <= max(4.0, float(line.get("size", 10)) * .55):
+                grouped[-1].extend(line["fragments"])
+                continue
+        grouped.append(list(line["fragments"]))
+    rows: list[list[str]] = []
+    row_boxes: list[list[float]] = []
+    for row in grouped:
+        cells = [""] * len(starts)
+        boxes: list[Any] = []
+        for fragment in sorted(row, key=lambda item: float(item["bbox"][0])):
+            x = float(fragment["bbox"][0])
+            column = min(range(len(starts)), key=lambda idx: abs(starts[idx] - x))
+            cells[column] = (cells[column] + " " + str(fragment.get("text") or "")).strip()
+            boxes.append(fragment["bbox"])
+        if any(cells):
+            rows.append(cells)
+            row_boxes.append([min(float(box[0]) for box in boxes), min(float(box[1]) for box in boxes),
+                              max(float(box[2]) for box in boxes), max(float(box[3]) for box in boxes)])
+    if len(rows) < 2:
+        return None
+    return {
+        "table_id": f"ptr:text-table:p{page.number+1}:{index}",
+        "pdf_page": page.number + 1,
+        "caption": str(caption.get("text") or ""),
+        "label": compact(CAPTION.match(str(caption.get("text") or "")).group(1)) if CAPTION.match(str(caption.get("text") or "")) else None,
+        "bbox": [min(float(caption["bbox"][0]), min(box[0] for box in row_boxes)),
+                 float(caption["bbox"][1]), max(box[2] for box in row_boxes), max(box[3] for box in row_boxes)],
+        "rows": rows,
+        "cell_boxes": [],
+        "source_sha256": digest,
+        "extraction_method": "pymupdf_text_table",
+        "binding": "physical",
+        "confidence": "manual_review_required",
+    }
+
+
 def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
     from mvp.ptr_ocr import iter_ptr_ocr_lines
     digest = sha256_file(path)
@@ -117,6 +190,17 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
             lines = page_lines(page)
             raw_tables = list(page.find_tables(strategy="lines_strict").tables)
             page_tables = [_table(page, t, digest, lines, i) for i, t in enumerate(raw_tables)]
+            captions = [line for line in lines if CAPTION.match(str(line.get("text") or ""))]
+            for caption_index, caption in enumerate(captions, start=len(page_tables)):
+                if any(
+                    abs(float(table["bbox"][1]) - float(caption["bbox"][3])) < 35
+                    and float(table["bbox"][2]) >= float(caption["bbox"][0])
+                    for table in page_tables
+                ):
+                    continue
+                recovered = _text_table(page, caption, lines, digest, caption_index)
+                if recovered is not None:
+                    page_tables.append(recovered)
             # Do not mistake tables in test methods for inline requirements.
             events = []
             for line in lines:
@@ -229,7 +313,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
     product_count = 0
     with fitz.open(path) as doc:
         for page in doc:
-            for table in report_page_tables(page):
+            for table_index, table in enumerate(report_page_tables(page), start=1):
                 if not is_formal_report_table(table):
                     continue
                 extracted = table.extract()
@@ -262,7 +346,9 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                     # table. All physical columns, including blank values,
                     # survive; merged keys are inherited only by table logic.
                     if len(cells) > 1 and not any(CLAUSE.match(t.strip()) for t in text.splitlines()):
-                        group["current"]["table_rows"].append({"pdf_page": page.number+1, "cells": cells,
+                        group["current"]["table_rows"].append({"pdf_page": page.number+1,
+                            "table_id": f"report:table:p{page.number+1}:{table_index}",
+                            "cells": cells, "matrix_row": [cell["text"] for cell in cells],
                             "rows": [[cell["text"] for cell in cells]], "source_sha256": digest,
                             "extraction_method": "report_requirement_columns", "binding": "physical"})
                         group["current"]["evidence"].extend(evidence("report", page.number+1, c["bbox"], c["text"], digest,
