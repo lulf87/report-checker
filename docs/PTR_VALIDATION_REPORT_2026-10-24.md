@@ -82,6 +82,7 @@ test_ptr_scope.py     7 tests OK
 test_ptr_p01.py       6 tests OK
 test_ptr_draft_runner.py  2 tests OK
 test_ptr_review_package.py  1 test OK
+test_ptr_acceptance.py  2 tests OK
 git diff --check       OK
 ```
 
