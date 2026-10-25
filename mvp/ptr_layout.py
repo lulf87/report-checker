@@ -115,7 +115,7 @@ def _reference_bindings(node: Mapping[str, Any]) -> list[dict[str, Any]]:
             status = "bound"
         elif len(candidates) > 1:
             status = "ambiguous"
-        elif tables:
+        elif tables and str(node.get("role") or "") == "report" and wanted in compact(str(node.get("text") or "")):
             # Report requirement rows may not carry a caption, but their
             # physical matrix is still evidence for a token printed in the
             # same requirement cell.
