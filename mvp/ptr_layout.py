@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
-PARSER_VERSION = "ptr-layout-1.0"
+PARSER_VERSION = "ptr-layout-1.1"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"

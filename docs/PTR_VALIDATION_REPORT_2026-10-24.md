@@ -2,7 +2,7 @@
 
 日期：2026-10-24
 分支：`codex/ptr-report-comparison`
-规则草案：`PTR-P01@0.2.0-draft`
+规则草案：`PTR-P01@0.3.0-draft`
 
 ## 已验证的执行链
 

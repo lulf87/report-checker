@@ -44,8 +44,8 @@ from mvp.ptr_ocr import iter_ptr_ocr_lines
 from mvp.ptr_llm import build_review_task, validate_llm_review
 
 
-PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.2"
-PTR_COMPARE_RULE_VERSION = "0.2.0-draft"
+PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.3"
+PTR_COMPARE_RULE_VERSION = "0.3.0-draft"
 PTR_COMPARE_RULE_ID = "PTR-P01"
 
 MATCHED = "matched"
