@@ -15,6 +15,8 @@
 5. 表格引用如果没有双方可确认的行列矩阵，状态为 `manual`；OCR 候选也只能为 `manual`。
 6. `rules+llm` 只生成最小人工队列。LLM 引文必须逐字存在于原文，且不能修改数值、单位、范围或引用。
 
+另有 `mvp.ptr_draft_runner.run_ptr_draft()` 将上述结果写成可浏览的 `result.json` 和 `index.html`。它使用独立的 `report_ptr_draft` mode 名称，不注册到正式 Run/Worker，且始终 `publishable=false`。
+
 所有结果仍写为不可发布草案，`publishable=false`，正式 `report_ptr` capability 仍保持 `PTR_NOT_VALIDATED`。
 
 ## 样本回归结果
