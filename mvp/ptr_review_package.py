@@ -283,6 +283,7 @@ def apply_review_csv(
         "package_kind": "ptr_human_reviewed",
         "publishable": False,
         "source_manifest_sha256": _sha256_file(manifest_file),
+        "machine_inputs": manifest.get("inputs"),
         "machine_summary": manifest.get("summary"),
         "machine_ledger": manifest.get("coverage_ledger"),
         "review": review,

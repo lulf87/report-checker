@@ -241,7 +241,7 @@ reason_code
 ### 阶段 A：先冻结规则基线
 
 1. 以 2948、0775、1539 作为第一批人工标注集，覆盖短 PTR、长 Report、表格和已知差异。
-   `mvp.ptr_review_package` 可生成对应的只读人工验收包，统一保存机器账本、源哈希、证据页码和待复核栏，并校验填写后的复核 CSV 不会改写机器结论。
+   `mvp.ptr_review_package` 可生成对应的只读人工验收包，统一保存机器账本、源哈希、证据页码和待复核栏，并校验填写后的复核 CSV 不会改写机器结论；`mvp.ptr_acceptance` 只输出 `ready_for_signoff`，不会自行开启正式能力。
 2. 以 2795、3940、5780、5782 的历史期望 JSON 作为回归线索，但先人工确认哪些是格式误报、哪些是真差异。
 3. 冻结 `ScopeSet`、`RequirementGraph`、`ReportItem`、`ComparisonUnit` 和 Coverage Ledger schema。
 

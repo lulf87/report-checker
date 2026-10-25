@@ -87,7 +87,7 @@ git diff --check       OK
 
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
-三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v3/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。
+三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v4/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据和源文件哈希只读保留，复核栏默认为 `pending`，填写不会改变正式能力状态。`mvp.ptr_acceptance` 对已填写的 Codex 离线复核结果返回 `status=ready_for_signoff`，但 `can_enable_report_ptr=false`，仍需业务签字确认。
 
 正式启用前仍需完成：
 
