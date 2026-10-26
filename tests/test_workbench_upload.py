@@ -149,15 +149,20 @@ class UploadWorkbenchTests(unittest.TestCase):
             "PTR 条款 ${clause} ↔ Report 接受标准 ${clause}",
             "function ptrCheckRows(finding)",
             'label: "条款要求"',
+            "function ptrManualGuidance(finding)",
             "function ptrReviewExplanation(finding)",
             "TABLE_CONTENT_NOT_EXTRACTED: \"表格没有被可靠地逐格提取",
             "TEXT_REVIEW_REQUIRED: \"条款文字存在差异",
+            "为什么需要人工检查",
+            "你需要检查",
+            "逐行核对表头、项目名称、数值、单位和允差",
             'label: "引用"',
             'label: "表格"',
         ):
             with self.subTest(required=required):
                 source = self.html if required == "Report · 检验报告" else self.module_source
                 self.assertIn(required, source)
+        self.assertNotIn('label: "要求数值"', self.module_source)
 
     def test_ptr_results_are_sorted_by_clause_number_and_scope_is_explicit(self) -> None:
         for required in (

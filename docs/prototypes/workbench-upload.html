@@ -126,6 +126,9 @@
     .brief-evidence-link { width: fit-content; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-size: 11px; text-align: left; text-decoration: underline; cursor: pointer; }
     .brief-evidence-link:hover { color: var(--ink); }
     .brief-detail { max-height: 180px; }
+    .brief-guidance { padding: 5px 8px; border-left: 3px solid var(--manual); color: var(--ink); background: #fffaf0; line-height: 1.5; }
+    .brief-guidance + .brief-guidance { margin-top: 3px; }
+    .brief-guidance-label { color: var(--manual); font-weight: 800; }
     /* 比对区高度固定时，上面几块按内容高度排，不被压扁；PDF 区占剩余高度，整体可滚动。 */
     .brief-problems { margin: 4px 0 0; padding-left: 18px; color: var(--ink); max-height: 9.5em; overflow-y: auto; overscroll-behavior: contain; }
     .brief-problems li { margin: 2px 0; }
@@ -1460,12 +1463,30 @@
     function renderFindingBrief(finding) {
       const detail = comparisonBrief.querySelector(".brief-detail");
       detail.replaceChildren();
-      const summary = document.createElement("div");
       const rawSummary = String(finding.summary || "");
-      summary.textContent = isPtrFinding(finding)
-        ? ptrReviewExplanation(finding)
-        : (/^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—"));
-      detail.append(summary);
+      if (isPtrFinding(finding)) {
+        const guidance = ptrManualGuidance(finding);
+        if (guidance) {
+          const reasonLabel = finding.status === "error" ? "为什么判为问题" : "为什么需要人工检查";
+          [[reasonLabel, guidance.reason], ["你需要检查", guidance.action]].forEach(([label, text]) => {
+            const line = document.createElement("div");
+            line.className = "brief-guidance";
+            const labelNode = document.createElement("span");
+            labelNode.className = "brief-guidance-label";
+            labelNode.textContent = `${label}：`;
+            line.append(labelNode, document.createTextNode(text));
+            detail.append(line);
+          });
+        } else {
+          const summary = document.createElement("div");
+          summary.textContent = "PTR 条款要求与 Report 接受标准已核对一致。";
+          detail.append(summary);
+        }
+      } else {
+        const summary = document.createElement("div");
+        summary.textContent = /^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—");
+        detail.append(summary);
+      }
       const comparedRows = checkRowsFor(finding)
         .filter(row => (isPtrFinding(finding) ? row.label === "条款要求" : row.label !== "条款对应") && (row.a?.text || row.b?.text))
         .slice(0, 2);
@@ -1729,8 +1750,8 @@
       return fromSummary ? fromSummary[1] : "";
     }
 
-    // PTR 的机器原因码只适合留在技术日志里。结果页给业务人员展示“为什么要确认”。
-    function ptrReviewExplanation(finding) {
+    // PTR 的机器原因码只适合留在技术日志里。结果页给业务人员展示“为什么要确认”以及“要看什么”。
+    function ptrManualGuidance(finding) {
       const details = finding?.details || {};
       const comparison = details.comparison || details;
       const code = ptrReasonCode(finding);
@@ -1738,23 +1759,72 @@
       const reference = comparison.reference_comparison || details.reference_comparison || {};
       if (code === "TABLE_CONTENT_NOT_EXTRACTED") {
         if (reference.binding_status && reference.binding_status !== "matched") {
-          return "表格或附录引用没有唯一对应：PTR 和 Report 提到了相关表格，但程序不能确认它们是同一份内容。请查看下方 PDF。";
+          return {
+            reason: "PTR 和 Report 都提到了表格或附录，但程序没有把两边的引用唯一对应起来。",
+            action: "请看下方两侧红框，先确认表号/附录号对应，再逐项核对表头、项目名称、数值、单位和允差；逐项一致选“不是问题”，有新增、缺少或不同选“是问题”。"
+          };
         }
         const ptrTables = Number(table.ptr_tables || 0);
         const reportTables = Number(table.report_tables || 0);
         const countText = ptrTables || reportTables ? `（PTR 识别 ${ptrTables} 个，Report 识别 ${reportTables} 个）` : "";
-        return `表格没有被可靠地逐格核对${countText}：表格可能跨页、拆列或结构不同，程序不能仅凭表名确认每一格一致。请查看下方 PDF。`;
+        return {
+          reason: `两边虽然都找到了相关表格${countText}，但 PDF 解析后的行列没有形成可靠的一一对应。`,
+          action: "请看下方两侧红框，逐行核对表头、项目名称、数值、单位和允差；逐项一致选“不是问题”，有任何新增、缺少或不同选“是问题”。"
+        };
       }
       if (code === "TEXT_REVIEW_REQUIRED") {
-        return "条款文字不是完全相同：数字、单位和引用已分别核对，没有发现硬冲突，但仍需确认差异只是排版、重复或 Report 的补充说明。";
+        return {
+          reason: "PTR 条款和 Report 接受标准的正文不完全相同。数字、单位和引用已分别核对，没有发现硬冲突。",
+          action: "请看下方两侧红框，确认差异只是标点、空格、换行、重复文字或补充说明；如果有新增/缺少要求、范围、模式、方向、数值、单位或引用，选“是问题”，否则选“不是问题”。"
+        };
       }
-      if (code === "NUMERIC_FACT_MISMATCH") return "PTR 与 Report 接受标准中的数值不同，请确认哪一边是正确要求。";
-      if (code === "UNIT_MISMATCH") return "PTR 与 Report 接受标准中的单位不同，请确认是否为单位写错或换算关系未识别。";
-      if (code === "REFERENCE_BINDING_UNRESOLVED") return "表格或附录引用无法唯一对应，请打开两边原文确认引用的是同一份内容。";
-      if (code === "AMBIGUOUS_REPORT_MAPPING") return "程序找到了多个可能的 Report 条款，无法确定应该和 PTR 哪一条对应。";
-      if (code === "PTR_OCR_CANDIDATES_MANUAL") return "PTR 条款来自文字识别结果，需要查看原文确认识别是否正确。";
-      if (finding?.status === "pass") return "PTR 条款要求与 Report 接受标准已核对一致。";
-      return REASON_TEXT[code] || "程序无法仅凭提取到的内容确认一致，请查看两边原文。";
+      if (code === "NUMERIC_FACT_MISMATCH") {
+        return {
+          reason: "PTR 与 Report 接受标准中的要求数值不同。",
+          action: "请直接比较两侧红框中的数值和上下限，确认哪一边是项目正式要求；确认后选择“是问题”或“不是问题”。"
+        };
+      }
+      if (code === "UNIT_MISMATCH") {
+        return {
+          reason: "PTR 与 Report 接受标准中的单位不同。",
+          action: "请直接比较两侧红框中的单位，确认是单位写错、换算关系未识别，还是两边要求确实不同。"
+        };
+      }
+      if (code === "REFERENCE_BINDING_UNRESOLVED") {
+        return {
+          reason: "表格或附录引用无法唯一对应。",
+          action: "请打开两边红框，确认引用的表号/附录号和实际内容是否相同；确认后选择处理意见。"
+        };
+      }
+      if (code === "AMBIGUOUS_REPORT_MAPPING") {
+        return {
+          reason: "程序找到了多个可能的 Report 条款，无法确定应该对应哪一条。",
+          action: "请根据条款编号和正文内容选择真正对应的 Report 条款，再选择处理意见。"
+        };
+      }
+      if (code === "PTR_OCR_CANDIDATES_MANUAL") {
+        return {
+          reason: "PTR 条款来自文字识别结果，识别内容需要人工确认。",
+          action: "请以 PTR PDF 红框原文为准，确认条款编号和要求文字后选择处理意见。"
+        };
+      }
+      if (finding?.status === "pass") return null;
+      return {
+        reason: REASON_TEXT[code] || "程序无法仅凭提取到的内容证明两边一致。",
+        action: "请看下方两侧红框，核对条款要求是否有新增、缺少或实质变化，再选择处理意见。"
+      };
+    }
+
+    function ptrReviewExplanation(finding) {
+      const guidance = ptrManualGuidance(finding);
+      if (!guidance) return "PTR 条款要求与 Report 接受标准已核对一致。";
+      return `${guidance.reason} ${guidance.action}`;
+    }
+
+    function ptrListSummary(finding) {
+      const guidance = ptrManualGuidance(finding);
+      if (!guidance) return "PTR 条款要求与 Report 接受标准已核对一致。";
+      return `${finding.status === "error" ? "问题" : "人工检查"}：${guidance.reason}`;
     }
 
     function normStatus(status) {
@@ -2102,7 +2172,7 @@
     function listSummary(item) {
       const d = item.details || {};
       const c = d.comparison || {};
-      if (isPtrFinding(item)) return ptrReviewExplanation(item);
+      if (isPtrFinding(item)) return ptrListSummary(item);
       if (c.record_symbol !== undefined && Array.isArray(d.report_results)) {
         const where = d.record_item ? `项目${d.record_item}第${d.record_logical_row}行：` : "";
         const value = c.numeric && c.numeric.record_value ? ` ${c.numeric.record_value}` : "";
