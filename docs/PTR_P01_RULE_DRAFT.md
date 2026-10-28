@@ -6,6 +6,8 @@
 
 当前另有 `mvp/ptr_compare.py` 作为离线比较层：它执行范围、条款、数值、单位、引用和覆盖层的规则核对，并输出不可发布的 Coverage Ledger；`mvp/ptr_ocr.py` 只提供扫描 PTR 的本机 OCR 观察，`mvp/ptr_llm.py` 只验证未来 LLM 的逐字证据。离线草案不能绕过正式 Runner，也不能由 LLM 单独给出通过结论。
 
+当前 PTR-P01 的唯一规则版本为 `0.5.0-draft`。合同、比较器、能力目录、验收门和结果中的 `rule_version` 均从同一版本源生成；历史结果仍保留其生成时的版本快照。
+
 ## 2026-10-24 离线草案增量
 
 当前离线比较器的执行规则版本为 `ptr-compare-0.5` / `0.5.0-draft`，布局解析器为 `ptr-layout-1.3`。相较本文件最初的候选结构，已补齐以下可复核行为：
@@ -57,7 +59,7 @@
   "schema_version": "ptr-p01-finding-0.1",
   "id": "PTR-P01-DRAFT-REVIEW-001",
   "rule_id": "PTR-P01",
-  "rule_version": "0.1.0-draft",
+  "rule_version": "0.5.0-draft",
   "status": "manual",
   "reason_code": "PTR_NOT_VALIDATED",
   "scope": {"scope_id": "...", "kind": "declaration_scope_and_coverage"},

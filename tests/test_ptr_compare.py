@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -27,7 +28,7 @@ from mvp.ptr_compare import (
     _reference_cycle_candidates,
     _unit_labels,
 )
-from mvp.ptr_layout import _reference_bindings, _split_inline_clauses
+from mvp.ptr_layout import _reference_bindings, _split_inline_clauses, extract_ptr_layout, is_page_counter_line
 from mvp.ptr_llm import PtrLlmReviewError, build_review_task, validate_llm_review
 from mvp.ptr_llm_http import OpenAICompatiblePtrLlmProvider, PtrLlmHttpError
 from mvp.ptr_ocr import iter_ptr_ocr_lines
@@ -44,6 +45,52 @@ def sample_paths(sample: str) -> tuple[Path, Path]:
 
 
 class PtrCompareNormalizationTests(unittest.TestCase):
+    def test_page_counter_lines_are_not_requirement_text(self) -> None:
+        self.assertTrue(is_page_counter_line("第4 页共24 页"))
+        self.assertTrue(is_page_counter_line("第 4 页 / 共 24 页"))
+        self.assertTrue(is_page_counter_line("Page 4 of 24"))
+        self.assertFalse(is_page_counter_line("第4页的压力范围"))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "ptr.pdf"
+            document = fitz.open()
+            page = document.new_page()
+            page.insert_text((40, 60), "2.1 Device requirement")
+            page.insert_text((40, 82), "Output stable")
+            page.insert_text((40, 810), "Page 1 of 1")
+            document.save(path)
+            document.close()
+            parsed = extract_ptr_layout(path, ocr_mode="never")
+        node = next(item for item in parsed["nodes"] if item["clause_id"] == "2.1")
+        self.assertNotIn("Page 1 of 1", node["text"])
+        self.assertEqual(node["text"], "Device requirement\nOutput stable")
+
+    def test_text_comparison_contains_side_by_side_difference_segments(self) -> None:
+        def node(role: str, text: str) -> dict:
+            return {
+                "role": role,
+                "text": text,
+                "normalized_text": text,
+                "numeric_signature": [],
+                "raw_numeric_signature": [],
+                "references": {"standards": [], "tables": []},
+                "reference_bindings": [],
+                "unit_labels": [],
+                "is_heading_only": False,
+                "table_rows": [],
+            }
+
+        comparison = _compare_text(
+            node("ptr", "输出功率应不超过 50W"),
+            node("report", "输出功率应不超过 60W"),
+            has_children=False,
+        )
+        diff = comparison["text_comparison"]["text_diff"]
+        self.assertEqual(diff["status"], "different")
+        self.assertTrue(any(item["op"] != "equal" for item in diff["report_segments"]))
+        self.assertTrue(any(item["op"] != "equal" for item in diff["ptr_segments"]))
+        self.assertIn("60W", diff["report_text"])
+        self.assertIn("50W", diff["ptr_text"])
+
     def test_layout_and_controlled_unit_spelling_are_normalized(self) -> None:
         self.assertEqual(normalize_comparison_text("10ug/g"), "10μg/g")
         self.assertEqual(normalize_comparison_text("10 μg／g"), "10μg/g")
@@ -207,6 +254,29 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual([item["clause_id"] for item in split], ["2.3.6.6", "2.3.6.6a", "2.3.6.6b"])
         self.assertEqual(split[1]["parent_clause_id"], "2.3.6.6")
         self.assertEqual(_clause_parent("2.3.6.6a"), "2.3.6.6")
+
+    def test_lettered_subitems_keep_their_own_physical_evidence(self) -> None:
+        node = {
+            "node_id": "ptr:clause:2.2.2",
+            "role": "ptr",
+            "clause_id": "2.2.2",
+            "parent_clause_id": "2.2",
+            "title": "设备软件功能",
+            "parts": ["2.2.2 设备软件应具有以下功能：", "a) 可设置输出参数。", "b) 可显示状态。"],
+            "evidence": [
+                {"pdf_page": 8, "bbox": [10, 20, 100, 30], "text": "a) 可设置输出参数。"},
+                {"pdf_page": 8, "bbox": [10, 40, 100, 50], "text": "b) 可显示状态。"},
+            ],
+            "table_rows": [],
+            "figures": [],
+            "extraction_issues": [],
+        }
+        split = _split_inline_clauses([node])
+        by_clause = {item["clause_id"]: item for item in split}
+        self.assertEqual([item["clause_id"] for item in split], ["2.2.2", "2.2.2a", "2.2.2b"])
+        self.assertEqual(by_clause["2.2.2a"]["evidence"][0]["pdf_page"], 8)
+        self.assertEqual(by_clause["2.2.2a"]["evidence"][0]["bbox"], [10, 20, 100, 30])
+        self.assertEqual(by_clause["2.2.2b"]["evidence"][0]["bbox"], [10, 40, 100, 50])
 
     def test_reference_binding_keeps_unresolved_tokens_manual(self) -> None:
         node = {"references": {"tables": ["表99"]}, "table_rows": []}

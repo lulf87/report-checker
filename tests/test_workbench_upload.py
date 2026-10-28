@@ -92,6 +92,19 @@ class UploadWorkbenchTests(unittest.TestCase):
         self.assertRegex(self.module_source, r"method\s*:\s*[\"']POST[\"']")
         self.assertIn("recordFile.required = needsRecord", self.module_source)
 
+    def test_record_upload_can_select_repeated_report_standard_scope(self) -> None:
+        for required in (
+            'id="report-scope-picker"',
+            'id="report-scope-select"',
+            "selection_required",
+            "inputs.report_scope = { scope_id: selectedScope.scope_id }",
+            "preflight = await runPreflight()",
+            "请选择要核对的序号区段",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.html if required.startswith('id=') else self.module_source)
+        self.assertIn("hideReportScopePicker();", self.module_source)
+
     def test_warning_status_has_distinct_run_badge(self) -> None:
         self.assertIn(".status-label.warning", self.html)
         self.assertIn('overall === "warning"', self.module_source)
@@ -151,11 +164,14 @@ class UploadWorkbenchTests(unittest.TestCase):
             'label: "条款要求"',
             "function ptrManualGuidance(finding)",
             "function ptrReviewExplanation(finding)",
+            "text_diff",
+            "text-diff",
+            "check-diff-legend",
+            "function genericTextDiff(leftValue, rightValue)",
+            "function decorateComparisonRows(rows)",
+            "diff_status",
             "TABLE_CONTENT_NOT_EXTRACTED: \"表格没有被可靠地逐格提取",
             "TEXT_REVIEW_REQUIRED: \"条款文字存在差异",
-            "为什么需要人工检查",
-            "你需要检查",
-            "逐行核对表头、项目名称、数值、单位和允差",
             'label: "引用"',
             'label: "表格"',
         ):
@@ -163,6 +179,8 @@ class UploadWorkbenchTests(unittest.TestCase):
                 source = self.html if required == "Report · 检验报告" else self.module_source
                 self.assertIn(required, source)
         self.assertNotIn('label: "要求数值"', self.module_source)
+        self.assertIn("box.open = isPtrFinding(finding)", self.module_source)
+        self.assertNotIn('reasonLabel = finding.status === "error"', self.module_source)
 
     def test_ptr_results_are_sorted_by_clause_number_and_scope_is_explicit(self) -> None:
         for required in (

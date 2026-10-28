@@ -7,6 +7,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from mvp.capabilities import MODE_CATALOG, validate_mode
+from mvp.ptr_compare import PTR_COMPARE_RULE_VERSION
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
 from mvp.run_store import RunStore, RunStoreError, _json, _now
 from mvp.worker_protocol import JobSpec, WorkerProtocolError
@@ -40,8 +41,8 @@ def _insert_legacy_ptr_run(store: RunStore, *, lifecycle: str) -> str:
         store._connection.execute(
             """INSERT INTO rule_executions(
                 id, run_id, plan_order, rule_id, rule_version, execution_state
-            ) VALUES(?, ?, 1, 'PTR-P01', '0.1.0-draft', 'pending')""",
-            (f"execution-{run_id}", run_id),
+            ) VALUES(?, ?, 1, 'PTR-P01', ?, 'pending')""",
+            (f"execution-{run_id}", run_id, PTR_COMPARE_RULE_VERSION),
         )
         store._append_event_locked(run_id, "run_state_changed", {"from": None, "to": lifecycle})
     return run_id

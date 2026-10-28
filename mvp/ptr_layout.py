@@ -26,6 +26,23 @@ CLAUSE = re.compile(
 STOP = re.compile(r"^\s*3(?:[.．、:]|\s)\s*(?:检验|试验|测试|检测|Test|Inspection)", re.I)
 CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z])(?:\s|[\u3400-\u9fff]|$)")
 RESULT_QUALIFIER = re.compile(r"^\s*(?:470066|470067)\s*(?:[:：].*)?$|^\s*(?:左路|右路)\s*$")
+PAGE_COUNTER = re.compile(
+    r"^(?:"
+    r"第\s*\d+\s*页(?:[，,]?\s*(?:共\s*\d+\s*页?|/\s*(?:共\s*)?\d+\s*页?))"
+    r"|第\s*\d+\s*/\s*\d+\s*页"
+    r"|\d+\s*/\s*\d+\s*页?"
+    r"|page\s*\d+\s*of\s*\d+"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def is_page_counter_line(value: Any) -> bool:
+    """Return whether a line is a printed page counter, not requirement text."""
+
+    text = str(value or "").strip().replace("，", ",")
+    text = re.sub(r"\s+", "", text)
+    return bool(PAGE_COUNTER.fullmatch(text))
 
 
 def _clean_requirement_text(value: str) -> str:
@@ -151,7 +168,28 @@ def _new_node(role: str, clause: str, title: str, digest: str, suffix: str = "")
 
 def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Split clause headings that a PDF text block placed on one line."""
-    from mvp.ptr_compare import _canonical_clause_id, _clause_parent
+    from mvp.ptr_compare import _canonical_clause_id, _clause_parent, _split_inline_observations
+
+    def segment_sources(node: Mapping[str, Any], segments: Sequence[dict[str, Any]], base_clause: str) -> None:
+        """Give each inline child only the evidence and tables it owns."""
+
+        if len(segments) <= 1:
+            return
+        observations: list[dict[str, Any]] = []
+        for value in node.get("evidence", []) or []:
+            observations.append({"_kind": "evidence", "_value": value, **dict(value)})
+        for value in node.get("table_rows", []) or []:
+            observations.append({"_kind": "table", "_value": value, **dict(value)})
+        assigned = _split_inline_observations(observations, segments, base_clause)
+        for segment in segments:
+            clause_id = str(segment.get("clause_id") or "")
+            if clause_id == _canonical_clause_id(base_clause):
+                # Parent nodes remain the complete auditable source.  Only
+                # independently addressable child nodes are narrowed.
+                continue
+            values = assigned.get(clause_id, [])
+            segment["evidence"] = [item["_value"] for item in values if item.get("_kind") == "evidence"]
+            segment["table_rows"] = [item["_value"] for item in values if item.get("_kind") == "table"]
 
     marker = re.compile(
         r"(?<![\w.])(?P<clause>2(?:\s*\.\s*\d+){1,8})"
@@ -195,6 +233,7 @@ def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any
             continue
         boundaries = [0] + [match.start() for match in matches]
         clauses = [node.get("clause_id", "")] + [_canonical_clause_id(m.group("clause")) for m in matches]
+        segments: list[dict[str, Any]] = []
         for index, (start, clause) in enumerate(zip(boundaries, clauses)):
             end = boundaries[index + 1] if index + 1 < len(boundaries) else len(raw)
             if index == 0:
@@ -222,7 +261,9 @@ def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any
                 child["table_rows"] = []
                 child["figures"] = []
                 child["extraction_issues"] = ["INLINE_CLAUSE_SPLIT"]
-            result.append(child)
+            segments.append(child)
+        segment_sources(node, segments, current_clause)
+        result.extend(segments)
     # Many PTRs write lettered sub-items as ``a) ...`` on separate lines
     # inside one numeric clause.  The Report scope uses the stable form
     # ``2.3.6.6a``; split those visual sub-items into the same identity while
@@ -236,11 +277,42 @@ def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any
             lettered.append(node)
             continue
         matches = [match for match in letter_marker.finditer(raw) if match.group("letter")]
-        if not matches:
+        # Report requirement cells can be promoted to table observations.  In
+        # that layout d)–i) are absent from ``parts`` even though their
+        # evidence text has an exact marker and bbox.  Include those markers
+        # when constructing child nodes instead of leaving them as
+        # REPORT_CLAUSE_MISSING rows.
+        evidence_bodies: dict[str, str] = {}
+        evidence_order: list[str] = []
+        for observation in sorted(
+            node.get("evidence", []) or [],
+            key=lambda value: (
+                int(value.get("pdf_page") or 0),
+                float((value.get("bbox") or [0, 0, 0, 0])[1]),
+                float((value.get("bbox") or [0, 0, 0, 0])[0]),
+            ),
+        ):
+            text = str(observation.get("text") or "")
+            for marker_match in letter_marker.finditer(text):
+                letter = str(marker_match.group("letter") or "").lower()
+                if not letter or letter in evidence_bodies:
+                    continue
+                body = text[marker_match.end():]
+                body = re.sub(r"^\s*", "", body)
+                body = re.sub(r"^[.．、，,:：;；)）]\s*", "", body).strip()
+                if body:
+                    evidence_bodies[letter] = body
+                    evidence_order.append(letter)
+        raw_order = [str(match.group("letter") or "").lower() for match in matches]
+        letter_order: list[str] = []
+        for letter in [*raw_order, *evidence_order]:
+            if letter and letter not in letter_order:
+                letter_order.append(letter)
+        if not letter_order:
             lettered.append(node)
             continue
         segments: list[dict[str, Any]] = []
-        prefix = raw[: matches[0].start()].strip()
+        prefix = raw[: matches[0].start()].strip() if matches else raw.strip()
         base = dict(node)
         # Keep the parent's complete source text for backwards-compatible
         # evidence and parent-level comparisons; children provide the
@@ -249,12 +321,17 @@ def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any
         base["title"] = (prefix.splitlines()[0] if prefix else str(node.get("title") or current_clause)).strip()
         base["extraction_issues"] = [*node.get("extraction_issues", []), "LETTERED_CLAUSE_PARENT"]
         segments.append(base)
-        for index, match in enumerate(matches):
-            end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
-            body = raw[match.end():end].strip()
+        raw_by_letter = {str(match.group("letter") or "").lower(): (index, match) for index, match in enumerate(matches)}
+        for letter in letter_order:
+            raw_entry = raw_by_letter.get(letter)
+            if raw_entry is not None:
+                index, match = raw_entry
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+                body = raw[match.end():end].strip()
+            else:
+                body = evidence_bodies.get(letter, "")
             if not body or body.startswith("～") or body.startswith("~"):
                 continue
-            letter = str(match.group("letter")).lower()
             clause = f"{current_clause}{letter}"
             child = dict(node)
             role = str(node.get("role") or "ptr")
@@ -275,6 +352,7 @@ def _split_inline_clauses(nodes: Sequence[dict[str, Any]]) -> list[dict[str, Any
         if len(segments) == 1:
             lettered.append(node)
         else:
+            segment_sources(node, segments, current_clause)
             lettered.extend(segments)
     # A single Report sequence can legitimately contain repeated lettered
     # clauses from separate physical rows.  Keep the clause key for mapping,
@@ -404,8 +482,10 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
             # Do not mistake tables in test methods for inline requirements.
             events = []
             for line in lines:
-                if re.fullmatch(r"\d+(?:\s*/\s*\d+)?", line["text"]) and (
+                if is_page_counter_line(line["text"]) or (
+                    re.fullmatch(r"\d+(?:\s*/\s*\d+)?", line["text"]) and (
                     line["bbox"][1] > page.rect.height * .90 or line["bbox"][3] < page.rect.height * .07
+                    )
                 ):
                     continue
                 fragments = [v for v in line["fragments"] if not any(_inside(v["bbox"], t["bbox"]) for t in page_tables)]

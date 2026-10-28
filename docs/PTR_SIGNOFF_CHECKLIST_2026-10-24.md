@@ -5,7 +5,7 @@
 ## 当前机器证据
 
 - 当前分支：`codex/ptr-report-comparison`
-- 比较草案：`PTR-P01@0.5.0-draft`
+- 本清单对应的历史比较草案：`PTR-P01@0.4.0-draft`
 - 三份试点包：`output/ptr-review-package-20261024-v5/`
 - 验收门输出：`output/ptr-review-package-20261024-v5/acceptance-gate.json`
 - 签字文件模板：`docs/PTR_SIGNOFF_TEMPLATE.json`
@@ -15,6 +15,8 @@
 - 当前正式能力：`report_ptr=enabled`
 - 启用决策：`output/ptr-review-package-20261024-v5/enablement-decision.json`
 - 三份源 PDF 的 SHA-256 已与验收包记录一致；三份 Coverage Ledger 均满足 `eligible == accounted`、`conserved=true`。
+
+> 本清单记录的是 2026-10-24 的历史签字，验收包实际使用 `0.4.0-draft`。当前规则已统一为 `0.5.0-draft`，对应的新包为 `output/ptr-review-package-20261026-v7/`，需要重新完成逐条人工复核和业务签字；本清单的旧签字不会自动延伸到新版本。
 
 ## 试点机器摘要
 

@@ -28,6 +28,13 @@ from mvp.ptr_report_contract import (
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
 from mvp.review_notes import ReviewNoteError, ReviewNoteStore, stable_finding_key
 from mvp.run_store import RunStore, RunStoreError
+from mvp.report_standard_scope import (
+    ReportScopeNotFound,
+    extract_report_standard_scopes,
+    resolve_report_scope,
+    scopes_for_mode,
+    validate_report_scope_for_mode,
+)
 
 
 MAX_JSON_BYTES = 1024 * 1024
@@ -145,6 +152,7 @@ class RunStateHTTPServer(ThreadingHTTPServer):
                 report_path=report_path,
                 record_path=record_path,
                 ptr_path=ptr_path,
+                report_scope=inputs.get("report_scope"),
                 output_dir=self.output_root / run_id,
             )
         except (CoordinatorError, RunStoreError, OSError) as error:
@@ -477,6 +485,7 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                         raise
                 else:
                     input_snapshot = self._unresolved_snapshot(mode, normalized)
+        report_scope = self._report_scope_preflight(mode, normalized, input_snapshot)
         enabled = bool(capability["enabled"])
         mode_contract = None
         if mode in PTR_REPORT_MODES:
@@ -516,11 +525,14 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                 for role in capability["required_roles"]
             ]
             result_contract = None
+        blocking_issues = [] if enabled else [capability.get("disabled_reason_code") or "MODE_DISABLED"]
+        if report_scope.get("selection_required"):
+            blocking_issues.append("REPORT_SCOPE_SELECTION_REQUIRED")
         result: dict[str, Any] = {
             "case_id": case_id,
             "mode": mode,
             "enabled": enabled,
-            "can_create_run": enabled,
+            "can_create_run": enabled and not report_scope.get("selection_required"),
             "rule_bundle": {"id": RULE_BUNDLE_ID, "sha256": rule_bundle_sha256()},
             "planned_rules": [
                 {
@@ -552,10 +564,62 @@ class RunStateRequestHandler(CapabilityRequestHandler):
             "mode_contract": mode_contract,
             "input_snapshot": input_snapshot,
             "result_contract": result_contract,
-            "blocking_issues": [] if enabled else [capability.get("disabled_reason_code") or "MODE_DISABLED"],
+            "blocking_issues": blocking_issues,
+            "report_scope": report_scope,
         }
         result["plan_hash"] = preflight_plan_hash(mode, normalized, input_snapshot)
         return result
+
+    def _report_scope_preflight(
+        self,
+        mode: str,
+        normalized: Mapping[str, Any],
+        input_snapshot: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Expose Report standard ranges and validate an optional selector."""
+
+        if mode not in {"report_record_9706_1", "report_record_9706_202"}:
+            return {"status": "not_applicable", "selection_required": False, "options": [], "selected": None}
+        report_snapshot = input_snapshot.get("report") if isinstance(input_snapshot, Mapping) else None
+        document_id = report_snapshot.get("document_id") if isinstance(report_snapshot, Mapping) else None
+        if not document_id or (isinstance(report_snapshot, Mapping) and report_snapshot.get("unresolved")):
+            return {
+                "status": "unavailable",
+                "selection_required": False,
+                "options": [],
+                "selected": None,
+                "reason_code": "REPORT_DOCUMENT_NOT_RESOLVED",
+            }
+        try:
+            report_path = self.server.documents.source_path(str(document_id))
+            declared = extract_report_standard_scopes(report_path)
+            candidates = scopes_for_mode(declared.get("scopes", []), mode)
+        except (OSError, RunStoreError) as error:
+            return {
+                "status": "unavailable",
+                "selection_required": False,
+                "options": [],
+                "selected": None,
+                "reason_code": "REPORT_SCOPE_EXTRACTION_UNAVAILABLE",
+                "message": str(error),
+            }
+        selection = normalized.get("report_scope")
+        selected = None
+        if selection is not None:
+            try:
+                selected = resolve_report_scope(report_path, mode=mode, selection=selection)
+                validate_report_scope_for_mode(selected, mode)
+            except ReportScopeNotFound as error:
+                raise RunStoreError(error.code, str(error), details=error.details) from error
+        selection_required = len(candidates) > 1 and selected is None
+        return {
+            "status": declared.get("status", "manual"),
+            "selection_required": selection_required,
+            "options": candidates,
+            "selected": selected,
+            "source": declared.get("source", {}),
+            "reason_code": "REPORT_SCOPE_SELECTION_REQUIRED" if selection_required else None,
+        }
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - browser CORS preflight hook
         """Accept preflight requests from the local workbench only."""
@@ -683,6 +747,13 @@ class RunStateRequestHandler(CapabilityRequestHandler):
                     if not self.server.allow_unresolved_inputs or error.code != "DOCUMENT_NOT_FOUND":
                         raise
                     input_snapshot = self._unresolved_snapshot(mode, normalized)
+                scope_preflight = self._report_scope_preflight(mode, normalized, input_snapshot)
+                if scope_preflight.get("selection_required"):
+                    raise RunStoreError(
+                        "REPORT_SCOPE_SELECTION_REQUIRED",
+                        "Report 中同一标准存在多个序号区段，请先选择需要核对的区段",
+                        details={"report_scope": scope_preflight},
+                    )
                 expected_plan_hash = preflight_plan_hash(mode, normalized, input_snapshot)
                 submitted_plan_hash = payload.get("preflight_plan_hash")
                 if not submitted_plan_hash:

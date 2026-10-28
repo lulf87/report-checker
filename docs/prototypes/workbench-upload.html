@@ -126,9 +126,6 @@
     .brief-evidence-link { width: fit-content; padding: 0; border: 0; color: var(--accent); background: transparent; font: inherit; font-size: 11px; text-align: left; text-decoration: underline; cursor: pointer; }
     .brief-evidence-link:hover { color: var(--ink); }
     .brief-detail { max-height: 180px; }
-    .brief-guidance { padding: 5px 8px; border-left: 3px solid var(--manual); color: var(--ink); background: #fffaf0; line-height: 1.5; }
-    .brief-guidance + .brief-guidance { margin-top: 3px; }
-    .brief-guidance-label { color: var(--manual); font-weight: 800; }
     /* 比对区高度固定时，上面几块按内容高度排，不被压扁；PDF 区占剩余高度，整体可滚动。 */
     .brief-problems { margin: 4px 0 0; padding-left: 18px; color: var(--ink); max-height: 9.5em; overflow-y: auto; overscroll-behavior: contain; }
     .brief-problems li { margin: 2px 0; }
@@ -144,6 +141,8 @@
     .check-details > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
     .check-details[open] > summary::before { transform: rotate(90deg); }
     .check-count { color: var(--muted); font-size: 12px; font-weight: 500; }
+    .check-diff-legend { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 500; }
+    .check-diff-legend[hidden] { display: none; }
     .check-scroll { max-height: min(260px, 32vh); overflow: auto; border-top: 1px solid var(--line); }
     .check-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.45; }
     .check-table th { position: sticky; top: 0; z-index: 1; padding: 6px 8px; color: var(--muted); background: var(--soft); font-weight: 650; text-align: left; white-space: nowrap; }
@@ -153,7 +152,10 @@
     .check-table tbody tr.is-active td { background: var(--teal-soft); }
     .check-table .check-label { font-weight: 650; color: var(--ink); }
     .check-table .check-sub, .check-table .check-note { display: block; color: var(--muted); font-size: 11px; }
-    .check-table .check-value { color: var(--ink); }
+    .check-table .check-value { color: var(--ink); white-space: pre-wrap; }
+    .check-table .text-diff, .brief-comparison .text-diff { padding: 0 2px; border-radius: 3px; }
+    .check-table .text-diff.replace, .check-table .text-diff.delete, .brief-comparison .text-diff.replace, .brief-comparison .text-diff.delete { color: #991b1b; background: #fee2e2; text-decoration: underline wavy #dc2626; text-decoration-thickness: 1px; }
+    .check-table .text-diff.insert, .brief-comparison .text-diff.insert { color: #92400e; background: #fef3c7; text-decoration: underline wavy #d97706; text-decoration-thickness: 1px; }
     .check-table .check-empty { color: #8b979f; }
     .loc-chip { display: inline-block; margin: 2px 4px 0 0; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--teal); background: #fff; font-size: 11px; line-height: 18px; }
     .loc-chip:hover { border-color: var(--teal); background: var(--teal-soft); }
@@ -239,6 +241,12 @@
     .file-check.error { color: var(--error); background: var(--error-soft); }
     .file-check.warning { color: var(--manual); background: var(--manual-soft); }
     .file-check label { display: inline-flex; gap: 6px; align-items: center; margin-top: 6px; color: var(--ink); font-size: 12px; font-weight: 400; }
+    .report-scope-picker { margin-top: 12px; padding: 12px 14px; border: 1px solid #d7b36a; border-radius: 8px; background: #fffaf0; }
+    .report-scope-picker[hidden] { display: none; }
+    .report-scope-picker label { display: grid; gap: 6px; color: var(--ink); font-size: 13px; font-weight: 750; }
+    .report-scope-picker select { min-height: 34px; padding: 5px 8px; border: 1px solid #d7b36a; border-radius: 5px; color: var(--ink); background: #fff; font: inherit; font-weight: 500; }
+    .report-scope-picker p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .report-scope-picker button { margin-top: 9px; }
     .advanced { margin-top: 14px; color: var(--muted); font-size: 13px; }
     .advanced summary { width: fit-content; cursor: pointer; }
     .advanced .grid { margin-top: 10px; }
@@ -391,6 +399,12 @@
           </div>
         </div>
         <div class="file-check" id="file-check" hidden></div>
+        <div class="report-scope-picker" id="report-scope-picker" hidden>
+          <label for="report-scope-select">这份 Report 有多个同名标准区段，请选择要比对的序号范围</label>
+          <select id="report-scope-select"></select>
+          <p id="report-scope-note">程序会只读取这里选中的序号区段，并把选择记录在本次核对中。</p>
+          <button class="secondary" id="report-scope-continue" type="button">按此区段继续</button>
+        </div>
 
         <details class="advanced">
           <summary>高级设置</summary>
@@ -507,7 +521,7 @@
         <span class="review-state" id="review-state"></span>
       </div>
       <details class="check-details" id="check-details" hidden>
-        <summary>核对明细 <span class="check-count" id="check-count"></span></summary>
+        <summary>核对明细 <span class="check-count" id="check-count"></span><span class="check-diff-legend" id="check-diff-legend" hidden>红色：删除/替换　黄色：新增</span></summary>
         <div class="check-scroll">
           <table class="check-table">
             <thead><tr><th style="width:24%">检查内容</th><th style="width:30%" id="check-col-a">Report</th><th style="width:34%" id="check-col-b">对照</th><th style="width:12%">结果</th></tr></thead>
@@ -629,6 +643,11 @@
     const progressSteps = document.getElementById("progress-steps");
     const runElapsed = document.getElementById("run-elapsed");
     const fileCheck = document.getElementById("file-check");
+    const reportScopePicker = document.getElementById("report-scope-picker");
+    const reportScopeSelect = document.getElementById("report-scope-select");
+    const reportScopeNote = document.getElementById("report-scope-note");
+    const reportScopeContinue = document.getElementById("report-scope-continue");
+    let reportScopeCancel = null;
     const fileInfo = { report: document.getElementById("report-file-info"), record: document.getElementById("record-file-info") };
     const dropZones = { report: document.getElementById("report-drop"), record: document.getElementById("record-drop") };
 
@@ -643,6 +662,61 @@
     let selectedFindingId = null;
     let comparisonToken = 0;
     const pdfDocumentCache = new Map();
+
+    function reportScopeLabel(scope) {
+      const standard = String(scope?.standard || "标准未识别");
+      const start = Number(scope?.sequence_start);
+      const end = Number(scope?.sequence_end);
+      const range = Number.isFinite(start) && Number.isFinite(end) ? `序号 ${start}～${end}` : "序号范围未识别";
+      return `${standard} · ${range}`;
+    }
+
+    function hideReportScopePicker() {
+      if (reportScopeCancel) {
+        const cancel = reportScopeCancel;
+        reportScopeCancel = null;
+        cancel();
+      }
+      reportScopePicker.hidden = true;
+      reportScopeSelect.replaceChildren();
+      reportScopeNote.textContent = "程序会只读取这里选中的序号区段，并把选择记录在本次核对中。";
+    }
+
+    function chooseReportScope(scopeInfo) {
+      const options = Array.isArray(scopeInfo?.options) ? scopeInfo.options : [];
+      if (!options.length) throw apiError("REPORT_SCOPE_NOT_FOUND", "Report 没有识别出可用的标准序号区段。");
+      reportScopePicker.hidden = false;
+      reportScopeSelect.replaceChildren();
+      options.forEach((scope, index) => {
+        const option = document.createElement("option");
+        option.value = String(scope.scope_id || index);
+        option.textContent = reportScopeLabel(scope);
+        reportScopeSelect.append(option);
+      });
+      reportScopeNote.textContent = "请根据 Report 第 3 页“型号规格或其他说明”中的序号说明选择；选择会随本次核对保存。";
+      reportScopeContinue.disabled = false;
+      return new Promise((resolve, reject) => {
+        const cleanup = () => {
+          reportScopeContinue.removeEventListener("click", continueHandler);
+          if (reportScopeCancel === cancel) reportScopeCancel = null;
+        };
+        const continueHandler = () => {
+          const selected = options.find(scope => String(scope.scope_id) === reportScopeSelect.value) || options[0];
+          cleanup();
+          reportScopeContinue.disabled = true;
+          reportScopePicker.hidden = true;
+          resolve(selected);
+        };
+        const cancel = () => {
+          cleanup();
+          reportScopeContinue.disabled = true;
+          reportScopePicker.hidden = true;
+          reject(apiError("REPORT_SCOPE_SELECTION_CANCELLED", "已取消标准区段选择，请重新开始核对。"));
+        };
+        reportScopeCancel = cancel;
+        reportScopeContinue.addEventListener("click", continueHandler);
+      });
+    }
 
     function configuredApiBase() {
       const explicit = apiBaseInput.value.trim() || window.localStorage.getItem("report-checker-upload-api") || "";
@@ -666,6 +740,7 @@
     }
 
     function updateModeFields() {
+      hideReportScopePicker();
       const mode = MODE_META[modeSelect.value] || MODE_META.self;
       if (mode.disabled) {
         modeSelect.value = "self";
@@ -805,6 +880,7 @@
     }
 
     function swapFiles() {
+      hideReportScopePicker();
       const reportPicked = reportFile.files?.[0];
       const recordPicked = recordFile.files?.[0];
       if (!reportPicked || !recordPicked) return;
@@ -826,6 +902,7 @@
     }
 
     async function onFileChosen(slot) {
+      hideReportScopePicker();
       const input = slot === "report" ? reportFile : recordFile;
       const file = input.files?.[0];
       overrideFileCheck = false;
@@ -1464,25 +1541,9 @@
       const detail = comparisonBrief.querySelector(".brief-detail");
       detail.replaceChildren();
       const rawSummary = String(finding.summary || "");
-      if (isPtrFinding(finding)) {
-        const guidance = ptrManualGuidance(finding);
-        if (guidance) {
-          const reasonLabel = finding.status === "error" ? "为什么判为问题" : "为什么需要人工检查";
-          [[reasonLabel, guidance.reason], ["你需要检查", guidance.action]].forEach(([label, text]) => {
-            const line = document.createElement("div");
-            line.className = "brief-guidance";
-            const labelNode = document.createElement("span");
-            labelNode.className = "brief-guidance-label";
-            labelNode.textContent = `${label}：`;
-            line.append(labelNode, document.createTextNode(text));
-            detail.append(line);
-          });
-        } else {
-          const summary = document.createElement("div");
-          summary.textContent = "PTR 条款要求与 Report 接受标准已核对一致。";
-          detail.append(summary);
-        }
-      } else {
+      // PTR 结果只在这里保留“条款要求”对照。人工检查说明会重复正文，
+      // 而且无法直接指出差异位置；具体差异统一放在下方核对明细中高亮。
+      if (!isPtrFinding(finding)) {
         const summary = document.createElement("div");
         summary.textContent = /^[a-z0-9_]+$/i.test(rawSummary) ? (REASON_TEXT[rawSummary] || "") : (rawSummary || "—");
         detail.append(summary);
@@ -1492,14 +1553,16 @@
         .slice(0, 2);
       comparedRows.forEach(row => {
         const line = document.createElement("div");
-        const left = row.a?.text ? `${row.a.title || "Report"}：“${clip(row.a.text, 90)}”` : `${row.a.title || "Report"}：—`;
-        const right = row.b?.text ? `${row.b.title || "对照"}：“${clip(row.b.text, 90)}”` : `${row.b.title || "对照"}：—`;
         line.className = "brief-comparison";
-        line.textContent = `${row.label}：${left} ↔ ${right}`;
+        line.append(document.createTextNode(`${row.label}：${row.a?.title || "Report"}：“`));
+        appendDiffText(line, row.a, 90);
+        line.append(document.createTextNode(`” ↔ ${row.b?.title || "对照"}：“`));
+        appendDiffText(line, row.b, 90);
+        line.append(document.createTextNode("”"));
         detail.append(line);
       });
-      // PTR 结果顶部只保留一条易读的原因和“条款要求”对照；表格、引用等
-      // 诊断信息放在下方可展开的“核对明细”中，避免同一内容重复出现。
+      // PTR 结果顶部只保留“条款要求”对照；表格、引用等诊断信息放在
+      // 下方可展开的“核对明细”中，避免同一内容重复出现。
       if (isPtrFinding(finding)) return;
       const status = String(finding.status || "");
       if (!["error", "manual", "warning"].includes(status)) return;
@@ -1528,12 +1591,30 @@
 
     // Rows of the detail table for a finding (cached per finding object).
     const rowCache = new WeakMap();
+    function rowHasProvidedDiff(row) {
+      return Array.isArray(row?.a?.diff) || Array.isArray(row?.b?.diff);
+    }
+    function decorateComparisonRows(rows) {
+      const issueStatuses = new Set(["error", "manual", "warning", "suspect"]);
+      rows.forEach(row => {
+        if (!row || rowHasProvidedDiff(row) || !issueStatuses.has(normStatus(row.diff_status || row.status))) return;
+        // A rule-only comparison has no second source location.  Its prose
+        // explains the rule and should not be presented as a document diff.
+        if (!row.a?.loc || !row.b?.loc) return;
+        const diff = genericTextDiff(row.a.text, row.b.text);
+        if (!diff || diff.status === "same") return;
+        row.a.diff = diff.left_segments;
+        row.b.diff = diff.right_segments;
+      });
+      return rows;
+    }
     function checkRowsFor(finding) {
       if (rowCache.has(finding)) return rowCache.get(finding);
       const meta = MODE_META[activeMode] || MODE_META.self;
       const rows = meta.recordRole === "ptr"
         ? ptrCheckRows(finding)
         : meta.recordRole ? recordCheckRows(finding, meta.recordRole) : selfCheckRows(finding);
+      decorateComparisonRows(rows);
       rowCache.set(finding, rows);
       return rows;
     }
@@ -1720,6 +1801,85 @@
       const text = textOf(value).replace(/\s+/g, " ").trim();
       return text.length > limit ? `${text.slice(0, limit)}…` : text;
     }
+    function appendDiffText(target, sideValue, limit = 320) {
+      const text = textOf(sideValue?.text);
+      if (!text) { target.append(document.createTextNode("—")); return; }
+      const segments = Array.isArray(sideValue?.diff) ? sideValue.diff : null;
+      if (!segments) { target.append(document.createTextNode(clip(text, limit))); return; }
+      let used = 0;
+      segments.forEach(segment => {
+        if (used >= limit) return;
+        const value = String(segment?.text || "");
+        if (!value) return;
+        const chunk = value.slice(0, limit - used);
+        if (segment.op === "equal") target.append(document.createTextNode(chunk));
+        else {
+          const mark = document.createElement("mark");
+          mark.className = `text-diff ${segment.op || "replace"}`;
+          mark.textContent = chunk;
+          mark.title = "两侧文字不一致";
+          target.append(mark);
+        }
+        used += chunk.length;
+      });
+      if (text.length > limit) target.append(document.createTextNode("…"));
+    }
+    const GENERIC_DIFF_TOKEN_RE = /[A-Za-z0-9]+(?:[._/\-][A-Za-z0-9]+)*|[\u3400-\u9fff\uf900-\ufaff]|[^\w\s]|\s+/gu;
+    function diffDisplayText(value) {
+      return textOf(value).normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 1200);
+    }
+    function diffEqualityText(value) {
+      return diffDisplayText(value).replace(/\s+/g, "");
+    }
+    function genericTextDiff(leftValue, rightValue) {
+      const leftText = diffDisplayText(leftValue);
+      const rightText = diffDisplayText(rightValue);
+      if (!leftText && !rightText) return null;
+      // PDF line wrapping can insert spaces inside Chinese words or around
+      // units.  Keep those spaces for display, but do not paint them as a
+      // substantive difference.
+      if (diffEqualityText(leftText) === diffEqualityText(rightText)) {
+        return {
+          status: "same",
+          left_segments: leftText ? [{ op: "equal", text: leftText }] : [],
+          right_segments: rightText ? [{ op: "equal", text: rightText }] : []
+        };
+      }
+      const leftTokens = leftText.match(GENERIC_DIFF_TOKEN_RE) || [];
+      const rightTokens = rightText.match(GENERIC_DIFF_TOKEN_RE) || [];
+      const table = Array.from({ length: leftTokens.length + 1 }, () => new Uint32Array(rightTokens.length + 1));
+      for (let left = leftTokens.length - 1; left >= 0; left -= 1) {
+        for (let right = rightTokens.length - 1; right >= 0; right -= 1) {
+          table[left][right] = leftTokens[left] === rightTokens[right]
+            ? table[left + 1][right + 1] + 1
+            : Math.max(table[left + 1][right], table[left][right + 1]);
+        }
+      }
+      const leftSegments = [];
+      const rightSegments = [];
+      const append = (target, op, tokens) => {
+        if (!tokens.length) return;
+        const text = tokens.join("");
+        if (target.length && target[target.length - 1].op === op) target[target.length - 1].text += text;
+        else target.push({ op, text });
+      };
+      let left = 0;
+      let right = 0;
+      while (left < leftTokens.length || right < rightTokens.length) {
+        if (left < leftTokens.length && right < rightTokens.length && leftTokens[left] === rightTokens[right]) {
+          append(leftSegments, "equal", [leftTokens[left]]);
+          append(rightSegments, "equal", [rightTokens[right]]);
+          left += 1; right += 1;
+        } else if (left < leftTokens.length && (right >= rightTokens.length || table[left + 1][right] >= table[left][right + 1])) {
+          append(leftSegments, "delete", [leftTokens[left]]);
+          left += 1;
+        } else {
+          append(rightSegments, "insert", [rightTokens[right]]);
+          right += 1;
+        }
+      }
+      return { status: "different", left_segments: leftSegments, right_segments: rightSegments };
+    }
     function toLoc(location, role, label) {
       if (!location) return null;
       const bbox = location.bbox || location.rect;
@@ -1727,7 +1887,7 @@
       if (!Number.isInteger(page) || page < 1 || !validBbox(bbox)) return null;
       return { role: role || location.document_role || location.role || "report", pdf_page: page, bbox: bbox.map(Number), semantic_role: label || location.source || "证据" };
     }
-    function side(text, loc, title = "") { return { text: textOf(text), loc, title }; }
+    function side(text, loc, title = "", diff = null) { return { text: textOf(text), loc, title, diff: Array.isArray(diff) ? diff : null }; }
     function reasonText(item) {
       if (!item) return "";
       if (item.message) return item.message;
@@ -2015,9 +2175,10 @@
       }
       const textComparison = d.text_comparison || c.text_comparison;
       if (textComparison) {
+        const textDiff = textComparison.text_diff || {};
         rows.push({ label: "条款要求", sub: "正文内容",
-          a: side(textComparison.report_normalized ?? textComparison.report, reportLoc, "Report 要求"),
-          b: side(textComparison.ptr_normalized ?? textComparison.ptr, ptrLoc, "PTR 要求"),
+          a: side(textDiff.report_text ?? textComparison.report_normalized ?? textComparison.report, reportLoc, "Report 要求", textDiff.report_segments),
+          b: side(textDiff.ptr_text ?? textComparison.ptr_normalized ?? textComparison.ptr, ptrLoc, "PTR 要求", textDiff.ptr_segments),
           status: ptrStatus(textComparison, finding.status), note: reasonText(textComparison) || "正文归一化后比较" });
         const auxiliary = Array.isArray(textComparison.report_auxiliary_lines)
           ? textComparison.report_auxiliary_lines.filter(Boolean) : [];
@@ -2117,9 +2278,10 @@
         Object.entries(c.field_comparisons || {}).forEach(([name, fc]) => {
           if (name === "result") return;
           const label = { project: "检验项目", clause: "条款", requirement: "标准要求", suggestion: "建议", condition: "建议/观察记录" }[name] || name;
+          const fieldStatus = fc.decision === "match" ? "pass" : fc.decision === "not_applicable" ? "info" : "manual";
           rows.push({ label, sub: "辅助核对",
-            a: side(clip(fc.report_value ?? fc.report, 120), reportLoc), b: side(clip(fc.record_value ?? fc.record, 120), recordLoc),
-            status: fc.decision === "match" ? "pass" : "info", note: reasonText(fc) });
+            a: side(fc.report_value ?? fc.report, reportLoc), b: side(fc.record_value ?? fc.record, recordLoc),
+            status: "info", diff_status: fieldStatus, note: reasonText(fc) });
         });
         if (c.project && typeof c.project === "object") {
           rows.push({ label: "检验项目", sub: "名称核对",
@@ -2249,11 +2411,21 @@
       const meta = MODE_META[activeMode] || MODE_META.self;
       const rows = [...checkRowsFor(finding)];
       body.replaceChildren();
+      const diffLegend = document.getElementById("check-diff-legend");
       document.getElementById("check-col-a").textContent = meta.recordRole ? "检验报告（位置 · 内容）" : "报告中的位置 · 内容";
       document.getElementById("check-col-b").textContent = meta.recordRole
         ? `${meta.paneLabel || meta.documentLabel || "原始记录"}（位置 · 内容）`
         : "对照对象（首页 / 照片 / 规则）";
-      if (!rows.length) { box.hidden = true; return; }
+      if (!rows.length) { box.hidden = true; if (diffLegend) diffLegend.hidden = true; return; }
+      const hasTextDiff = rows.some(row => [row.a, row.b].some(value =>
+        Array.isArray(value?.diff) && value.diff.some(segment => segment?.op && segment.op !== "equal")
+      ));
+      // PTR 和其他双文档核对只要存在可定位的差异，就直接展开明细，
+      // 让用户无需再点一次“核对明细”才能看到高亮文字。
+      box.open = isPtrFinding(finding) || hasTextDiff;
+      if (diffLegend) {
+        diffLegend.hidden = !hasTextDiff;
+      }
       const order = { error: 0, manual: 1, warning: 2, pass: 3, info: 4 };
       rows.sort((x, y) => (order[normStatus(x.status)] ?? 5) - (order[normStatus(y.status)] ?? 5));
       const counts = rows.reduce((acc, row) => { const key = normStatus(row.status); acc[key] = (acc[key] || 0) + 1; return acc; }, {});
@@ -2263,7 +2435,7 @@
         if (sideValue.title) { const t = document.createElement("span"); t.className = "check-sub"; t.textContent = sideValue.title; td.append(t); }
         const v = document.createElement("span");
         v.className = sideValue.text ? "check-value" : "check-empty";
-        v.textContent = sideValue.text ? clip(sideValue.text, 140) : "—";
+        appendDiffText(v, sideValue, 320);
         if (sideValue.text && sideValue.text.length > 140) v.title = sideValue.text;
         td.append(v);
         if (sideValue.loc) {
@@ -2734,6 +2906,7 @@
 
     async function submitUpload(event) {
       event.preventDefault();
+      hideReportScopePicker();
       const mode = MODE_META[modeSelect.value] || MODE_META.self;
       if (mode.disabled) return;
       let report;
@@ -2786,11 +2959,22 @@
           inputs[mode.inputField || "record_document_id"] = recordDoc.id;
         }
         setStatusText("正在准备核对…");
-        const preflight = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs:preflight`, {
+        const preflightPath = `/api/v1/cases/${encodeURIComponent(caseData.id)}/runs:preflight`;
+        const runPreflight = () => apiJson(preflightPath, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mode: mode.apiMode, inputs })
         });
+        let preflight = await runPreflight();
+        if (preflight.report_scope?.selection_required) {
+          setStatusText("这份 Report 有多个同名标准，请选择要核对的序号区段…");
+          const selectedScope = await chooseReportScope(preflight.report_scope);
+          inputs.report_scope = { scope_id: selectedScope.scope_id };
+          setStatusText(`正在按 ${reportScopeLabel(selectedScope)} 准备核对…`);
+          // The selector is part of the immutable Run inputs, so the plan
+          // hash and all subsequent worker decisions are based on the choice.
+          preflight = await runPreflight();
+        }
         if (!preflight.can_create_run) throw apiError("NO_EXECUTABLE_RULES", preflight.blocking_issues?.join("、") || "当前模式不可创建任务。");
         const run = await apiJson(`/api/v1/cases/${encodeURIComponent(caseData.id)}/runs`, {
           method: "POST",
@@ -2861,6 +3045,7 @@
       fileState.record = null;
       renderFileInfo("report");
       renderFileInfo("record");
+      hideReportScopePicker();
       updateModeFields();
       setMessage("");
     });

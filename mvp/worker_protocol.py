@@ -27,6 +27,7 @@ class JobSpec:
     ptr_path: Path | None = None
     preflight_plan_hash: str | None = None
     rule_bundle_id: str | None = None
+    report_scope: Mapping[str, Any] | str | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
@@ -62,6 +63,7 @@ class JobSpec:
             "output_dir": str(self.output_dir),
             "preflight_plan_hash": self.preflight_plan_hash,
             "rule_bundle_id": self.rule_bundle_id,
+            "report_scope": self.report_scope,
         }
 
     @classmethod
@@ -84,6 +86,7 @@ class JobSpec:
                 output_dir=output_dir,
                 preflight_plan_hash=payload.get("preflight_plan_hash"),
                 rule_bundle_id=payload.get("rule_bundle_id"),
+                report_scope=payload.get("report_scope"),
             )
         except KeyError as exc:
             raise WorkerProtocolError(f"Worker JobSpec 缺少字段: {exc.args[0]}") from exc

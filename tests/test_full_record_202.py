@@ -94,10 +94,11 @@ class FullRecord202Tests(unittest.TestCase):
 
     def test_status_clustering_reduces_manual_rows_on_all_frozen_samples(self) -> None:
         expected_decisions = {
-            # 2026-10-21: item 10 row 22 is a hooked tick, now recognised.
-            "1539": {"match": 167, "manual": 8},
-            "2795": {"match": 160, "manual": 13, "mismatch": 2},
-            "2948": {"match": 160, "manual": 15},
+            # 2026-10-26: a dominant legal mark in a result cell is retained
+            # even when the same cell contains handwritten notes.
+            "1539": {"match": 171, "manual": 4},
+            "2795": {"match": 166, "manual": 5, "mismatch": 4},
+            "2948": {"match": 168, "manual": 6, "mismatch": 1},
         }
         manual_total = 0
         for sample, result in self.results.items():
@@ -125,7 +126,7 @@ class FullRecord202Tests(unittest.TestCase):
                         for key in ink
                     )
                 )
-        self.assertEqual(manual_total, 36)
+        self.assertEqual(manual_total, 15)
 
     def test_five_frozen_open_triangles_are_resolved_without_global_relaxation(self) -> None:
         expected = {
@@ -209,10 +210,7 @@ class FullRecord202Tests(unittest.TestCase):
         unresolved_status_rows = [
             row for row in references if row["comparison"]["status"]["decision"] == "manual"
         ]
-        self.assertTrue(unresolved_status_rows)
-        self.assertTrue(
-            all(row["reason_code"] != "TABLE3_OUT_OF_SCOPE" for row in unresolved_status_rows)
-        )
+        self.assertFalse(unresolved_status_rows)
 
     def test_frozen_requirement_identity_and_project_name_alias(self) -> None:
         for sample, result in self.results.items():
@@ -384,6 +382,26 @@ class FullRecord202Tests(unittest.TestCase):
         self.assertEqual(
             _resolved_record_symbol(cross_row),
             (None, "record_ink_cross_row_ambiguous"),
+        )
+
+    def test_result_cell_uses_dominant_check_over_handwritten_note_strokes(self) -> None:
+        inks = [
+            {"bbox": [20, 25, 48, 53], "classified_symbol": "√", "stroke_count": 1},
+            {"bbox": [58, 30, 72, 45], "classified_symbol": "△", "stroke_count": 1},
+        ]
+        self.assertEqual(
+            _resolved_record_symbol(inks, [0, 0, 150, 100]),
+            ("√", None),
+        )
+
+    def test_result_cell_uses_central_triangle_over_a_mark_crossing_from_previous_row(self) -> None:
+        inks = [
+            {"bbox": [36, 55, 81, 88], "classified_symbol": "△", "stroke_count": 1},
+            {"bbox": [118, 0, 154, 30], "classified_symbol": "√", "stroke_count": 1},
+        ]
+        self.assertEqual(
+            _resolved_record_symbol(inks, [0, 0, 160, 100]),
+            ("△", None),
         )
 
     def test_two_crossing_stroke_annotations_form_one_nonconforming_cluster(self) -> None:

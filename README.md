@@ -22,7 +22,7 @@
 
 PTR 当前已启用。两个 Record 模式不混入 `REPORT-*` 自检 Finding；Report 自检只发布 `REPORT-*` Finding。
 
-PTR 试点的机器证据和授权记录见 [PTR 正式启用签字清单](docs/PTR_SIGNOFF_CHECKLIST_2026-10-24.md) 及 `output/ptr-review-package-20261024-v5/ptr-business-signoff.json`。
+PTR 试点的历史机器证据和授权记录见 [PTR 正式启用签字清单](docs/PTR_SIGNOFF_CHECKLIST_2026-10-24.md) 及 `output/ptr-review-package-20261024-v5/ptr-business-signoff.json`。当前 `PTR-P01@0.5.0-draft` 的重新验收包为 `output/ptr-review-package-20261026-v7/`；v5 使用的旧规则版本不能作为 v7 的签字依据。
 
 ## Coverage Ledger
 
@@ -106,6 +106,10 @@ R02、R03、R04、R05、R06 的照片核对按样品对象适用性执行。备�
 - 表 2 中“见表 3”的状态行继续参加比对；表 3 文档、页面及从表 3 原始测量值重新计算结果不在本模式范围。
 
 模板映射按项目、父条款、出现次序和冻结的要求结构共同确认；单项映射证据异常时转为 `manual`，整体行清单不符合已知模板时停止运行，不强行匹配。
+
+当一份 Report 在前置说明中把同一标准拆成多个序号区段时，工作台会在 Report + Record 预检阶段列出区段供选择，不会按文件名或顺序猜测。例如 1998 报告的 `GB 9706.202-2021` 有 `119–156` 和 `157–194` 两段，选择的 `scope_id` 会随 Run 保存，并限制本次只读取该段。
+
+9706.202 的实测数据单元格可以同时写状态符号和说明文字。程序优先取单元格内位置和尺寸最可信的主符号：明确的 `√` 映射为“符合要求”，明确的 `△` 映射为“不适用”；无法区分多个同等强度符号时仍保留人工复核。
 
 ## 手写被拼合的 Record
 

@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from mvp.capabilities import MODE_CATALOG, validate_mode
 from mvp.run_full_records import run_full_records
@@ -45,6 +45,7 @@ def run_mode(
     output_dir: str | Path,
     record_path: str | Path | None = None,
     ptr_path: str | Path | None = None,
+    report_scope: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     decision = validate_mode(mode, operation="runner")
     if not decision["enabled"]:
@@ -100,6 +101,7 @@ def run_mode(
         report_path=report_path,
         record_path=record_path,
         output_dir=output_dir,
+        report_scope=report_scope,
     )
 
 

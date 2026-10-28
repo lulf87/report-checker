@@ -686,6 +686,7 @@ def run_full_records(
     report_path: str | Path,
     record_path: str | Path,
     output_dir: str | Path,
+    report_scope: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     if mode not in MODE_CONFIG:
         raise ValueError(f"unsupported mode: {mode}")
@@ -703,6 +704,7 @@ def run_full_records(
                 report_path=report,
                 record_path=record,
                 output_dir=output,
+                report_scope=report_scope,
             )
         except Record61StatusInventoryError as exc:
             if mode != "report_record_9706_1":

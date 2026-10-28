@@ -742,12 +742,18 @@ class RunStore:
             "record_9706_202": "record_document_id",
         }
         expected_keys = {expected[role] for role in capability["required_roles"]}
+        # A Report can declare the same standard in multiple sequence ranges.
+        # Keep the optional selector in the Run input snapshot so the worker
+        # compares exactly the segment chosen during preflight.  It is not a
+        # document role and is therefore deliberately excluded from
+        # ``run_inputs``/DocumentStore validation.
+        optional_keys = {"report_scope"} if mode in {"report_record_9706_1", "report_record_9706_202"} else set()
         actual_keys = set(inputs)
-        if actual_keys != expected_keys:
+        if not actual_keys.issubset(expected_keys | optional_keys) or not expected_keys.issubset(actual_keys):
             raise RunStoreError(
                 "INVALID_RUN_INPUTS",
                 "Run 输入角色与模式不匹配",
-                details={"expected": sorted(expected_keys), "actual": sorted(actual_keys)},
+                details={"expected": sorted(expected_keys | optional_keys), "required": sorted(expected_keys), "actual": sorted(actual_keys)},
             )
         normalized: dict[str, Any] = {}
         for key in sorted(expected_keys):
@@ -755,6 +761,30 @@ class RunStore:
             if not isinstance(value, str) or not value.strip():
                 raise RunStoreError("INVALID_RUN_INPUTS", "Run 输入引用必须是非空字符串", details={"field": key})
             normalized[key] = value
+        if "report_scope" in inputs:
+            selection = inputs["report_scope"]
+            if isinstance(selection, str) and selection.strip():
+                normalized["report_scope"] = {"scope_id": selection.strip()}
+            elif isinstance(selection, Mapping):
+                allowed_scope_keys = {"scope_id", "standard", "sequence_start", "sequence_end", "sequence_ids"}
+                unknown = set(selection) - allowed_scope_keys
+                if unknown:
+                    raise RunStoreError(
+                        "INVALID_RUN_INPUTS",
+                        "report_scope 包含不支持的字段",
+                        details={"unknown": sorted(unknown)},
+                    )
+                copied = dict(selection)
+                if not copied.get("scope_id") and not (copied.get("standard") and copied.get("sequence_start") is not None and copied.get("sequence_end") is not None):
+                    raise RunStoreError(
+                        "INVALID_RUN_INPUTS",
+                        "report_scope 必须包含 scope_id，或包含标准与序号起止",
+                    )
+                if "scope_id" in copied and (not isinstance(copied["scope_id"], str) or not copied["scope_id"].strip()):
+                    raise RunStoreError("INVALID_RUN_INPUTS", "report_scope.scope_id 必须是非空字符串")
+                normalized["report_scope"] = copied
+            else:
+                raise RunStoreError("INVALID_RUN_INPUTS", "report_scope 必须是字符串或对象")
         return normalized
 
     def create_run(

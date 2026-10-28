@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mvp.capabilities import MODE_CATALOG
+from mvp.capabilities import MODE_CATALOG, RULE_CATALOG
+from mvp.ptr_compare import PTR_COMPARE_RULE_VERSION
 from mvp.ptr_p01 import (
     PTR_P01_DISABLED_REASON,
     PTR_P01_RULE_ID,
@@ -38,6 +39,10 @@ def sha256(path: Path) -> str:
 
 
 class PtrP01DraftTests(unittest.TestCase):
+    def test_rule_version_is_shared_by_contract_and_comparator(self) -> None:
+        self.assertEqual(PTR_P01_RULE_VERSION, PTR_COMPARE_RULE_VERSION)
+        self.assertEqual(RULE_CATALOG["PTR-P01"]["version"], PTR_P01_RULE_VERSION)
+
     def test_real_sample_draft_is_disabled_and_auditable(self) -> None:
         report_before = sha256(REPORT)
         ptr_before = sha256(PTR)

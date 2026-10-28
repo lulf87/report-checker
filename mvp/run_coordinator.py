@@ -268,6 +268,7 @@ def execute_persisted_run(
     output_dir: str | Path,
     record_path: str | Path | None = None,
     ptr_path: str | Path | None = None,
+    report_scope: Mapping[str, Any] | str | None = None,
     timeout_seconds: int = 3600,
     python_executable: str | None = None,
 ) -> dict[str, Any]:
@@ -317,6 +318,7 @@ def execute_persisted_run(
         output_dir=work_output,
         preflight_plan_hash=run["preflight_plan_hash"],
         rule_bundle_id=run["rule_bundle_id"],
+        report_scope=report_scope if report_scope is not None else run.get("inputs", {}).get("report_scope"),
     )
     store.transition_run(run_id, "running")
     for execution in store.get_rule_executions(run_id):

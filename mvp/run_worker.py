@@ -31,6 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report_path=job.report_path,
                 record_path=job.record_path,
                 ptr_path=job.ptr_path,
+                report_scope=job.report_scope,
                 output_dir=job.output_dir,
             )
         print(json.dumps(worker_result_payload(job, result), ensure_ascii=False, separators=(",", ":")))

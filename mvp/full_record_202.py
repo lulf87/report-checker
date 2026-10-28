@@ -53,6 +53,7 @@ from mvp.record_full import (
     parse_report_numeric,
     validate_coverage,
 )
+from mvp.report_standard_scope import resolve_report_scope, validate_report_scope_for_mode
 
 
 EXPECTED_ITEM_ROW_COUNTS: dict[int, int] = {
@@ -575,7 +576,12 @@ def extract_record_202_rows(document: fitz.Document) -> tuple[list[dict[str, Any
     }
 
 
-def extract_report_202_rows(document: fitz.Document) -> dict[int, list[dict[str, Any]]]:
+def extract_report_202_rows(
+    document: fitz.Document,
+    *,
+    sequence_start: int = 119,
+    sequence_end: int = 156,
+) -> dict[int, list[dict[str, Any]]]:
     by_item: dict[int, list[dict[str, Any]]] = defaultdict(list)
     active_item: int | None = None
     active_project = ""
@@ -592,7 +598,7 @@ def extract_report_202_rows(document: fitz.Document) -> dict[int, list[dict[str,
                 match = re.fullmatch(r"(?:续)?(\d+)", sequence_text)
                 if match:
                     active_item = int(match.group(1))
-                if active_item is None or not 119 <= active_item <= 156:
+                if active_item is None or not sequence_start <= active_item <= sequence_end:
                     continue
                 project = display_text(row[mapping["检验项目"]])
                 clause = display_text(row[mapping["标准条款"]])
@@ -1181,10 +1187,11 @@ def _legend_check(record_doc: fitz.Document) -> dict[str, Any]:
 def build_report_202_groups(
     report_rows: Mapping[int, list[dict[str, Any]]],
     item16_split: bool = False,
+    report_sequence_start: int = 119,
 ) -> dict[int, list[list[dict[str, Any]]]]:
     groups: dict[int, list[list[dict[str, Any]]]] = {}
     for record_item in range(1, 39):
-        report_item = 118 + record_item
+        report_item = report_sequence_start + record_item - 1
         physical_rows = list(report_rows.get(report_item, []))
         if record_item == 8:
             # Report preserves the introductory row and nested "颜色" header.  They
@@ -1204,7 +1211,7 @@ def build_report_202_groups(
     unexpected = [
         row
         for item, rows in report_rows.items()
-        if not 119 <= int(item) <= 156
+        if not report_sequence_start <= int(item) <= report_sequence_start + 37
         for row in rows
     ]
     if unexpected:
@@ -1424,6 +1431,52 @@ def _is_high_confidence_status_cluster(cluster: Sequence[Mapping[str, Any]]) -> 
     return width >= 10 and height >= 10 and max(width, height) >= 24
 
 
+def _is_relaxed_status_cluster(cluster: Sequence[Mapping[str, Any]]) -> bool:
+    """Keep a clearly drawn status mark when the cell also contains handwriting.
+
+    Some Records use a relatively small check mark and then write a long
+    explanation in the same result cell.  The conservative high-confidence
+    gate above intentionally rejects those marks when they are considered in
+    isolation.  For a cell-level decision, a single legal mark with a visible
+    footprint is still useful; the resolver below ranks it against the other
+    marks rather than treating every handwritten stroke as a conflict.
+    """
+
+    if _is_high_confidence_status_cluster(cluster):
+        return True
+    geometry = _status_cluster_geometry(cluster)
+    symbol = geometry["symbol"]
+    bbox = geometry["bbox"]
+    if bbox is None or len(cluster) != 1:
+        return False
+    if symbol == "√":
+        return bool(bbox.width >= 20 and bbox.height >= 18 and bbox.get_area() >= 500)
+    if symbol == "△":
+        return bool(bbox.width >= 12 and bbox.height >= 10 and bbox.get_area() >= 120)
+    return False
+
+
+def _status_cluster_score(
+    cluster: Sequence[Mapping[str, Any]],
+    result_bbox: Sequence[float] | fitz.Rect,
+) -> float:
+    """Score a legal mark by footprint and distance from the cell centre."""
+
+    geometry = _status_cluster_geometry(cluster)
+    bbox = geometry["bbox"]
+    if bbox is None:
+        return 0.0
+    cell = fitz.Rect(result_bbox)
+    cell_diagonal = math.hypot(cell.width, cell.height) or 1.0
+    mark_center = fitz.Point((bbox.x0 + bbox.x1) / 2, (bbox.y0 + bbox.y1) / 2)
+    cell_center = fitz.Point((cell.x0 + cell.x1) / 2, (cell.y0 + cell.y1) / 2)
+    distance = math.dist((mark_center.x, mark_center.y), (cell_center.x, cell_center.y))
+    centrality = max(0.15, 1.0 - distance / cell_diagonal)
+    # Area is the strongest signal: a large check/triangle is the status mark;
+    # small strokes are usually letters or values written beside it.
+    return float(bbox.get_area()) * (0.5 + centrality)
+
+
 def _is_single_open_triangle(ink: Mapping[str, Any]) -> bool:
     """Accept the bounded open-triangle geometry seen in five frozen rows."""
 
@@ -1573,7 +1626,10 @@ def _is_small_tick_cluster(cluster: Sequence[Mapping[str, Any]]) -> bool:
     return len(strokes) == 1 and _is_v_tick(strokes[0])
 
 
-def _resolved_record_symbol(inks: Sequence[Mapping[str, Any]]) -> tuple[str | None, str | None]:
+def _resolved_record_symbol(
+    inks: Sequence[Mapping[str, Any]],
+    result_bbox: Sequence[float] | fitz.Rect | None = None,
+) -> tuple[str | None, str | None]:
     if not inks:
         return None, "record_ink_count_not_one"
     if len(inks) == 1:
@@ -1587,7 +1643,7 @@ def _resolved_record_symbol(inks: Sequence[Mapping[str, Any]]) -> tuple[str | No
         return None, "record_ink_geometry_unresolved"
 
     clusters = _status_ink_clusters(inks)
-    candidates = [cluster for cluster in clusters if _is_high_confidence_status_cluster(cluster)]
+    candidates = [cluster for cluster in clusters if _is_relaxed_status_cluster(cluster)]
     if not candidates:
         small_ticks = [cluster for cluster in clusters if _is_small_tick_cluster(cluster)]
         if len(small_ticks) > 1:
@@ -1605,6 +1661,23 @@ def _resolved_record_symbol(inks: Sequence[Mapping[str, Any]]) -> tuple[str | No
                 return None, "record_ink_cross_row_ambiguous"
             return "√", None
         return None, "record_status_symbol_not_found"
+    if len(candidates) > 1 and result_bbox is not None:
+        ranked = sorted(
+            (
+                (_status_cluster_score(cluster, result_bbox), cluster)
+                for cluster in candidates
+            ),
+            key=lambda value: value[0],
+            reverse=True,
+        )
+        best_score, best = ranked[0]
+        next_score = ranked[1][0]
+        best_symbol = _status_cluster_geometry(best)["symbol"]
+        next_symbol = _status_cluster_geometry(ranked[1][1])["symbol"]
+        # One dominant mark is enough to decide this cell.  Similar-sized
+        # legal marks with different symbols remain an explicit conflict.
+        if best_score >= next_score * 1.35 or best_symbol == next_symbol:
+            candidates = [best]
     if len(candidates) != 1:
         return None, "record_status_symbol_conflict"
     geometry = _status_cluster_geometry(candidates[0])
@@ -2255,7 +2328,10 @@ def _needs_handwritten_number(record_row: Mapping[str, Any], report_group: Seque
 
 def _compare_one(record_row: Mapping[str, Any], report_group: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     report_results = [str(row.get("result", "")) for row in report_group]
-    symbol, symbol_error = _resolved_record_symbol(record_row.get("inks", []))
+    symbol, symbol_error = _resolved_record_symbol(
+        record_row.get("inks", []),
+        record_row.get("result_bbox"),
+    )
     if symbol is None:
         status_comparison = {
             "decision": "manual",
@@ -2583,6 +2659,7 @@ def compare_record_202_documents(
     report_path: str | Path,
     *,
     sample: str | None = None,
+    report_scope: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     record_path = Path(record_path)
     report_path = Path(report_path)
@@ -2596,10 +2673,26 @@ def compare_record_202_documents(
             hidden_handwriting_text = {}
         record_rows, extraction = extract_record_202_rows(record_doc)
         extraction["input_adapter"] = record_input_adapter
-        report_rows = extract_report_202_rows(report_doc)
+        selected_report_scope = resolve_report_scope(
+            report_path,
+            mode="report_record_9706_202",
+            selection=report_scope,
+        )
+        validate_report_scope_for_mode(selected_report_scope, "report_record_9706_202")
+        report_sequence_start = int(selected_report_scope["sequence_start"])
+        report_sequence_end = int(selected_report_scope["sequence_end"])
+        report_rows = extract_report_202_rows(
+            report_doc,
+            sequence_start=report_sequence_start,
+            sequence_end=report_sequence_end,
+        )
         item16_split = _item16_split_variant(record_rows)
         extraction["item16_split_variant"] = item16_split
-        report_groups = build_report_202_groups(report_rows, item16_split)
+        report_groups = build_report_202_groups(
+            report_rows,
+            item16_split,
+            report_sequence_start=report_sequence_start,
+        )
         inventory = _record_202_inventory_diagnostics(record_rows, report_groups, item16_split)
         number_check = _number_check(record_doc, report_doc)
         legend_check = _legend_check(record_doc)
@@ -2660,7 +2753,7 @@ def compare_record_202_documents(
             groups = report_groups.get(item, [])
             report_group = groups[group_index] if group_index < len(groups) else []
             group_offsets[item] += 1
-            report_item = 118 + item
+            report_item = report_sequence_start + item - 1
             parent_clause_match = bool(report_group) and all(
                 compact(row.get("parent_clause")) == compact(record_row.get("parent_clause"))
                 for row in report_group
@@ -2704,7 +2797,10 @@ def compare_record_202_documents(
                     else:
                         comparison["decision"] = "match"
             else:
-                symbol, symbol_error = _resolved_record_symbol(record_row.get("inks", []))
+                symbol, symbol_error = _resolved_record_symbol(
+                    record_row.get("inks", []),
+                    record_row.get("result_bbox"),
+                )
                 comparison = {
                     "decision": "manual",
                     "record_symbol": symbol,
@@ -2913,6 +3009,7 @@ def compare_record_202_documents(
                 "the page reference itself is not treated as a measurement."
             ),
         },
+        "report_scope": selected_report_scope,
         "number_check": number_check,
         "legend_check": legend_check,
         "structure": {"record": record_structure, "report": report_structure},
@@ -3125,10 +3222,11 @@ def run_record_202_full(
     report_path: str | Path,
     record_path: str | Path,
     output_dir: str | Path | None = None,
+    report_scope: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     """Stable entry point for the full Report + GB 9706.202 Record run."""
 
-    result = compare_record_202_documents(record_path, report_path)
+    result = compare_record_202_documents(record_path, report_path, report_scope=report_scope)
     record_hash = result["source_files"]["record"]["sha256"]
     report_hash = result["source_files"]["report"]["sha256"]
     del output_dir  # The coordinating runner owns all output publication.

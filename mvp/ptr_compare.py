@@ -14,6 +14,7 @@ this module never calls an LLM and never lets one replace a hard rule.
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
 import hashlib
 import json
 import re
@@ -43,10 +44,14 @@ from mvp.checker import (
 from mvp.ptr_scope import extract_report_scope
 from mvp.ptr_ocr import iter_ptr_ocr_lines
 from mvp.ptr_llm import build_review_task, validate_llm_review
+from mvp.ptr_report_contract import PTR_P01_RULE_VERSION
 
 
 PTR_COMPARE_SCHEMA_VERSION = "ptr-compare-0.5"
-PTR_COMPARE_RULE_VERSION = "0.5.0-draft"
+# Kept as a compatibility alias for callers of the comparison layer.  The
+# contract module owns the canonical version so the comparator and capability
+# catalog cannot silently drift apart.
+PTR_COMPARE_RULE_VERSION = PTR_P01_RULE_VERSION
 PTR_COMPARE_RULE_ID = "PTR-P01"
 
 MATCHED = "matched"
@@ -596,6 +601,188 @@ def _iter_text_lines(path: Path) -> Iterable[tuple[int, list[float], str, str]]:
                         yield page_number, _block_bbox(block), text, "pymupdf_text_blocks"
 
 
+def _text_diff_display(value: Any, *, role: str | None = None) -> str:
+    """Return readable source text for the side-by-side difference view."""
+
+    source = value
+    if str(role or "").lower() == "report":
+        source, _ = _split_report_auxiliary_lines(value)
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(source or ""))).strip()
+
+
+_DIFF_TOKEN_RE = re.compile(
+    r"[A-Za-z0-9]+(?:[._/\-][A-Za-z0-9]+)*|[\u3400-\u9fff\uf900-\ufaff]|[^\w\s]|\s+",
+    re.UNICODE,
+)
+
+
+def _text_diff_segments(report_value: Any, ptr_value: Any) -> dict[str, Any]:
+    """Build safe, display-oriented character/token diff segments.
+
+    Whitespace-only PDF layout changes are collapsed before diffing.  Chinese
+    text is compared character by character while Latin words and identifiers
+    stay together, so the UI can mark the smallest useful differing spans.
+    """
+
+    report_text = _text_diff_display(report_value, role="report")
+    ptr_text = _text_diff_display(ptr_value, role="ptr")
+    # The rule already treats layout whitespace and other presentation-only
+    # differences as equal. Keep the source text available for context, but do
+    # not paint those harmless differences as user-facing changes.
+    if normalize_comparison_text(report_text) == normalize_comparison_text(ptr_text):
+        return {
+            "status": "same",
+            "report_text": report_text,
+            "ptr_text": ptr_text,
+            "report_segments": [{"op": "equal", "text": report_text}] if report_text else [],
+            "ptr_segments": [{"op": "equal", "text": ptr_text}] if ptr_text else [],
+        }
+    report_tokens = _DIFF_TOKEN_RE.findall(report_text)
+    ptr_tokens = _DIFF_TOKEN_RE.findall(ptr_text)
+    matcher = SequenceMatcher(None, report_tokens, ptr_tokens, autojunk=False)
+    report_segments: list[dict[str, str]] = []
+    ptr_segments: list[dict[str, str]] = []
+
+    def append_segment(target: list[dict[str, str]], operation: str, tokens: Sequence[str]) -> None:
+        if not tokens:
+            return
+        text = "".join(tokens)
+        if target and target[-1]["op"] == operation:
+            target[-1]["text"] += text
+        else:
+            target.append({"op": operation, "text": text})
+
+    for operation, report_start, report_end, ptr_start, ptr_end in matcher.get_opcodes():
+        if operation == "equal":
+            append_segment(report_segments, operation, report_tokens[report_start:report_end])
+            append_segment(ptr_segments, operation, ptr_tokens[ptr_start:ptr_end])
+        elif operation == "delete":
+            append_segment(report_segments, operation, report_tokens[report_start:report_end])
+        elif operation == "insert":
+            append_segment(ptr_segments, operation, ptr_tokens[ptr_start:ptr_end])
+        else:  # replace
+            append_segment(report_segments, operation, report_tokens[report_start:report_end])
+            append_segment(ptr_segments, operation, ptr_tokens[ptr_start:ptr_end])
+    return {
+        "status": "same" if report_text == ptr_text else "different",
+        "report_text": report_text,
+        "ptr_text": ptr_text,
+        "report_segments": report_segments,
+        "ptr_segments": ptr_segments,
+    }
+
+
+_INLINE_NUMERIC_MARKER_RE = re.compile(
+    r"(?m)^\s*(?P<clause>2(?:\s*\.\s*\d+){1,8})"
+    r"(?=(?:\s+[A-Za-z\u3400-\u9fff]|[、，,:：;；)）]\s*[A-Za-z\u3400-\u9fff]|$))"
+)
+_INLINE_LETTER_MARKER_RE = re.compile(r"(?m)^\s*(?P<letter>[a-z])\s*[)）](?=\s*)", re.IGNORECASE)
+
+
+def _inline_observation_text(value: Mapping[str, Any]) -> str:
+    """Return searchable text for a clause evidence or table observation."""
+
+    text = value.get("text") or value.get("requirement_text") or value.get("caption") or ""
+    if not text and value.get("rows"):
+        text = "\n".join(" | ".join(str(cell or "") for cell in row) for row in value.get("rows", []))
+    return str(text or "")
+
+
+def _inline_text_key(value: Any) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
+
+
+def _split_inline_observations(
+    observations: Sequence[Mapping[str, Any]],
+    segments: Sequence[Mapping[str, Any]],
+    base_clause: str,
+) -> dict[str, list[Mapping[str, Any]]]:
+    """Assign physical observations to the inline clause that owns them.
+
+    Inline PTR/Report clauses are often extracted as one parent node.  The
+    parser may then create ``2.2.2e`` or ``2.3.6.6a`` nodes from that text, but
+    their source evidence must be split at the same boundaries.  Observations
+    without a new marker (continuation lines and referenced tables) stay with
+    the most recently seen child marker.
+    """
+
+    segment_ids = [str(item.get("clause_id") or "") for item in segments if item.get("clause_id")]
+    if not segment_ids:
+        return {}
+    canonical_ids = {_canonical_clause_id(value): value for value in segment_ids}
+    base = canonical_ids.get(_canonical_clause_id(base_clause), segment_ids[0])
+    letter_ids: dict[str, str] = {}
+    for clause_id in segment_ids:
+        match = re.fullmatch(r"(.+?)([a-z])", clause_id, re.IGNORECASE)
+        if match and _canonical_clause_id(match.group(1)) == _canonical_clause_id(base):
+            letter_ids[match.group(2).lower()] = clause_id
+
+    def markers(value: Mapping[str, Any]) -> list[str]:
+        text = _inline_observation_text(value)
+        found: list[str] = []
+        for match in _INLINE_NUMERIC_MARKER_RE.finditer(text):
+            clause_id = _canonical_clause_id(match.group("clause"))
+            if clause_id in canonical_ids and clause_id not in found:
+                found.append(clause_id)
+        for match in _INLINE_LETTER_MARKER_RE.finditer(text):
+            clause_id = letter_ids.get(match.group("letter").lower())
+            if clause_id and clause_id not in found:
+                found.append(clause_id)
+        return found
+
+    def sort_key(item: tuple[int, Mapping[str, Any]]) -> tuple[float, float, float, int]:
+        index, value = item
+        bbox = value.get("bbox") or value.get("rect") or [0, 0, 0, 0]
+        if not value.get("bbox") and not value.get("rect"):
+            boxes = [
+                cell.get("bbox")
+                for cell in value.get("cells", []) or []
+                if isinstance(cell, Mapping) and cell.get("bbox")
+            ]
+            if boxes:
+                bbox = [
+                    min(float(box[0]) for box in boxes),
+                    min(float(box[1]) for box in boxes),
+                    max(float(box[2]) for box in boxes),
+                    max(float(box[3]) for box in boxes),
+                ]
+        try:
+            page = float(value.get("pdf_page") or 0)
+            top = float(bbox[1])
+            left = float(bbox[0])
+        except (TypeError, ValueError, IndexError):
+            page, top, left = 0.0, 0.0, 0.0
+        return page, top, left, index
+
+    assigned: dict[str, list[Mapping[str, Any]]] = {clause_id: [] for clause_id in segment_ids}
+    current = base
+    for _, observation in sorted(enumerate(observations), key=sort_key):
+        found = markers(observation)
+        if found:
+            for clause_id in found:
+                assigned[clause_id].append(observation)
+            current = found[-1]
+        else:
+            assigned.setdefault(current, []).append(observation)
+
+    # A malformed or merged source cell can hide the marker.  Use the first
+    # distinctive body text as a conservative fallback instead of returning a
+    # child with no physical location at all.
+    for segment in segments:
+        clause_id = str(segment.get("clause_id") or "")
+        if clause_id == base or assigned.get(clause_id):
+            continue
+        body = segment.get("text") or "\n".join(segment.get("parts", []))
+        needle = _inline_text_key(body)[:32]
+        if not needle:
+            continue
+        for observation in observations:
+            if needle in _inline_text_key(_inline_observation_text(observation)):
+                assigned[clause_id].append(observation)
+                break
+    return assigned
+
+
 def _parse_clause_lines(
     lines: Iterable[Sequence[Any]],
     *,
@@ -610,6 +797,10 @@ def _parse_clause_lines(
     product requirements section, preventing test-method references such as
     ``2.1.1 的要求`` from being mistaken for requirements.
     """
+
+    # OCR fallback uses the same page-counter filter as the native layout
+    # parser. Import lazily to avoid a module cycle during parser startup.
+    from mvp.ptr_layout import is_page_counter_line
 
     nodes: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -629,6 +820,8 @@ def _parse_clause_lines(
         page, bbox, line = record[:3]
         extraction_method = str(record[3]) if len(record) >= 4 else "pymupdf_text_blocks"
         confidence = float(record[4]) if len(record) >= 5 and record[4] is not None else None
+        if is_page_counter_line(line):
+            continue
         if stop_at_top_level and re.match(
             rf"^\s*{re.escape(stop_at_top_level)}[.．]\s*(?=[A-Za-z\u3400-\u9fff])",
             line,
@@ -1473,6 +1666,7 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
             "report_normalized": report_text,
             "ptr_source": str(ptr.get("text") or ""),
             "report_source": str(report.get("text") or ""),
+            "text_diff": _text_diff_segments(report.get("text"), ptr.get("text")),
             "report_auxiliary_lines": list(
                 report.get("auxiliary_lines")
                 or _split_report_auxiliary_lines(report.get("text"))[1]

@@ -748,7 +748,7 @@ GET /api/v1/rules
     },
     {
       "id": "PTR-P01",
-      "version": "0.1.0-draft",
+      "version": "0.5.0-draft",
       "title": "PTR 声明范围与正文覆盖",
       "source": "mode_specific",
       "modes": ["report_ptr", "report_ptr_report"],
@@ -1026,6 +1026,37 @@ X-CSRF-Token: <token>
 PTR preflight 还返回 `input_contract`、`input_documents` 和完整的 `mode_contract`。其中两个槽固定为 `report_document_id → report` 和 `ptr_document_id → ptr`，顺序固定、每槽只能有一个 Document，`record_document_id` 属于禁止角色；能解析到 Document 时列出其 Blob 哈希和页几何，测试中的未解析 ID 则保留 `unresolved=true`，不能据此生成 Finding 或通过结论。Worker JobSpec、状态服务和草案结果沿用同一角色映射，避免把 PTR 路径误当成 Record。
 
 `required_components` 不是示例子集：它必须等于全部 `disposition=ready` 规则的 `required_component_ids` 精确去重并集，并额外包含导致规则 `blocked` 的缺失或降级组件。`plan_hash` 覆盖 mode、Document ID/哈希、规则 bundle、planned rules、disposition 和该完整集合的 component version/config hash；散列前按 component ID 规范排序，响应数组顺序不作为身份。创建 Run 必须带回该值；后端重新生成并逐项校验，任何集合、版本或哈希漂移均拒绝创建并要求刷新 preflight。preflight 不是内容通过结论，也不产生 Finding。
+
+对于 `report_record_9706_1` 和 `report_record_9706_202`，preflight 还会返回 `report_scope`。它记录 Report 前置说明中“标准 ↔ 序号范围”的解析结果：
+
+```json
+{
+  "status": "parsed",
+  "selection_required": true,
+  "options": [
+    {
+      "scope_id": "GB97062022021:119-156#1",
+      "standard": "GB 9706.202-2021",
+      "sequence_start": 119,
+      "sequence_end": 156,
+      "sequence_count": 38,
+      "source": {"pdf_page": 5, "bbox": [73.2, 214.4, 498.6, 224.9]}
+    },
+    {
+      "scope_id": "GB97062022021:157-194#2",
+      "standard": "GB 9706.202-2021",
+      "sequence_start": 157,
+      "sequence_end": 194,
+      "sequence_count": 38,
+      "source": {"pdf_page": 5, "bbox": [73.2, 225.0, 498.6, 235.5]}
+    }
+  ],
+  "selected": null,
+  "reason_code": "REPORT_SCOPE_SELECTION_REQUIRED"
+}
+```
+
+同一标准只有一个区段时会自动选择；存在多个区段且未选择时，`can_create_run=false`，`blocking_issues` 包含 `REPORT_SCOPE_SELECTION_REQUIRED`。客户端选择一个 `scope_id` 后，把它放入同一份 `inputs`：`"report_scope": {"scope_id": "GB97062022021:157-194#2"}`，重新执行 preflight，再用新的 `plan_hash` 创建 Run。Run 输入、结果和审计记录都保留所选区段，比较器只读取该区段对应的 Report 序号。
 
 ## 4. Case 端点
 

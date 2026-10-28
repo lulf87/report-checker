@@ -2,7 +2,9 @@
 
 日期：2026-10-24
 分支：`codex/ptr-report-comparison`
-规则草案：`PTR-P01@0.4.0-draft`
+规则草案：`PTR-P01@0.5.0-draft`
+
+本报告早期回归曾使用 `0.4.0-draft`；当前可复核结果、验收门和正式能力目录统一以 `0.5.0-draft` 为准，历史 Run 仍保留原版本快照。
 
 ## 已验证的执行链
 
@@ -101,6 +103,12 @@ git diff --check       OK
 另对 `素材/ptr` 与 `素材/report` 中的 12 组同号样本批量运行 `comparison_mode="rules"`：每组均满足 `eligible == accounted`、`conserved=true`；5780、5782 的 OCR PTR 全部保持 `manual`。这批量结果用于发现解析回归，不能替代三份试点样本的逐条人工验收。
 
 三份试点的人工验收包已由 `mvp.ptr_review_package` 生成到 `output/ptr-review-package-20261024-v5/`，每个样本包含 `manifest.json`、`review.csv` 和 `review.md`；包内机器状态、证据、规则版本和源文件哈希只读保留。验收门 JSON 保留启用前的 `ready_for_signoff / can_enable_report_ptr=false` 快照；随后生成的 `ptr-business-signoff.json` 和 `enablement-decision.json` 记录了本次授权与启用决定。
+
+## 2026-10-26 版本对齐补充
+
+- `mvp/ptr_report_contract.py` 现在提供唯一的 `PTR-P01@0.5.0-draft` 版本源，比较器、能力目录、验收门和 Finding 结果均引用该版本。
+- 按新规则重新生成的三份包位于 `output/ptr-review-package-20261026-v7/`：2948 为 `34/0/0/0`，0775 为 `150/1/48/1`，1539 为 `20/0/1/24`；三份 Coverage Ledger 均守恒，并包含正文差异片段。
+- v7 验收门已生成但保持 `blocked`，原因是新规则版本尚未完成逐条人工复核；v5 的旧版 `0.4.0-draft` 签字继续作为历史记录保留，不能直接复用于 v7。
 
 业务负责人逐条确认的项目、签字记录和启用后维护要求见 [PTR 正式启用签字清单](PTR_SIGNOFF_CHECKLIST_2026-10-24.md)。
 

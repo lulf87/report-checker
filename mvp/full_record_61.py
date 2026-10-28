@@ -15,6 +15,7 @@ import re
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -53,6 +54,7 @@ from mvp.record_full import (
     scan_report_rows,
     validate_coverage,
 )
+from mvp.report_standard_scope import resolve_report_scope, validate_report_scope_for_mode
 
 
 RectTuple = tuple[float, float, float, float]
@@ -5177,6 +5179,7 @@ def run_record_61_full(
     report_path: str | Path,
     record_path: str | Path,
     output_dir: str | Path | None = None,
+    report_scope: Mapping[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     """Run the complete Report + GB 9706.1 Record coverage ledger.
 
@@ -5190,7 +5193,21 @@ def run_record_61_full(
     report_hash_before = sha256_file(report_path)
     record_hash_before = sha256_file(record_path)
 
-    report_rows = scan_report_rows(report_path, (1, 118))
+    selected_report_scope = resolve_report_scope(
+        report_path,
+        mode=MODE,
+        selection=report_scope,
+    )
+    validate_report_scope_for_mode(selected_report_scope, MODE)
+    scope_start = int(selected_report_scope["sequence_start"])
+    scope_end = int(selected_report_scope["sequence_end"])
+    # Downstream 9706.1 mapping is defined in Record-relative sequence space
+    # (1..118).  Keep the physical Report row IDs and coordinates intact while
+    # shifting only the semantic sequence number.
+    report_rows = [
+        replace(row, sequence=int(row.sequence) - scope_start + 1)
+        for row in scan_report_rows(report_path, (scope_start, scope_end))
+    ]
     report_body_rows = [row for row in report_rows if 1 <= row.sequence <= 117]
     report_118 = [row for row in report_rows if row.sequence == 118]
     if len(report_118) != 1:
@@ -5368,6 +5385,7 @@ def run_record_61_full(
             "record_sha256_after": record_hash_after,
             "unchanged": unchanged,
         },
+        "report_scope": selected_report_scope,
         "scope": {
             "included": [
                 "Record page-1 identity fields (retained as excluded; Q1–Q5 not reviewed)",

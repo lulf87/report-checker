@@ -14,7 +14,10 @@ from typing import Any, Mapping
 PTR_REPORT_CONTRACT_SCHEMA_VERSION = "ptr-report-contract-0.1"
 PTR_REPORT_RESULT_SCHEMA_VERSION = "ptr-report-result-0.1"
 PTR_P01_RULE_ID = "PTR-P01"
-PTR_P01_RULE_VERSION = "0.1.0-draft"
+# Canonical PTR-P01 rule version.  The formal comparator, capability catalog,
+# review gate and draft contract all consume this same value so a result can
+# always be traced back to the rule set that produced it.
+PTR_P01_RULE_VERSION = "0.5.0-draft"
 PTR_P01_DISABLED_REASON = "PTR_NOT_VALIDATED"
 
 PTR_REPORT_MODES = ("report_ptr", "report_ptr_report")
