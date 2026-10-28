@@ -678,7 +678,8 @@ class PtrCompareSampleTests(unittest.TestCase):
             for sample_dir in (ROOT / "素材" / "ptr").iterdir()
             if sample_dir.is_dir() and list(sample_dir.glob("*.pdf")) and list((ROOT / "素材" / "report" / sample_dir.name).glob("*.pdf"))
         )
-        self.assertEqual(len(samples), 12)
+        # 素材会随新项目增加（2026-10-28 加入 2170），只要求至少包含原有 12 组。
+        self.assertGreaterEqual(len(samples), 12)
         hard_fields = ("numeric_comparison", "unit_comparison", "reference_comparison", "table_comparison")
         for sample in samples:
             with self.subTest(sample=sample):

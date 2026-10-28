@@ -18,16 +18,20 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
-PARSER_VERSION = "ptr-layout-1.4"
+PARSER_VERSION = "ptr-layout-1.5"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
 )
 STOP = re.compile(r"^\s*3(?:[.．、:]|\s)\s*(?:检验|试验|测试|检测|Test|Inspection)", re.I)
-CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z](?:\.\d+)*)(?:\s|[:：]|[\u3400-\u9fff]|$)")
+# ``附表1`` is the caption of the table cited as ``表1`` in the clause text.
+CAPTION = re.compile(r"^\s*附?(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z](?:\.\d+)*)(?:\s|[:：]|[\u3400-\u9fff]|$)")
 # Sample/model sub-row labels printed in the Report requirement cell
 # (``470066 左路``).  A model followed by a requirement (``470066：0°±3°。``)
 # is requirement text and must be kept.
+# Table-of-contents entries: ``2.1.1 压力导管............`` (dot leaders,
+# optionally followed by a page number or Word's broken-bookmark message).
+TOC_LINE = re.compile(r"(?:\.{6,}|…{3,}|·{6,}|_{6,})\s*(?:\d+|错误！?未定义书签。?|Error!.*)?\s*$")
 RESULT_QUALIFIER = re.compile(r"^\s*\d{5,8}\s*(?:[:：]\s*)?(?:左路|右路)?\s*$|^\s*(?:左路|右路)\s*$")
 # A dotted number followed by a measure word is a value (``2.85 个周期/°``),
 # not a clause heading.
@@ -538,6 +542,11 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
             # Do not mistake tables in test methods for inline requirements.
             events = []
             for line in lines:
+                if TOC_LINE.search(str(line["text"] or "")):
+                    # A table of contents lists clause numbers (and “3 试验方法”)
+                    # before the real text; it must neither create nodes nor
+                    # stop the parser.
+                    continue
                 if is_page_counter_line(line["text"]) or (
                     re.fullmatch(r"\d+(?:\s*/\s*\d+)?", line["text"]) and (
                     line["bbox"][1] > page.rect.height * .90 or line["bbox"][3] < page.rect.height * .07

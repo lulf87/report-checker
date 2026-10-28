@@ -495,7 +495,15 @@ def _canonical_unit_label(value: str) -> str:
 def _references(value: Any) -> dict[str, list[str]]:
     text = _strip_document_noise(normalize_comparison_text(value))
     standards = sorted({normalize_comparison_text(item) for item in STANDARD_RE.findall(text)})
-    tables = sorted({normalize_comparison_text(item) for item in TABLE_RE.findall(text)})
+    # ``YY0285.1-2017中附录C`` is an appendix of that standard, not a table of
+    # this document.
+    own_text = re.sub(
+        r"(?:GB|YY)(?:/T)?\d+(?:\.\d+)*(?:-\d{4})?(?:中|的)(?:附录[A-Za-z](?:\.\d+)*|表[A-Za-z]?\d+(?:[.\-]\d+)*)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    tables = sorted({normalize_comparison_text(item) for item in TABLE_RE.findall(own_text)})
     return {"standards": standards, "tables": tables}
 
 
@@ -697,7 +705,7 @@ SAFE_EQUIVALENCE_RULES = {
     "REPORT_RESULT_LABELS": "Report 结果子行标签（如 X方向/Y方向、左路/右路）",
     "PUNCTUATION_ONLY": "仅标点或项目符号不同",
     "REPORT_REPEATED_TEXT": "Report 重复写了同一要求",
-    "REPORT_EXPANDED_REFERENCE": "Report 展开了所引用条款的原文（已与 PTR 原条款核对）",
+    "REPORT_EXPANDED_REFERENCE": "Report 展开写出了所引用的 PTR 条款原文（已与 PTR 原条款核对一致）",
     "REPORT_TABLE_AS_TEXT": "Report 把 PTR 表格逐格写成了文字（内容与 PTR 表格完全相同）",
 }
 
@@ -705,7 +713,9 @@ _FIGURE_CAPTION_RE = re.compile(r"^\s*图\s*\d+(?:[.\-－]\d+)*(?:\s|[㐀-鿿A-Z
 _REQUIREMENT_WORD_RE = re.compile(r"[应须需不无得≤≥<>±=＜＞]|大于|小于|至少|超过|符合|要求|允差|偏差|\d")
 _SENTENCE_END_RE = re.compile(r"[。；;：:]\s*$")
 _UNIT_LINE_RE = re.compile(r"^\s*单位\s*[:：]\s*(?P<unit>\S.*?)\s*$")
-_EXPANDED_REFERENCE_RE = re.compile(r"^(?P<clause>\d+(?:\.\d+)+)\.?(?P<letter>[a-z])\)(?P<body>.+)$")
+_EXPANDED_REFERENCE_RE = re.compile(
+    r"^(?P<clause>\d+(?:\.\d+)+)\.?(?:(?P<letter>[a-z])\))?(?P<body>[^\d.].*)$"
+)
 # Punctuation that never carries a technical value.  ``.`` and ``,`` between
 # digits are kept (decimal point / thousands separator).
 _PUNCT_RE = re.compile(r"[。；;：:、●•·▪\"'“”‘’]|(?<!\d)[.,]|[.,](?!\d)")
@@ -878,10 +888,14 @@ def _reduce_report_repetitions(
         expanded = _EXPANDED_REFERENCE_RE.match(piece.strip())
         if expanded and plain not in ptr_plain:
             target = _strip_punctuation(
-                ptr_text_by_clause.get(expanded.group("clause") + expanded.group("letter"), "")
+                ptr_text_by_clause.get(expanded.group("clause") + (expanded.group("letter") or ""), "")
             )
             body = _strip_punctuation(expanded.group("body"))
-            if target and body and body in target:
+            # The Report writes out another PTR clause (``2.3.1.1 直流电阻 …``);
+            # accept it only when it reproduces that PTR clause.
+            if target and body and body in target and (
+                expanded.group("letter") or len(body) >= 0.6 * len(target)
+            ):
                 if "REPORT_EXPANDED_REFERENCE" not in applied:
                     applied.append("REPORT_EXPANDED_REFERENCE")
                 continue
@@ -1138,6 +1152,10 @@ def _parse_clause_lines(
         confidence = float(record[4]) if len(record) >= 5 and record[4] is not None else None
         if is_page_counter_line(line):
             continue
+        from mvp.ptr_layout import TOC_LINE
+
+        if TOC_LINE.search(str(line or "")):
+            continue  # table-of-contents entry
         if stop_at_top_level and re.match(
             rf"^\s*{re.escape(stop_at_top_level)}[.．]\s*(?=[A-Za-z\u3400-\u9fff])",
             line,

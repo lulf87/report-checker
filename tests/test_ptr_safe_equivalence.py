@@ -115,3 +115,30 @@ class TableAsTextTests(unittest.TestCase):
         self.assertEqual(
             safe_text_equivalence(ptr, ptr + "\nGB 9706.1-2020"), ["REPORT_REPEATED_TEXT"]
         )
+
+
+class TocAndReferenceTests(unittest.TestCase):
+    def test_table_of_contents_lines(self) -> None:
+        from mvp.ptr_layout import TOC_LINE
+
+        self.assertTrue(TOC_LINE.search("2.1.1 压力导管......................................................................"))
+        self.assertTrue(TOC_LINE.search("2.2.2 连接线缆................................................... 错误！未定义书签。"))
+        self.assertTrue(TOC_LINE.search("3 试验方法.................................. 12"))
+        self.assertFalse(TOC_LINE.search("2.1.1 压力导管的长度应为1200 mm。"))
+
+    def test_attached_table_caption(self) -> None:
+        self.assertEqual(CAPTION.match("附表1 一次性使用压力监测射频脉冲消融导管型号规格表").group(1), "表1")
+
+    def test_appendix_of_a_standard_is_not_a_document_table(self) -> None:
+        from mvp.ptr_compare import _references
+
+        refs = _references("当按照YY0285.1-2017 中附录C 给出的方法试验时，产品特性见附录A。")
+        self.assertEqual(refs["tables"], ["附录A"])
+
+    def test_report_writes_out_another_ptr_clause(self) -> None:
+        ptr = "试验后导线的直流电阻应符合2.3.1.1 的要求。"
+        report = ptr + "\n2.3.1.1 直流电阻\n各电极与对应插头芯脚之间的直流电\n阻值应不大于10Ω。\n单位：Ω"
+        clauses = {"2.3.1.1": "直流电阻各电极与对应插头芯脚之间的直流电阻值应不大于10Ω。"}
+        self.assertIn("REPORT_EXPANDED_REFERENCE", safe_text_equivalence(ptr, report, ptr_text_by_clause=clauses))
+        changed = {"2.3.1.1": "直流电阻各电极与对应插头芯脚之间的直流电阻值应不大于5Ω。"}
+        self.assertIsNone(safe_text_equivalence(ptr, report, ptr_text_by_clause=changed))
