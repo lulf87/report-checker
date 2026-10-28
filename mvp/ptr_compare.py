@@ -672,6 +672,257 @@ def _text_diff_segments(report_value: Any, ptr_value: Any) -> dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------
+# Safe text equivalences (PTR-P01 0.5.1-draft)
+#
+# A strict normalized-text mismatch is first reported as TEXT_MISMATCH.  The
+# rules below then try to explain the difference with *presentation-only*
+# causes observed in real PTR/Report pairs.  Each rule removes one narrowly
+# defined kind of material; the result is accepted only when the remaining
+# PTR and Report strings are exactly equal.  Every applied rule is recorded so
+# the reviewer can audit why a visible difference was not escalated.
+# --------------------------------------------------------------------------
+
+SAFE_EQUIVALENCE_RULES = {
+    "PTR_RUNNING_HEADER": "PTR 页眉/页脚（多数页面重复出现的行）",
+    "PTR_FIGURE_LABELS": "PTR 插图内文字及图注（图N…）",
+    "REPORT_UNIT_LINE": "Report“单位：X”行（X 与 PTR 中的单位一致）",
+    "REPORT_RESULT_LABELS": "Report 结果子行标签（如 X方向/Y方向、左路/右路）",
+    "PUNCTUATION_ONLY": "仅标点或项目符号不同",
+    "REPORT_REPEATED_TEXT": "Report 重复写了同一要求",
+    "REPORT_EXPANDED_REFERENCE": "Report 展开了所引用条款的原文（已与 PTR 原条款核对）",
+}
+
+_FIGURE_CAPTION_RE = re.compile(r"^\s*图\s*\d+(?:[.\-－]\d+)*(?:\s|[㐀-鿿A-Za-z(（]|$)")
+_REQUIREMENT_WORD_RE = re.compile(r"[应须需不无得≤≥<>±=＜＞]|大于|小于|至少|超过|符合|要求|允差|偏差|\d")
+_SENTENCE_END_RE = re.compile(r"[。；;：:]\s*$")
+_UNIT_LINE_RE = re.compile(r"^\s*单位\s*[:：]\s*(?P<unit>\S.*?)\s*$")
+_EXPANDED_REFERENCE_RE = re.compile(r"^(?P<clause>\d+(?:\.\d+)+)\.?(?P<letter>[a-z])\)(?P<body>.+)$")
+# Punctuation that never carries a technical value.  ``.`` and ``,`` between
+# digits are kept (decimal point / thousands separator).
+_PUNCT_RE = re.compile(r"[。；;：:、●•·▪\"'“”‘’]|(?<!\d)[.,]|[.,](?!\d)")
+
+
+def ptr_running_header_lines(path: str | Path) -> set[str]:
+    """Return normalized lines repeated on most PTR pages (headers/footers)."""
+
+    counts: defaultdict[str, int] = defaultdict(int)
+    try:
+        document = fitz.open(path)
+    except Exception:  # pragma: no cover - unreadable PDFs are handled upstream
+        return set()
+    with document:
+        page_count = len(document)
+        for page in document:
+            seen = {
+                normalize_comparison_text(line)
+                for line in page.get_text().splitlines()
+                if line.strip()
+            }
+            for line in seen:
+                counts[line] += 1
+    threshold = max(3, int(page_count * 0.4 + 0.999))
+    return {
+        line
+        for line, count in counts.items()
+        if count >= threshold and len(line) >= 4 and not re.match(r"^\d+(?:\.\d+)+", line)
+    }
+
+
+def _drop_running_header_lines(lines: list[str], headers: set[str]) -> tuple[list[str], bool]:
+    """Drop lines made up only of running-header pieces.
+
+    Page text often splits ``力反馈…控制系统`` and ``文件：1098908-01`` into two
+    lines while the clause extractor joins them; a line counts as header when
+    nothing is left after removing the known header strings.
+    """
+
+    ordered = sorted(headers, key=len, reverse=True)
+
+    def is_header(line: str) -> bool:
+        rest = normalize_comparison_text(line)
+        if not rest:
+            return False
+        for header in ordered:
+            rest = rest.replace(header, "")
+        return not rest
+
+    kept = [line for line in lines if not is_header(line)]
+    return kept, len(kept) != len(lines)
+
+
+def _drop_figure_label_lines(lines: list[str]) -> tuple[list[str], bool]:
+    """Drop ``图N`` captions and the short label lines drawn inside the figure."""
+
+    result: list[str] = []
+    changed = False
+    for line in lines:
+        if not _FIGURE_CAPTION_RE.match(line):
+            result.append(line)
+            continue
+        changed = True
+        # Walk back over short, unpunctuated fragments: those are labels
+        # inside the drawing (``肩部左右伸展θ1``), not requirement sentences.
+        while result:
+            previous = result[-1]
+            normalized = normalize_comparison_text(previous)
+            if (
+                not normalized
+                or len(normalized) > 20
+                or _SENTENCE_END_RE.search(previous)
+                or CLAUSE_LINE_RE.match(previous)
+                or re.search(r"[应须]|表\s*\d", previous)
+            ):
+                break
+            result.pop()
+    return result, changed
+
+
+def _drop_report_unit_lines(lines: list[str], ptr_normalized: str) -> tuple[list[str], bool]:
+    ptr_plain = _strip_punctuation(ptr_normalized)
+    kept: list[str] = []
+    changed = False
+    for line in lines:
+        match = _UNIT_LINE_RE.match(unicodedata.normalize("NFKC", line))
+        if match:
+            unit = _strip_punctuation(normalize_comparison_text(match.group("unit")))
+            if unit and unit in ptr_plain:
+                changed = True
+                continue
+        kept.append(line)
+    return kept, changed
+
+
+def _parallel_labels(labels: Sequence[str]) -> bool:
+    if len(labels) < 2:
+        return False
+    if all(re.fullmatch(r"[A-Za-z+\-]+", label) for label in labels):
+        return True
+    suffixes = {label[-2:] for label in labels}
+    prefixes = {label[:2] for label in labels}
+    return len(suffixes) == 1 or len(prefixes) == 1
+
+
+def _is_label_line(line: str) -> bool:
+    normalized = normalize_comparison_text(line)
+    return bool(
+        normalized
+        and len(normalized) <= 10
+        and not _REQUIREMENT_WORD_RE.search(normalized)
+        and not _UNIT_LINE_RE.match(unicodedata.normalize("NFKC", line))
+    )
+
+
+def _drop_report_result_labels(lines: list[str]) -> tuple[list[str], bool]:
+    """Drop blocks of parallel result sub-row labels from a Report cell.
+
+    A block qualifies when it consists of at least two short, parallel labels
+    (``X方向/Y方向``, ``非Firefly 模式/Firefly 模式``, ``Yaw/Pitch``) without
+    digits or requirement words, and sits either at the end of the cell or
+    directly after a ``单位：X`` line (the Report puts per-row labels under the
+    unit of the requirement they belong to).
+    """
+
+    result: list[str] = []
+    changed = False
+    index = 0
+    while index < len(lines):
+        end = index
+        while end < len(lines) and _is_label_line(lines[end]):
+            end += 1
+        if end > index:
+            labels = [normalize_comparison_text(line) for line in lines[index:end]]
+            previous = result[-1] if result else ""
+            after_unit = bool(_UNIT_LINE_RE.match(unicodedata.normalize("NFKC", previous)))
+            trailing = end == len(lines) and bool(result)
+            if _parallel_labels(labels) and (after_unit or trailing):
+                changed = True
+            else:
+                result.extend(lines[index:end])
+            index = end
+            continue
+        result.append(lines[index])
+        index += 1
+    return result, changed
+
+
+def _strip_punctuation(value: str) -> str:
+    return _PUNCT_RE.sub("", value)
+
+
+def _reduce_report_repetitions(
+    report_text: str,
+    ptr_plain: str,
+    ptr_text_by_clause: Mapping[str, str],
+) -> tuple[str, list[str]]:
+    """Drop repeated sentences and verified expanded references from Report."""
+
+    applied: list[str] = []
+    kept: list[str] = []
+    for piece in re.split(r"[。；;]", report_text):
+        plain = _strip_punctuation(piece)
+        if not plain:
+            continue
+        if kept and plain in "".join(kept):
+            if "REPORT_REPEATED_TEXT" not in applied:
+                applied.append("REPORT_REPEATED_TEXT")
+            continue
+        expanded = _EXPANDED_REFERENCE_RE.match(piece.strip())
+        if expanded and plain not in ptr_plain:
+            target = _strip_punctuation(
+                ptr_text_by_clause.get(expanded.group("clause") + expanded.group("letter"), "")
+            )
+            body = _strip_punctuation(expanded.group("body"))
+            if target and body and body in target:
+                if "REPORT_EXPANDED_REFERENCE" not in applied:
+                    applied.append("REPORT_EXPANDED_REFERENCE")
+                continue
+        kept.append(plain)
+    return "".join(kept), applied
+
+
+def safe_text_equivalence(
+    ptr_source: Any,
+    report_source: Any,
+    *,
+    ptr_headers: set[str] | None = None,
+    ptr_text_by_clause: Mapping[str, str] | None = None,
+) -> list[str] | None:
+    """Return the applied rule ids when the texts are equivalent, else ``None``."""
+
+    applied: list[str] = []
+    ptr_lines = str(ptr_source or "").splitlines()
+    report_body, _ = _split_report_auxiliary_lines(report_source)
+    report_lines = report_body.splitlines()
+
+    ptr_lines, changed = _drop_running_header_lines(ptr_lines, ptr_headers or set())
+    if changed:
+        applied.append("PTR_RUNNING_HEADER")
+    ptr_lines, changed = _drop_figure_label_lines(ptr_lines)
+    if changed:
+        applied.append("PTR_FIGURE_LABELS")
+    ptr_text = _text_for_comparison("\n".join(ptr_lines), role="ptr")
+    # Labels are recognised by the ``单位：`` line above them, so detect them
+    # before the unit lines are removed.
+    report_lines, labels_changed = _drop_report_result_labels(report_lines)
+    report_lines, changed = _drop_report_unit_lines(report_lines, normalize_comparison_text("\n".join(ptr_lines)))
+    if changed:
+        applied.append("REPORT_UNIT_LINE")
+    if labels_changed:
+        applied.append("REPORT_RESULT_LABELS")
+    report_text = _text_for_comparison("\n".join(report_lines), role="report")
+    if ptr_text == report_text:
+        return applied or None
+    ptr_plain = _strip_punctuation(ptr_text)
+    report_plain = _strip_punctuation(report_text)
+    if ptr_plain == report_plain:
+        return [*applied, "PUNCTUATION_ONLY"]
+    reduced, extra = _reduce_report_repetitions(report_text, ptr_plain, ptr_text_by_clause or {})
+    if extra and reduced == ptr_plain:
+        return [*applied, *extra]
+    return None
+
+
 _INLINE_NUMERIC_MARKER_RE = re.compile(
     r"(?m)^\s*(?P<clause>2(?:\s*\.\s*\d+){1,8})"
     r"(?=(?:\s+[A-Za-z\u3400-\u9fff]|[、，,:：;；)）]\s*[A-Za-z\u3400-\u9fff]|$))"
@@ -1516,7 +1767,13 @@ def _unit_labels_match_numeric(
     return True, "EXACT_UNIT_MATCH"
 
 
-def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_children: bool) -> dict[str, Any]:
+def _compare_text(
+    ptr: Mapping[str, Any],
+    report: Mapping[str, Any],
+    *,
+    has_children: bool,
+    context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     ptr_text = str(
         ptr.get("normalized_text")
         or _text_for_comparison(ptr.get("text"), role=str(ptr.get("role") or ""))
@@ -1537,6 +1794,19 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
     else:
         text_status = MISMATCH
         reason = "TEXT_MISMATCH"
+    equivalence_rules: list[str] = []
+    if text_status == MISMATCH:
+        context = context or {}
+        rules = safe_text_equivalence(
+            ptr.get("text"),
+            report.get("text"),
+            ptr_headers=context.get("ptr_headers"),
+            ptr_text_by_clause=context.get("ptr_text_by_clause"),
+        )
+        if rules:
+            text_status = MATCHED
+            reason = "SAFE_TEXT_EQUIVALENCE"
+            equivalence_rules = rules
     ptr_numbers = list(
         ptr.get("numeric_signature")
         or _numeric_signature(ptr.get("text"), role=str(ptr.get("role") or ""))
@@ -1667,6 +1937,9 @@ def _compare_text(ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_chil
             "ptr_source": str(ptr.get("text") or ""),
             "report_source": str(report.get("text") or ""),
             "text_diff": _text_diff_segments(report.get("text"), ptr.get("text")),
+            "equivalence_rules": [
+                {"rule": rule, "label": SAFE_EQUIVALENCE_RULES[rule]} for rule in equivalence_rules
+            ],
             "report_auxiliary_lines": list(
                 report.get("auxiliary_lines")
                 or _split_report_auxiliary_lines(report.get("text"))[1]
@@ -1777,6 +2050,12 @@ def compare_ptr_report(
         parent = node.get("parent_clause_id")
         if parent:
             children[str(parent)].add(str(node["clause_id"]))
+    equivalence_context = {
+        "ptr_headers": ptr_running_header_lines(ptr_path),
+        "ptr_text_by_clause": {
+            clause: _text_for_comparison(node.get("text"), role="ptr") for clause, node in ptr_by_clause.items()
+        },
+    }
     ledger: list[dict[str, Any]] = []
     accounted_report_ids: set[str] = set()
     for clause_id, ptr_node in sorted(ptr_by_clause.items(), key=lambda item: _clause_sort_key(item[0])):
@@ -1848,7 +2127,12 @@ def compare_ptr_report(
             continue
         report_node = candidates[0]
         accounted_report_ids.add(str(report_node["node_id"]))
-        comparison = _compare_text(ptr_node, report_node, has_children=bool(children.get(clause_id)))
+        comparison = _compare_text(
+            ptr_node,
+            report_node,
+            has_children=bool(children.get(clause_id)),
+            context=equivalence_context,
+        )
         decision = comparison["decision"]
         if comparison["table_comparison"]["status"] == MANUAL and decision == MATCHED:
             decision = MANUAL

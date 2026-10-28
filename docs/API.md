@@ -748,7 +748,7 @@ GET /api/v1/rules
     },
     {
       "id": "PTR-P01",
-      "version": "0.5.0-draft",
+      "version": "0.5.1-draft",
       "title": "PTR 声明范围与正文覆盖",
       "source": "mode_specific",
       "modes": ["report_ptr", "report_ptr_report"],

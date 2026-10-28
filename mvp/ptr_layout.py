@@ -18,14 +18,20 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
-PARSER_VERSION = "ptr-layout-1.3"
+PARSER_VERSION = "ptr-layout-1.4"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
 )
 STOP = re.compile(r"^\s*3(?:[.．、:]|\s)\s*(?:检验|试验|测试|检测|Test|Inspection)", re.I)
-CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z])(?:\s|[\u3400-\u9fff]|$)")
-RESULT_QUALIFIER = re.compile(r"^\s*(?:470066|470067)\s*(?:[:：].*)?$|^\s*(?:左路|右路)\s*$")
+CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z])(?:\s|[:：]|[\u3400-\u9fff]|$)")
+# Sample/model sub-row labels printed in the Report requirement cell
+# (``470066 左路``).  A model followed by a requirement (``470066：0°±3°。``)
+# is requirement text and must be kept.
+RESULT_QUALIFIER = re.compile(r"^\s*\d{5,8}\s*(?:[:：]\s*)?(?:左路|右路)?\s*$|^\s*(?:左路|右路)\s*$")
+# A dotted number followed by a measure word is a value (``2.85 个周期/°``),
+# not a clause heading.
+VALUE_NOT_CLAUSE = re.compile(r"^(?:个|倍|周期|像素|%|°)(?![\u3400-\u9fff]{0,2}(?:要求|性能|功能|防护))")
 PAGE_COUNTER = re.compile(
     r"^(?:"
     r"第\s*\d+\s*页(?:[，,]?\s*(?:共\s*\d+\s*页?|/\s*(?:共\s*)?\d+\s*页?))"
@@ -554,7 +560,7 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                     clause = compact(match.group(1))
                     title = match.group(2).strip()
                     # Table decimals and unit tokens are not clause headings.
-                    if not re.fullmatch(r"(?:[munpμkMG]?)(?:V|A|s|sec|Hz|Ω|W)\b.*", title):
+                    if not re.fullmatch(r"(?:[munpμkMG]?)(?:V|A|s|sec|Hz|Ω|W)\b.*", title) and not VALUE_NOT_CLAUSE.match(title):
                         current = _new_node("ptr", clause, title, digest)
                         nodes.append(current)
                         current["evidence"].append(evidence("ptr", page.number+1, event["bbox"], text, digest))
