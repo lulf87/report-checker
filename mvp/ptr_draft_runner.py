@@ -89,6 +89,7 @@ def _finding(entry: Mapping[str, Any], *, rule_version: str) -> dict[str, Any]:
             "unit_comparison": entry.get("unit_comparison"),
             "table_comparison": entry.get("table_comparison"),
             "reference_comparison": entry.get("reference_comparison"),
+            "clause_shift": entry.get("clause_shift"),
         },
         "evidence": evidence,
         "evidence_locations": evidence,

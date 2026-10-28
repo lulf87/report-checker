@@ -1239,12 +1239,15 @@
       return leftParts.length - rightParts.length;
     }
     function compareFindings(left, right) {
+      // 先按严重程度分组（问题 → 需要确认 → 一致），组内 PTR 结果再按条款号排，
+      // 这样同一分组只出现一次，错位的连续条款也排在一起。
+      const sectionOrder = (SECTION_RANK[sectionOf(left.item)] ?? 5) - (SECTION_RANK[sectionOf(right.item)] ?? 5);
+      if (sectionOrder) return sectionOrder;
       if (activeMode === "ptr" || left.item.rule_id === "PTR-P01" || right.item.rule_id === "PTR-P01") {
         const clauseOrder = compareClauseIds(ptrClauseId(left.item), ptrClauseId(right.item));
         if (clauseOrder) return clauseOrder;
       }
-      const sectionOrder = (SECTION_RANK[sectionOf(left.item)] ?? 5) - (SECTION_RANK[sectionOf(right.item)] ?? 5);
-      return sectionOrder || (left.index - right.index);
+      return left.index - right.index;
     }
     function chapterOf(item) {
       const clause = item.details?.comparison?.field_comparisons?.clause?.record_value || item.details?.comparison?.field_comparisons?.clause?.report_value;
@@ -1597,7 +1600,7 @@
     function decorateComparisonRows(rows) {
       const issueStatuses = new Set(["error", "manual", "warning", "suspect"]);
       rows.forEach(row => {
-        if (!row || rowHasProvidedDiff(row) || !issueStatuses.has(normStatus(row.diff_status || row.status))) return;
+        if (!row || row.nodiff || rowHasProvidedDiff(row) || !issueStatuses.has(normStatus(row.diff_status || row.status))) return;
         // A rule-only comparison has no second source location.  Its prose
         // explains the rule and should not be presented as a document diff.
         if (!row.a?.loc || !row.b?.loc) return;
@@ -1685,6 +1688,15 @@
       PTR_OCR_CANDIDATES_MANUAL: "PTR 文字来自识别结果，需要人工查看原文",
       NUMERIC_FACT_MISMATCH: "PTR 与 Report 接受标准中的数值不同",
       UNIT_MISMATCH: "PTR 与 Report 接受标准中的单位不同",
+      REFERENCE_MISMATCH: "PTR 与 Report 引用的标准或表格不同",
+      REPORT_CLAUSE_MISSING: "PTR 有这一条，Report 中没有找到",
+      PTR_CLAUSE_MISSING: "Report 有这一条，PTR 中没有找到",
+      CLAUSE_NUMBER_SHIFTED: "Report 条款号与 PTR 错位",
+      TABLE_CELL_MISMATCH: "Report 展开的表格值与 PTR 表格单元格不同",
+      TABLE_CELL_REVIEW_REQUIRED: "表格已逐格核对，部分单元格需要人工确认",
+      TABLE_ROW_EXPANSION_MATCH: "Report 展开的表格行与 PTR 表格逐格一致",
+      SAFE_TEXT_EQUIVALENCE: "正文差异只来自已登记的排版/格式差异",
+      EXACT_NORMALIZED_MATCH: "正文归一化后完全相同",
       parent_clause_mismatch: "父条款不一致",
       project_name_difference: "项目名称不同",
       project_name_not_uniquely_resolved: "项目名称无法唯一确定",
@@ -1824,7 +1836,7 @@
       });
       if (text.length > limit) target.append(document.createTextNode("…"));
     }
-    const GENERIC_DIFF_TOKEN_RE = /[A-Za-z0-9]+(?:[._/\-][A-Za-z0-9]+)*|[\u3400-\u9fff\uf900-\ufaff]|[^\w\s]|\s+/gu;
+    const GENERIC_DIFF_TOKEN_RE = /[A-Za-z0-9]+(?:[._/\-][A-Za-z0-9]+)*|[\u3400-\u9fff\uf900-\ufaff]|[^\w\s]|\s+|\S/gu;
     function diffDisplayText(value) {
       return textOf(value).normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 1200);
     }
@@ -1932,6 +1944,25 @@
           action: "请看下方两侧红框，逐行核对表头、项目名称、数值、单位和允差；逐项一致选“不是问题”，有任何新增、缺少或不同选“是问题”。"
         };
       }
+      const shift = details.clause_shift;
+      if (code === "CLAUSE_NUMBER_SHIFTED" && shift) {
+        return {
+          reason: shift.run?.message || shift.message || "Report 条款号与 PTR 错位。",
+          action: "请确认 Report 的条款编号是否应与 PTR 一致（被省略的条款通常应保留编号并写“不适用”）；编号确实错了选“是问题”。"
+        };
+      }
+      const expansion = table.row_expansion;
+      if ((code === "TABLE_CELL_MISMATCH" || code === "TABLE_CELL_REVIEW_REQUIRED") && expansion) {
+        const open = (expansion.cells || []).filter(cell => cell.status !== "matched");
+        const names = [...new Set(open.map(cell => cell.column))].join("、");
+        const ok = (expansion.cells || []).length - open.length;
+        return {
+          reason: code === "TABLE_CELL_MISMATCH"
+            ? `Report 展开的 PTR 表格行中，“${names}”与 PTR 单元格不同（其余 ${ok} 格一致）。`
+            : `Report 展开的 PTR 表格行已逐格核对，${ok} 格一致；“${names}”需要人工确认。`,
+          action: "请只看下方标红/待确认的单元格，对照 PTR 表格原文判断；其余单元格已自动核对一致。"
+        };
+      }
       if (code === "TEXT_REVIEW_REQUIRED") {
         return {
           reason: "PTR 条款和 Report 接受标准的正文不完全相同。数字、单位和引用已分别核对，没有发现硬冲突。",
@@ -1981,9 +2012,21 @@
       return `${guidance.reason} ${guidance.action}`;
     }
 
+    function ptrPassNote(finding) {
+      const details = finding?.details || {};
+      const text = details.text_comparison || details.comparison?.text_comparison || {};
+      const table = details.table_comparison || details.comparison?.table_comparison || {};
+      const parts = [];
+      const cells = table.row_expansion?.cells || [];
+      if (table.row_expansion && cells.length) parts.push(`表格逐格核对 ${cells.length} 格一致`);
+      const rules = (text.equivalence_rules || []).map(item => item.label).filter(Boolean);
+      if (rules.length) parts.push(`已忽略：${rules.join("、")}`);
+      return parts.length ? `（${parts.join("；")}）` : "";
+    }
+
     function ptrListSummary(finding) {
       const guidance = ptrManualGuidance(finding);
-      if (!guidance) return "PTR 条款要求与 Report 接受标准已核对一致。";
+      if (!guidance) return `PTR 条款要求与 Report 接受标准已核对一致。${ptrPassNote(finding)}`;
       return `${finding.status === "error" ? "问题" : "人工检查"}：${guidance.reason}`;
     }
 
@@ -2160,6 +2203,17 @@
       return parts.join("；") || "无标准或表格引用";
     }
 
+    const CELL_REASON_TEXT = Object.freeze({
+      CELL_EQUAL: "与 PTR 单元格相同",
+      CELL_PIECES_REASSEMBLE: "Report 分段写出，拼起来与 PTR 单元格相同",
+      CELL_PIECES_INCOMPLETE: "Report 分段写出，但拼不回完整的 PTR 单元格",
+      CELL_VALUE_MISMATCH: "数值与 PTR 单元格不同",
+      CELL_TEXT_DIFFERENT: "文字与 PTR 单元格不同（见高亮）",
+      CELL_PTR_CONTINUES: "PTR 单元格在页尾断开，续行没有提取到，请对照 PTR 下一页",
+      TEST_POINT_IN_PTR: "测试点数值在 PTR 条款或表格中有依据",
+      TEST_POINT_NOT_IN_PTR: "测试点中的数值在 PTR 中找不到",
+    });
+
     function ptrCheckRows(finding) {
       const d = finding.details || {};
       const c = d.comparison || {};
@@ -2168,18 +2222,32 @@
       const reportLoc = toLoc(locs.find(item => item.role === "report"), "report", "Report 接受标准");
       const rows = [];
       const clause = d.clause_id || c.clause_id || String(finding.id || "").match(/clause:([^@]+)/)?.[1] || "";
-      if (clause) {
+      if (clause && !d.clause_shift) {
         rows.push({ label: "条款对应", sub: "条款编号",
           a: side(clause, reportLoc, "Report 条款"), b: side(clause, ptrLoc, "PTR 条款"),
           status: "pass", note: "已按条款编号建立对应关系" });
       }
+      const shift = d.clause_shift;
+      if (shift) {
+        const message = shift.run?.message || shift.message || "";
+        rows.push({ label: "条款号错位", sub: "Report 与 PTR 的条款编号不对应",
+          a: side([shift.report_clause, shift.report_title].filter(Boolean).join(" "), reportLoc, "Report 条款"),
+          b: side(shift.ptr_clause_with_report_title ? `内容对应 PTR ${shift.ptr_clause_with_report_title}` : "", ptrLoc, "PTR 条款"),
+          status: "error", note: message, problem: message });
+      }
       const textComparison = d.text_comparison || c.text_comparison;
       if (textComparison) {
         const textDiff = textComparison.text_diff || {};
+        const ignored = (textComparison.equivalence_rules || []).map(item => item.label).filter(Boolean);
+        const expandedNote = (d.table_comparison || c.table_comparison)?.row_expansion
+          ? "Report 中展开的表格行已移到下方逐格核对，这里只比较其余正文。" : "";
+        const textNote = [ignored.length
+          ? `高亮处已按规则忽略：${ignored.join("、")}`
+          : (reasonText(textComparison) || "正文归一化后比较"), expandedNote].filter(Boolean).join(" ");
         rows.push({ label: "条款要求", sub: "正文内容",
           a: side(textDiff.report_text ?? textComparison.report_normalized ?? textComparison.report, reportLoc, "Report 要求", textDiff.report_segments),
           b: side(textDiff.ptr_text ?? textComparison.ptr_normalized ?? textComparison.ptr, ptrLoc, "PTR 要求", textDiff.ptr_segments),
-          status: ptrStatus(textComparison, finding.status), note: reasonText(textComparison) || "正文归一化后比较" });
+          status: ptrStatus(textComparison, finding.status), note: textNote });
         const auxiliary = Array.isArray(textComparison.report_auxiliary_lines)
           ? textComparison.report_auxiliary_lines.filter(Boolean) : [];
         if (auxiliary.length) {
@@ -2213,11 +2281,50 @@
           status: ptrStatus(reference.binding_status || reference.status, finding.status), note: reasonText(reference) || "标准和表格引用已核对" });
       }
       const table = d.table_comparison || c.table_comparison;
-      if (table) {
+      const expansion = table?.row_expansion;
+      if (expansion) {
+        const cells = Array.isArray(expansion.cells) ? expansion.cells : [];
+        const ptrTableLoc = toLoc({ ...(expansion.ptr_location || {}), role: "ptr" }, "ptr", "PTR 表格") || ptrLoc;
+        const rowName = String(expansion.row_label || "").replace(/\s+/g, "");
+        const tally = cells.reduce((acc, item) => { acc[item.status] = (acc[item.status] || 0) + 1; return acc; }, {});
+        rows.push({ label: "表格逐格核对", sub: `PTR 表格行：${rowName}`,
+          a: side(`Report 展开 ${cells.length} 格`, reportLoc, "Report"),
+          b: side(rowName, ptrTableLoc, "PTR 表格"), nodiff: true,
+          status: ptrStatus(expansion.status),
+          note: [["matched", "一致"], ["manual", "待确认"], ["mismatch", "不一致"]]
+            .filter(([key]) => tally[key]).map(([key, name]) => `${name} ${tally[key]} 格`).join(" · ") });
+        const seen = new Set();
+        cells.forEach(item => {
+          const key = [item.column, item.report, item.status].join("|");
+          if (seen.has(key)) return;
+          seen.add(key);
+          const isTestPoint = item.column === "测试点";
+          const ptrValue = isTestPoint
+            ? (item.missing_numbers?.length ? `PTR 中没有：${item.missing_numbers.join("、")}` : "数值在 PTR 中有依据")
+            : (Array.isArray(item.ptr) ? (item.ptr_closest ?? item.ptr.join(" / ")) : item.ptr);
+          const columnTitle = item.ptr_columns?.length ? `PTR 列：${item.ptr_columns.join("、")}` : "PTR 单元格";
+          rows.push({ label: isTestPoint ? "测试点" : item.column, sub: isTestPoint ? "Report 的测试条件" : "表格单元格",
+            a: side(item.report, reportLoc, "Report 展开值", item.report_segments),
+            b: side(ptrValue, isTestPoint ? null : ptrTableLoc, isTestPoint ? "依据" : columnTitle, item.ptr_segments),
+            status: ptrStatus(item.status), note: CELL_REASON_TEXT[item.reason_code] || "" });
+        });
+      } else if (table) {
         rows.push({ label: "表格", sub: "表格结构与内容",
           a: side(`Report ${Number(table.report_tables || 0)} 个表格`, reportLoc, "Report 表格"),
           b: side(`PTR ${Number(table.ptr_tables || 0)} 个表格`, ptrLoc, "PTR 表格"),
-          status: ptrStatus(table, finding.status), note: reasonText(table) || "表格结构已核对" });
+          status: ptrStatus(table, finding.status), note: reasonText(table) || "表格结构已核对", nodiff: true });
+      }
+      if (shift) {
+        // Report and PTR rows under the same number are different clauses
+        // here; their text/reference/table differences are a consequence of
+        // the shift, not separate findings.
+        rows.forEach(row => {
+          if (row.label === "条款号错位") return;
+          row.status = "info";
+          row.note = `同号条款内容不同（条款号错位所致），仅供参考。${row.note ? " " + row.note : ""}`;
+          row.a.diff = null;
+          row.b.diff = null;
+        });
       }
       if (!rows.length) {
         locs.forEach((location, index) => {

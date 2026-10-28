@@ -390,6 +390,11 @@ def compare_row_expansion(
         report_value = _norm(cell["report"])
         closest = max(options, key=lambda v: SequenceMatcher(None, v, report_value, autojunk=False).ratio())
         cell["ptr_closest"] = closest
+        from mvp.ptr_compare import _text_diff_segments
+
+        segments = _text_diff_segments(cell["report"], closest)
+        cell["report_segments"] = segments.get("report_segments")
+        cell["ptr_segments"] = segments.get("ptr_segments")
         cell["diff"] = [
             {"op": op, "ptr": closest[a:b], "report": report_value[c:d]}
             for op, a, b, c, d in SequenceMatcher(None, closest, report_value, autojunk=False).get_opcodes()

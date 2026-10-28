@@ -613,7 +613,9 @@ def _text_diff_display(value: Any, *, role: str | None = None) -> str:
 
 
 _DIFF_TOKEN_RE = re.compile(
-    r"[A-Za-z0-9]+(?:[._/\-][A-Za-z0-9]+)*|[\u3400-\u9fff\uf900-\ufaff]|[^\w\s]|\s+",
+    # The final ``\\S`` keeps every other character (Ω, μ, °…) instead of
+    # silently dropping it from the displayed text.
+    r"[A-Za-z0-9]+(?:[._/\-][A-Za-z0-9]+)*|[\u3400-\u9fff\uf900-\ufaff]|[^\w\s]|\s+|\S",
     re.UNICODE,
 )
 
@@ -1928,8 +1930,15 @@ def _compare_text(
             result = _compare_text(
                 ptr, reduced, has_children=has_children, context=context, row_expansion=expansion
             )
+            # The diff view shows the Report text *without* the verified
+            # expansion; the expansion itself is listed cell by cell.
             result["text_comparison"]["report_source"] = str(report.get("text") or "")
-            result["text_comparison"]["text_diff"] = _text_diff_segments(report.get("text"), ptr.get("text"))
+            result["text_comparison"]["report_expansion_text"] = "\n".join(
+                line for index, line in enumerate(
+                    [item for item in str(report.get("text") or "").splitlines() if item.strip()]
+                )
+                if index in set(expansion.get("consumed_report_lines") or [])
+            )
             return result
     if row_expansion is not None:
         expansion_status = str(row_expansion.get("status"))
@@ -2096,6 +2105,7 @@ def _flag_clause_number_shifts(
         key = _clause_title_key(node)
         if len(key) >= 2:
             titles_by_parent[_clause_parent(clause_id)][key] = clause_id
+    shifted: list[tuple[str, str]] = []
     for entry in ledger:
         if entry.get("decision") not in {MANUAL, MISMATCH}:
             continue
@@ -2115,6 +2125,7 @@ def _flag_clause_number_shifts(
         )
         if not other or other == clause_id:
             continue
+        shifted.append((clause_id, other))
         entry["decision"] = MISMATCH
         entry["reason_code"] = "CLAUSE_NUMBER_SHIFTED"
         entry["clause_shift"] = {
@@ -2128,6 +2139,79 @@ def _flag_clause_number_shifts(
                 "报告条款号与 PTR 错位。"
             ),
         }
+    _summarise_shift_runs(ledger, shifted, ptr_by_clause, report_by_clause)
+
+
+def _summarise_shift_runs(
+    ledger: list[dict[str, Any]],
+    shifted: Sequence[tuple[str, str]],
+    ptr_by_clause: Mapping[str, Mapping[str, Any]],
+    report_by_clause: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> None:
+    """Group consecutive shifted clauses into one sentence for the reviewer."""
+
+    def split(clause: str) -> tuple[str, int] | None:
+        match = re.fullmatch(r"(.+)\.(\d+)", clause)
+        return (match.group(1), int(match.group(2))) if match else None
+
+    runs: list[list[tuple[str, str]]] = []
+    for report_clause, ptr_clause in sorted(shifted, key=lambda pair: _clause_sort_key(pair[0])):
+        a, b = split(report_clause), split(ptr_clause)
+        if not a or not b or a[0] != b[0]:
+            runs.append([(report_clause, ptr_clause)])
+            continue
+        offset = b[1] - a[1]
+        last = runs[-1][-1] if runs else None
+        if last:
+            la, lb = split(last[0]), split(last[1])
+            if la and lb and la[0] == a[0] and lb[1] - la[1] == offset and a[1] == la[1] + 1:
+                runs[-1].append((report_clause, ptr_clause))
+                continue
+        runs.append([(report_clause, ptr_clause)])
+    report_titles = {
+        _clause_title_key(node) for nodes in report_by_clause.values() for node in nodes
+    }
+    by_clause = {str(entry.get("clause_id")): entry for entry in ledger if entry.get("clause_shift")}
+    for run in runs:
+        first_report, first_ptr = run[0]
+        last_report, last_ptr = run[-1]
+        a, b = split(first_report), split(first_ptr)
+        missing: list[str] = []
+        if a and b and b[1] > a[1]:
+            for number in range(a[1], b[1]):
+                candidate = f"{a[0]}.{number}"
+                node = ptr_by_clause.get(candidate)
+                if node and _clause_title_key(node) not in report_titles:
+                    missing.append(f"{candidate} {str(node.get('title') or '').strip()}")
+        span_report = first_report if len(run) == 1 else f"{first_report}～{last_report}"
+        span_ptr = first_ptr if len(run) == 1 else f"{first_ptr}～{last_ptr}"
+        message = f"报告 {span_report} 实际对应 PTR {span_ptr}（条款号与 PTR 错位）"
+        if missing:
+            message += f"；报告中缺少 PTR {'、'.join(missing)}"
+        message += "。"
+        run_info = {
+            "report_clauses": [pair[0] for pair in run],
+            "ptr_clauses": [pair[1] for pair in run],
+            "missing_ptr_clauses": missing,
+            "message": message,
+        }
+        # A PTR clause whose content moved to another Report number is not
+        # missing from the Report; it is part of the same shift.
+        moved = {pair[1]: pair[0] for pair in run}
+        for entry in ledger:
+            clause = str(entry.get("clause_id") or "")
+            if clause in moved and entry.get("reason_code") == "REPORT_CLAUSE_MISSING":
+                entry["reason_code"] = "CLAUSE_NUMBER_SHIFTED"
+                entry["clause_shift"] = {
+                    "report_clause": moved[clause],
+                    "ptr_clause_with_report_title": clause,
+                    "message": f"PTR {clause} 的内容在报告 {moved[clause]} 中（报告条款号与 PTR 错位）。",
+                    "run": run_info,
+                }
+        for report_clause, _ in run:
+            entry = by_clause.get(report_clause)
+            if entry:
+                entry["clause_shift"]["run"] = run_info
 
 
 def compare_ptr_report(
