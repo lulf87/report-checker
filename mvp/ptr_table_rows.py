@@ -439,3 +439,158 @@ def report_text_without_expansion(report_node: Mapping[str, Any], result: Mappin
             continue
         kept.append(line)
     return "\n".join(kept)
+
+
+# ---------------------------------------------------------------------------
+# Whole-table comparison by row name (PTR table vs Report table)
+# ---------------------------------------------------------------------------
+
+TABLE_RULE_ID = "TABLE_ROW_KEYS"
+_DECIMAL_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _plain(value: Any) -> str:
+    from mvp.ptr_compare import _strip_punctuation
+
+    text = "\n".join(
+        line for line in str(value or "").splitlines() if not _UNIT_LINE_RE.match(unicodedata.normalize("NFKC", line))
+    )
+    return _strip_punctuation(_norm(text))
+
+
+def _numeric_equal(left: str, right: str) -> bool:
+    """``0.70`` and ``0.7`` state the same value; everything else must match."""
+
+    from decimal import Decimal
+
+    if _DECIMAL_RE.sub("#", left) != _DECIMAL_RE.sub("#", right):
+        return False
+    a, b = _DECIMAL_RE.findall(left), _DECIMAL_RE.findall(right)
+    return len(a) == len(b) and all(Decimal(x) == Decimal(y) for x, y in zip(a, b))
+
+
+def _ptr_table_rows(ptr_node: Mapping[str, Any], labels: set[str]) -> tuple[list[tuple[str, str, dict]], str]:
+    """PTR data rows as ``(key, value, table)`` plus the header text."""
+
+    rows: list[tuple[str, str, dict]] = []
+    header = ""
+    for table in ptr_node.get("table_rows") or []:
+        if labels and str(table.get("label") or "") not in labels:
+            continue
+        for index, row in enumerate(table.get("rows") or []):
+            cells = [str(c or "").strip() for c in row if str(c or "").strip()]
+            if not cells:
+                continue
+            if index == 0 and not table.get("continuation_of"):
+                header += _plain(" ".join(cells))
+                continue
+            if len(cells) == 1:
+                # Text-recovered table: ``肩部左右伸展 116° 116°`` in one
+                # cell; a cell with several lines holds several sub-rows.
+                for line in cells[0].splitlines():
+                    parts = re.split(r"\s+", line.strip(), maxsplit=1)
+                    if len(parts) == 2:
+                        rows.append((_plain(parts[0]), parts[1], table))
+                continue
+            rows.append((_plain(cells[0]), " ".join(cells[1:]), table))
+    return rows, header
+
+
+def compare_table_cells(ptr_node: Mapping[str, Any], report_node: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Compare a PTR table with the Report's table by row name.
+
+    Column layout may differ (the Report may split one PTR table into a left
+    and a right table, or add a ``关节编号`` column); what must hold is that
+    every PTR row name appears in the Report with the same values (in
+    order), and every Report data row belongs to a PTR row.
+    """
+
+    from mvp.ptr_compare import _text_diff_segments
+
+    labels = {compact_label(label) for label in (ptr_node.get("references") or {}).get("tables", [])}
+    ptr_rows, header = _ptr_table_rows(ptr_node, labels)
+    if len(ptr_rows) < 2:
+        return None
+    keys = {key for key, _, _ in ptr_rows}
+    report_values: dict[str, list[str]] = {}
+    report_raw: dict[str, list[str]] = {}
+    unmatched_report: list[str] = []
+    data_rows = 0
+    for table in report_node.get("table_rows") or []:
+        row = table.get("matrix_row")
+        if row is None:
+            continue
+        cells = [str(c or "") for c in row]
+        plain_cells = [_plain(c) for c in cells]
+        if not any(plain_cells):
+            continue
+        key_index = next((i for i, value in enumerate(plain_cells) if value in keys), None)
+        if key_index is None:
+            first = next(c for c in cells if c.strip())
+            header_chars = set(header)
+            if re.match(r"^\s*表\s*[A-Za-z]?\d", first) or all(
+                not value or set(value) <= header_chars for value in plain_cells
+            ):
+                continue  # caption or (re-printed) header row
+            unmatched_report.append(" | ".join(c.strip() for c in cells if c.strip()))
+            continue
+        data_rows += 1
+        key = plain_cells[key_index]
+        value = "".join(plain_cells[key_index + 1:])
+        report_values.setdefault(key, []).append(value)
+        report_raw.setdefault(key, []).append(" ".join(c.strip() for c in cells[key_index + 1:] if c.strip()))
+    if data_rows == 0:
+        return None
+    grouped: dict[str, list[tuple[str, dict]]] = {}
+    for key, value, table in ptr_rows:
+        grouped.setdefault(key, []).append((value, table))
+    cells_out: list[dict[str, Any]] = []
+    for key, items in grouped.items():
+        value = " / ".join(item[0] for item in items)
+        table = items[0][1]
+        ptr_value = "".join(_plain(item[0]) for item in items)
+        if len(key) < 2:
+            cells_out.append({"column": key, "report": " / ".join(report_raw.get(key, [])), "ptr": value,
+                              "status": "manual", "reason_code": "PTR_ROW_NOT_PARSED", "ptr_page": table.get("pdf_page")})
+            continue
+        got = report_values.get(key)
+        report_text = " / ".join(report_raw.get(key, []))
+        if not got:
+            cells_out.append({"column": key, "report": "", "ptr": value, "status": "mismatch",
+                              "reason_code": "TABLE_ROW_MISSING_IN_REPORT", "ptr_page": table.get("pdf_page")})
+            continue
+        joined = "".join(got)
+        if joined == ptr_value or all(item == ptr_value for item in got):
+            status, reason = "matched", "CELL_EQUAL"
+        elif _numeric_equal(joined, ptr_value) or all(_numeric_equal(item, ptr_value) for item in got):
+            status, reason = "matched", "CELL_NUMERIC_EQUAL"
+        elif _DECIMAL_RE.findall(joined) != _DECIMAL_RE.findall(ptr_value):
+            status, reason = "mismatch", "CELL_VALUE_MISMATCH"
+        else:
+            status, reason = "manual", "CELL_TEXT_DIFFERENT"
+        cell = {"column": key, "report": report_text, "ptr": value, "status": status, "reason_code": reason,
+                "ptr_page": table.get("pdf_page")}
+        if status != "matched":
+            segments = _text_diff_segments(report_text, value)
+            cell["report_segments"] = segments.get("report_segments")
+            cell["ptr_segments"] = segments.get("ptr_segments")
+        cells_out.append(cell)
+    for text in unmatched_report:
+        cells_out.append({"column": "Report 多出的行", "report": text, "ptr": "", "status": "manual",
+                          "reason_code": "TABLE_ROW_NOT_IN_PTR"})
+    statuses = {cell["status"] for cell in cells_out}
+    status = "mismatch" if "mismatch" in statuses else "manual" if "manual" in statuses else "matched"
+    first = ptr_rows[0][2]
+    return {
+        "rule": TABLE_RULE_ID,
+        "status": status,
+        "row_label": "、".join(sorted(labels)) or str(first.get("label") or "表格"),
+        "row_key": "",
+        "ptr_location": {"pdf_page": first.get("pdf_page"), "bbox": first.get("bbox")},
+        "cells": cells_out,
+        "consumed_report_lines": [],
+    }
+
+
+def compact_label(value: Any) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))

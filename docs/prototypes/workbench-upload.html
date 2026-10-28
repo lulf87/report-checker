@@ -1695,6 +1695,7 @@
       TABLE_CELL_MISMATCH: "Report 展开的表格值与 PTR 表格单元格不同",
       TABLE_CELL_REVIEW_REQUIRED: "表格已逐格核对，部分单元格需要人工确认",
       TABLE_ROW_EXPANSION_MATCH: "Report 展开的表格行与 PTR 表格逐格一致",
+      TABLE_CELLS_MATCH: "Report 表格与 PTR 表格按行逐格一致",
       SAFE_TEXT_EQUIVALENCE: "正文差异只来自已登记的排版/格式差异",
       EXACT_NORMALIZED_MATCH: "正文归一化后完全相同",
       parent_clause_mismatch: "父条款不一致",
@@ -2212,6 +2213,10 @@
       CELL_PTR_CONTINUES: "PTR 单元格在页尾断开，续行没有提取到，请对照 PTR 下一页",
       TEST_POINT_IN_PTR: "测试点数值在 PTR 条款或表格中有依据",
       TEST_POINT_NOT_IN_PTR: "测试点中的数值在 PTR 中找不到",
+      CELL_NUMERIC_EQUAL: "数值相同（仅小数位写法不同，如 0.70 与 0.7）",
+      TABLE_ROW_MISSING_IN_REPORT: "PTR 表格有这一行，Report 表格中没有",
+      TABLE_ROW_NOT_IN_PTR: "Report 表格多出这一行，PTR 表格中没有",
+      PTR_ROW_NOT_PARSED: "PTR 这一行（如竖排合并单元格）没有被可靠拆分，请对照 PTR 原文",
     });
 
     function ptrCheckRows(finding) {
@@ -2287,7 +2292,8 @@
         const ptrTableLoc = toLoc({ ...(expansion.ptr_location || {}), role: "ptr" }, "ptr", "PTR 表格") || ptrLoc;
         const rowName = String(expansion.row_label || "").replace(/\s+/g, "");
         const tally = cells.reduce((acc, item) => { acc[item.status] = (acc[item.status] || 0) + 1; return acc; }, {});
-        rows.push({ label: "表格逐格核对", sub: `PTR 表格行：${rowName}`,
+        const byRowName = expansion.rule === "TABLE_ROW_KEYS";
+        rows.push({ label: "表格逐格核对", sub: byRowName ? `PTR ${rowName}（按行名比对）` : `PTR 表格行：${rowName}`,
           a: side(`Report 展开 ${cells.length} 格`, reportLoc, "Report"),
           b: side(rowName, ptrTableLoc, "PTR 表格"), nodiff: true,
           status: ptrStatus(expansion.status),

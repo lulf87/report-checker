@@ -74,3 +74,43 @@ class ClauseShiftTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from mvp.ptr_table_rows import compare_table_cells
+
+
+def ptr_table(rows, label="表1"):
+    return {"title": "运动范围", "text": f"运动范围应不小于下表的规定：\n{label} 关节运动范围",
+            "references": {"tables": [label]},
+            "table_rows": [{"label": label, "pdf_page": 4, "bbox": [0, 0, 1, 1], "rows": rows}]}
+
+
+def report_rows(*rows):
+    return {"text": "运动范围应不小于下表的规定：\n表1 关节运动范围",
+            "table_rows": [{"matrix_row": list(row)} for row in rows]}
+
+
+class TableByRowNameTests(unittest.TestCase):
+    PTR = [["关节编号 关节运动名称 左侧MTM 右侧MTM", "", ""], ["肩部左右伸展 116° 116°", "", ""], ["腕夹 28° 28°", "", ""]]
+
+    def test_report_may_split_columns_into_two_tables(self) -> None:
+        report = report_rows(
+            ["关节编\n号", "关节运\n动名称", "左侧MTM"], ["θ1", "肩部左\n右伸展", "116°\n单位：°"], ["θ8", "腕夹", "28°"],
+            ["关节编\n号", "关节运\n动名称", "右侧MTM"], ["θ1", "肩部左\n右伸展", "116°"], ["θ8", "腕夹", "28°"],
+        )
+        self.assertEqual(compare_table_cells(ptr_table(self.PTR), report)["status"], "matched")
+
+    def test_changed_value_and_missing_row(self) -> None:
+        report = report_rows(["θ1", "肩部左右伸展", "116°"], ["θ1", "肩部左右伸展", "118°"])
+        result = compare_table_cells(ptr_table(self.PTR), report)
+        by_row = {cell["column"]: cell for cell in result["cells"]}
+        self.assertEqual(by_row["肩部左右伸展"]["reason_code"], "CELL_VALUE_MISMATCH")
+        self.assertEqual(by_row["腕夹"]["reason_code"], "TABLE_ROW_MISSING_IN_REPORT")
+        self.assertEqual(result["status"], "mismatch")
+
+    def test_trailing_zero_is_the_same_value(self) -> None:
+        ptr = ptr_table([["模式 光照均匀度的标称值", ""], ["非Firefly模式 0.75", ""], ["Firefly模式", "0.70"]], "表9")
+        report = report_rows(["模式", "光照均匀度的标称值"], ["非\nFirefl\ny 模式", "0.75"], ["Firefl\ny 模式", "0.7"])
+        result = compare_table_cells(ptr, report)
+        self.assertEqual(result["status"], "matched")
+        self.assertIn("CELL_NUMERIC_EQUAL", {cell["reason_code"] for cell in result["cells"]})

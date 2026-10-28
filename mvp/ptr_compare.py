@@ -1914,9 +1914,12 @@ def _compare_text(
         # The Report may expand the referenced PTR table row as labelled
         # values.  Verify that expansion cell by cell, then compare the rest
         # of the Report text with the ordinary rules.
-        from mvp.ptr_table_rows import compare_row_expansion, report_text_without_expansion
+        from mvp.ptr_table_rows import compare_row_expansion, compare_table_cells, report_text_without_expansion
 
         expansion = compare_row_expansion(ptr, report)
+        if expansion is None:
+            # Both sides print the table: compare it by row name.
+            expansion = compare_table_cells(ptr, report)
         if expansion is not None:
             reduced = {
                 key: value
@@ -1927,6 +1930,26 @@ def _compare_text(
                 }
             }
             reduced["text"] = report_text_without_expansion(report, expansion)
+            if expansion.get("rule") == "TABLE_ROW_KEYS":
+                # A caption printed inside the Report table (``表8 …``) is a
+                # reference of the Report clause as well.
+                caption_lines = [
+                    str(cell or "").strip().splitlines()[0]
+                    for table in report.get("table_rows") or []
+                    for cell in (table.get("matrix_row") or [])
+                    if re.match(r"\s*表\s*[A-Za-z]?\d", str(cell or ""))
+                ]
+                captions = {
+                    normalize_comparison_text(re.match(r"\s*表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*", line).group(0))
+                    for line in caption_lines
+                }
+                known = normalize_comparison_text(reduced["text"])
+                extra = [line for line in caption_lines if normalize_comparison_text(line) not in known]
+                if extra:
+                    reduced["text"] = "\n".join([reduced["text"], *extra])
+                references = dict(report.get("references") or {})
+                references["tables"] = sorted(set(references.get("tables") or []) | captions)
+                reduced["references"] = references
             result = _compare_text(
                 ptr, reduced, has_children=has_children, context=context, row_expansion=expansion
             )
@@ -1945,7 +1968,7 @@ def _compare_text(
         table_comparison = {
             "status": expansion_status,
             "reason_code": {
-                MATCHED: "TABLE_ROW_EXPANSION_MATCH",
+                MATCHED: "TABLE_CELLS_MATCH" if row_expansion.get("rule") == "TABLE_ROW_KEYS" else "TABLE_ROW_EXPANSION_MATCH",
                 MISMATCH: "TABLE_CELL_MISMATCH",
             }.get(expansion_status, "TABLE_CELL_REVIEW_REQUIRED"),
             "ptr_tables": len(ptr.get("table_rows") or []),

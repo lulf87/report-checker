@@ -743,7 +743,9 @@ class PtrCompareSampleTests(unittest.TestCase):
         by_clause = {entry["clause_id"]: entry for entry in rules["coverage_ledger"]}
         self.assertEqual(rules["scope"]["included_clause_ids"], ["2.2", "2.5", "2.6"])
         self.assertEqual(by_clause["2.2.2"]["decision"], MANUAL)
-        self.assertEqual(by_clause["2.2.2"]["reason_code"], "TABLE_CONTENT_NOT_EXTRACTED")
+        # 0.5.1：表 6 已按行名逐格核对一致，剩下的只有图注文字差异。
+        self.assertEqual(by_clause["2.2.2"]["reason_code"], "TEXT_REVIEW_REQUIRED")
+        self.assertEqual(by_clause["2.2.2"]["table_comparison"]["reason_code"], "TABLE_CELLS_MATCH")
         self.assertEqual(by_clause["2.2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["table_comparison"]["reason_code"], "TABLE_SEMANTIC_NORMALIZED_MATCH")
@@ -761,8 +763,10 @@ class PtrCompareSampleTests(unittest.TestCase):
         self.assertEqual(by_clause["2.6"]["decision"], MATCHED)
         self.assertEqual(by_clause["2.6"]["reason_code"], "EXACT_NORMALIZED_MATCH")
         self.assertFalse(result["llm"]["used"])
-        self.assertEqual(result["llm"]["queue_count"], 0)
-        self.assertEqual(result["llm"]["review_queue"], [])
+        # Only the text-only uncertainty (2.2.2 figure caption) is queued;
+        # its table has been verified by the rules.
+        self.assertEqual(result["llm"]["queue_count"], 1)
+        self.assertEqual([task["clause_id"] for task in result["llm"]["review_queue"]], ["2.2.2"])
         self.assertFalse(result["publishable"])
 
     def test_2795_reports_unit_conflict_and_table_manual_queue(self) -> None:
