@@ -145,7 +145,9 @@ def _reference_bindings(node: Mapping[str, Any]) -> list[dict[str, Any]]:
             observed = compact(str(table.get("label") or table.get("caption") or ""))
             if wanted and wanted in observed:
                 candidates.append(table)
-        if len(candidates) == 1:
+        # A table continued over several pages is one target.
+        groups = {str(t.get("table_group") or t.get("table_id")) for t in candidates}
+        if len(candidates) == 1 or (candidates and len(groups) == 1):
             status = "bound"
         elif len(candidates) > 1:
             status = "ambiguous"
@@ -386,6 +388,54 @@ def _table(page: fitz.Page, table: Any, digest: str, lines: Sequence[Mapping[str
             "source_sha256": digest, "extraction_method": "pymupdf_grid", "binding": "physical"}
 
 
+def _label_continuation_tables(tables: list[dict[str, Any]]) -> None:
+    """Give an uncaptioned table at the top of the next page its predecessor's label.
+
+    A long PTR table continues across pages without repeating the caption.
+    The continuation keeps its own physical evidence; only ``label`` and
+    ``table_group`` are inherited so references can bind the whole table.
+    """
+
+    previous: dict[str, Any] | None = None
+    for table in tables:
+        if table.get("label"):
+            table.setdefault("table_group", table.get("table_id"))
+        elif (
+            previous is not None
+            and previous.get("label")
+            and int(table.get("pdf_page", 0)) == int(previous.get("pdf_page", 0)) + 1
+            and float(table["bbox"][1]) < 130
+            and table.get("rows")
+            and previous.get("rows")
+            and len(table["rows"][0]) == len(previous["rows"][0])
+        ):
+            table["label"] = previous["label"]
+            table["table_group"] = previous.get("table_group") or previous.get("table_id")
+            table["continuation_of"] = previous.get("table_id")
+        previous = table
+
+
+def _ancestor_table_groups(
+    node: Mapping[str, Any],
+    by_clause: Mapping[str, Mapping[str, Any]],
+    group_ids: set[str],
+) -> list[str]:
+    clause = str(node.get("clause_id") or "")
+    while "." in clause:
+        clause = clause.rsplit(".", 1)[0]
+        ancestor = by_clause.get(clause)
+        if not ancestor:
+            continue
+        found = sorted({
+            str(t.get("table_group") or t.get("table_id"))
+            for t in ancestor.get("table_rows", [])
+            if str(t.get("table_group") or t.get("table_id")) in group_ids
+        })
+        if found:
+            return found
+    return []
+
+
 def _cluster_starts(values: Sequence[float], tolerance: float = 14.0) -> list[float]:
     starts: list[float] = []
     for value in sorted(values):
@@ -596,16 +646,32 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                 for node in nodes:
                     node.update(table_rows=[], figures=[], extraction_issues=["OCR_REVIEW_REQUIRED"])
     nodes = _split_inline_clauses(nodes)
+    _label_continuation_tables(tables)
+    by_clause = {node["clause_id"]: node for node in nodes}
     for node in nodes:
         if "parts" in node:
             _enrich(node)
         # Resolve a reference to a previously printed table using the caption,
         # keeping duplicate captions ambiguous instead of picking arbitrarily.
         for label in node["references"].get("tables", []):
-            candidates = [t for t in tables if compact(t.get("label") or "") == compact(label)]
-            local = [t for t in node["table_rows"] if t.get("label") == compact(label)]
-            if not local and len(candidates) == 1:
-                node["table_rows"].append({**candidates[0], "binding": "reference"})
+            key = compact(label)
+            local = [t for t in node["table_rows"] if t.get("label") == key]
+            if local:
+                continue
+            groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for table in tables:
+                if compact(table.get("label") or "") == key:
+                    groups[str(table.get("table_group") or table.get("table_id"))].append(table)
+            binding = "reference"
+            if len(groups) > 1:
+                # Duplicate captions (e.g. two different “表1”): use the one
+                # printed inside the referencing clause's own chapter.
+                scoped = _ancestor_table_groups(node, by_clause, set(groups))
+                groups = {gid: groups[gid] for gid in scoped}
+                binding = "reference_scoped"
+            if len(groups) == 1:
+                for table in next(iter(groups.values())):
+                    node["table_rows"].append({**table, "binding": binding})
         node["reference_bindings"] = _reference_bindings(node)
     duplicates = [c for c in {n["clause_id"] for n in nodes} if sum(n["clause_id"] == c for n in nodes) > 1]
     for node in nodes:

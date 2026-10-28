@@ -218,6 +218,7 @@ def normalize_comparison_text(value: Any) -> str:
         "—": "-",
         "–": "-",
         "－": "-",
+        "−": "-",
         "～": "~",
         "，": ",",
         "；": ";",
@@ -295,6 +296,7 @@ def _normalization_for_numeric(value: Any) -> str:
         "—": "-",
         "–": "-",
         "－": "-",
+        "−": "-",
         "～": "~",
         "，": ",",
         "；": ";",
@@ -1773,6 +1775,7 @@ def _compare_text(
     *,
     has_children: bool,
     context: Mapping[str, Any] | None = None,
+    row_expansion: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     ptr_text = str(
         ptr.get("normalized_text")
@@ -1826,6 +1829,11 @@ def _compare_text(
         if ptr_binding_status == MATCHED and report_binding_status == MATCHED
         else MANUAL
     )
+    if row_expansion is not None and ptr_binding_status == MATCHED and report_binding_status != MATCHED:
+        # The Report expansion was matched to a row of the bound PTR table:
+        # that is the binding of the Report's “表N”.
+        report_binding_status, report_binding_reason = MATCHED, None
+        binding_status = MATCHED
     binding_reason = ptr_binding_reason or report_binding_reason
     ptr_units = list(ptr.get("unit_labels") or _unit_labels(ptr.get("text")))
     report_units = list(report.get("unit_labels") or _unit_labels(report.get("text")))
@@ -1900,9 +1908,47 @@ def _compare_text(
         unit_status = MATCHED
         unit_reason = ptr_label_reason or report_label_reason or "NO_CONTRADICTORY_UNIT_LABEL"
     table_comparison = _table_comparison(ptr, report)
-    if numeric_status == MISMATCH and not (
-        table_comparison["status"] == MANUAL
-        and ((ptr_refs.get("tables") or report_refs.get("tables")))
+    if row_expansion is None and table_comparison["status"] == MANUAL:
+        # The Report may expand the referenced PTR table row as labelled
+        # values.  Verify that expansion cell by cell, then compare the rest
+        # of the Report text with the ordinary rules.
+        from mvp.ptr_table_rows import compare_row_expansion, report_text_without_expansion
+
+        expansion = compare_row_expansion(ptr, report)
+        if expansion is not None:
+            reduced = {
+                key: value
+                for key, value in report.items()
+                if key not in {
+                    "normalized_text", "numeric_signature", "raw_numeric_signature",
+                    "unit_labels", "auxiliary_lines", "table_rows",
+                }
+            }
+            reduced["text"] = report_text_without_expansion(report, expansion)
+            result = _compare_text(
+                ptr, reduced, has_children=has_children, context=context, row_expansion=expansion
+            )
+            result["text_comparison"]["report_source"] = str(report.get("text") or "")
+            result["text_comparison"]["text_diff"] = _text_diff_segments(report.get("text"), ptr.get("text"))
+            return result
+    if row_expansion is not None:
+        expansion_status = str(row_expansion.get("status"))
+        table_comparison = {
+            "status": expansion_status,
+            "reason_code": {
+                MATCHED: "TABLE_ROW_EXPANSION_MATCH",
+                MISMATCH: "TABLE_CELL_MISMATCH",
+            }.get(expansion_status, "TABLE_CELL_REVIEW_REQUIRED"),
+            "ptr_tables": len(ptr.get("table_rows") or []),
+            "report_tables": 0,
+            "row_expansion": dict(row_expansion),
+        }
+    if numeric_status == MISMATCH and (
+        row_expansion is not None
+        or not (
+            table_comparison["status"] == MANUAL
+            and ((ptr_refs.get("tables") or report_refs.get("tables")))
+        )
     ):
         decision = MISMATCH
         decision_reason = "NUMERIC_FACT_MISMATCH"
@@ -1925,9 +1971,13 @@ def _compare_text(
         table_comparison["status"] == MANUAL
         and (ptr_refs.get("tables") or report_refs.get("tables"))
         and (numeric_status == MISMATCH or text_status == MISMATCH)
+        and not (row_expansion is not None and decision == MISMATCH)
     ):
         decision = MANUAL
-        decision_reason = "TABLE_CONTENT_NOT_EXTRACTED"
+        decision_reason = str(table_comparison.get("reason_code") or "TABLE_CONTENT_NOT_EXTRACTED")
+    if table_comparison["status"] == MISMATCH and decision != MISMATCH:
+        decision = MISMATCH
+        decision_reason = str(table_comparison.get("reason_code") or "TABLE_CELL_MISMATCH")
     return {
         "title_comparison": {"status": text_status, "reason_code": reason},
         "text_comparison": {
@@ -2017,6 +2067,67 @@ def _ledger_entry(
             *[value for item in reports for value in _node_table_evidence(item)],
         ],
     }
+
+
+def _clause_title_key(node: Mapping[str, Any] | None) -> str:
+    """Comparable clause title: first line, before a colon, normalized."""
+
+    if not node:
+        return ""
+    title = str(node.get("title") or str(node.get("text") or "").split("\n", 1)[0])
+    title = re.split(r"[:：]", title, maxsplit=1)[0]
+    return _strip_punctuation(normalize_comparison_text(title))
+
+
+def _flag_clause_number_shifts(
+    ledger: list[dict[str, Any]],
+    ptr_by_clause: Mapping[str, Mapping[str, Any]],
+    report_by_clause: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> None:
+    """Report rows whose title belongs to a *different* PTR clause number.
+
+    When a Report drops a clause and renumbers the rest (0596: PTR 2.1.8
+    输入阻抗 missing, Report 2.1.8～2.1.12 = PTR 2.1.9～2.1.13) every row
+    looks like a text difference.  Name the real cause instead.
+    """
+
+    titles_by_parent: defaultdict[str | None, dict[str, str]] = defaultdict(dict)
+    for clause_id, node in ptr_by_clause.items():
+        key = _clause_title_key(node)
+        if len(key) >= 2:
+            titles_by_parent[_clause_parent(clause_id)][key] = clause_id
+    for entry in ledger:
+        if entry.get("decision") not in {MANUAL, MISMATCH}:
+            continue
+        clause_id = str(entry.get("clause_id") or "")
+        ptr_node = ptr_by_clause.get(clause_id)
+        reports = report_by_clause.get(clause_id) or []
+        if not ptr_node or len(reports) != 1:
+            continue
+        report_key = _clause_title_key(reports[0])
+        ptr_key = _clause_title_key(ptr_node)
+        if not report_key or report_key == ptr_key or ptr_key.startswith(report_key) or report_key.startswith(ptr_key):
+            continue
+        siblings = titles_by_parent.get(_clause_parent(clause_id), {})
+        other = siblings.get(report_key) or next(
+            (cid for key, cid in siblings.items() if len(report_key) >= 4 and (key.startswith(report_key) or report_key.startswith(key))),
+            None,
+        )
+        if not other or other == clause_id:
+            continue
+        entry["decision"] = MISMATCH
+        entry["reason_code"] = "CLAUSE_NUMBER_SHIFTED"
+        entry["clause_shift"] = {
+            "report_clause": clause_id,
+            "report_title": str(reports[0].get("title") or "").strip(),
+            "ptr_title": str(ptr_node.get("title") or "").strip(),
+            "ptr_clause_with_report_title": other,
+            "message": (
+                f"报告 {clause_id} 的标题是“{str(reports[0].get('title') or '').strip()}”，"
+                f"对应的是 PTR {other}；PTR {clause_id} 是“{str(ptr_node.get('title') or '').strip()}”。"
+                "报告条款号与 PTR 错位。"
+            ),
+        }
 
 
 def compare_ptr_report(
@@ -2136,7 +2247,7 @@ def compare_ptr_report(
         decision = comparison["decision"]
         if comparison["table_comparison"]["status"] == MANUAL and decision == MATCHED:
             decision = MANUAL
-            reason_code = "TABLE_CONTENT_NOT_EXTRACTED"
+            reason_code = str(comparison["table_comparison"].get("reason_code") or "TABLE_CONTENT_NOT_EXTRACTED")
         elif _ocr_derived(ptr_node) or ptr.get("diagnostics", {}).get("ocr_used"):
             decision = MANUAL
             reason_code = "PTR_OCR_CANDIDATES_MANUAL"
@@ -2215,6 +2326,7 @@ def compare_ptr_report(
                 reason_code=reason,
             )
         )
+    _flag_clause_number_shifts(ledger, ptr_by_clause, report_by_clause)
     # A table-to-table reference cycle has no safe deterministic expansion
     # order.  Keep affected rows manual even when the surrounding text and
     # numeric facts happen to look identical.
