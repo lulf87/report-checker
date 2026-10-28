@@ -114,3 +114,21 @@ class TableByRowNameTests(unittest.TestCase):
         result = compare_table_cells(ptr, report)
         self.assertEqual(result["status"], "matched")
         self.assertIn("CELL_NUMERIC_EQUAL", {cell["reason_code"] for cell in result["cells"]})
+
+
+class TableRowNumberAndTextRowsTests(unittest.TestCase):
+    def test_row_number_column_is_not_the_row_name(self) -> None:
+        ptr = ptr_table([["编号 描述 ROM 允差", "", "", ""], ["1 头枕：前后移动 56 mm ±5 mm", "", "", ""],
+                         ["6", "踏板控制面板：前后移动", "285.6 mm", "+5/-10 mm"]], "表2")
+        report = report_rows(["描述", "ROM", "允差"], ["头枕：\n前后移\n动", "56 mm", "±5 mm\n单位：mm"],
+                             ["踏板控\n制面板：前\n后移动", "285.6\nmm", "+5/-10 mm"])
+        self.assertEqual(compare_table_cells(ptr, report)["status"], "matched")
+
+    def test_report_row_found_only_in_ptr_running_text(self) -> None:
+        ptr = ptr_table([["关节运动名称 运动范围 允差", "", ""], ["水平延伸 360mm ±2mm", "", ""], ["垂直升降 254mm ±2mm", "", ""]], "表3")
+        ptr["text"] += "\n1号臂 100°\n1 柔性旋转 ±1°"
+        report = report_rows(["水平延\n伸", "360mm", "±2mm"], ["垂直升\n降", "254mm", "±2mm"],
+                             ["柔性旋\n转", "1 号臂\n100°", "±1°"], ["柔性旋转", "1 号臂\n101°", "±1°"])
+        result = compare_table_cells(ptr, report)
+        reasons = [cell["reason_code"] for cell in result["cells"] if cell["column"] == "Report 表格行"]
+        self.assertEqual(reasons, ["ROW_CELLS_IN_PTR_TEXT", "TABLE_ROW_NOT_IN_PTR"])

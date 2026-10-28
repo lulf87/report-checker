@@ -24,7 +24,7 @@ CLAUSE = re.compile(
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
 )
 STOP = re.compile(r"^\s*3(?:[.．、:]|\s)\s*(?:检验|试验|测试|检测|Test|Inspection)", re.I)
-CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z])(?:\s|[:：]|[\u3400-\u9fff]|$)")
+CAPTION = re.compile(r"^\s*(表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*|附录\s*[A-Za-z](?:\.\d+)*)(?:\s|[:：]|[\u3400-\u9fff]|$)")
 # Sample/model sub-row labels printed in the Report requirement cell
 # (``470066 左路``).  A model followed by a requirement (``470066：0°±3°。``)
 # is requirement text and must be kept.

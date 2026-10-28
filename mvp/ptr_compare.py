@@ -352,6 +352,9 @@ def _numeric_source_text(value: Any, *, role: str | None = None) -> str:
     if str(role or "").lower() == "report":
         source, _ = _split_report_auxiliary_lines(value)
     text = _strip_document_noise(_normalization_for_numeric(source))
+    # A line break inside a Chinese word (``详见附\n录C.1``) must not turn the
+    # appendix number into a measured value.
+    text = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", text)
     # Chinese unit words in the source PDF are equivalent to their controlled
     # Latin spellings when they directly follow a number.
     text = re.sub(r"(?<=\d)(?:微米|μ米)", "μm", text)
@@ -695,6 +698,7 @@ SAFE_EQUIVALENCE_RULES = {
     "PUNCTUATION_ONLY": "仅标点或项目符号不同",
     "REPORT_REPEATED_TEXT": "Report 重复写了同一要求",
     "REPORT_EXPANDED_REFERENCE": "Report 展开了所引用条款的原文（已与 PTR 原条款核对）",
+    "REPORT_TABLE_AS_TEXT": "Report 把 PTR 表格逐格写成了文字（内容与 PTR 表格完全相同）",
 }
 
 _FIGURE_CAPTION_RE = re.compile(r"^\s*图\s*\d+(?:[.\-－]\d+)*(?:\s|[㐀-鿿A-Za-z(（]|$)")
@@ -891,6 +895,7 @@ def safe_text_equivalence(
     *,
     ptr_headers: set[str] | None = None,
     ptr_text_by_clause: Mapping[str, str] | None = None,
+    ptr_table_texts: Sequence[Any] | None = None,
 ) -> list[str] | None:
     """Return the applied rule ids when the texts are equivalent, else ``None``."""
 
@@ -898,6 +903,19 @@ def safe_text_equivalence(
     ptr_lines = str(ptr_source or "").splitlines()
     report_body, _ = _split_report_auxiliary_lines(report_source)
     report_lines = report_body.splitlines()
+    # A standard listed again on its own line (``GB 9706.1-2020``) after the
+    # sentence that already cites it.
+    cited = normalize_comparison_text(report_body)
+    kept_lines = []
+    for line in report_lines:
+        key = normalize_comparison_text(line)
+        if key and STANDARD_RE.fullmatch(key) and cited.count(key) > 1:
+            cited = cited.replace(key, "", 1)
+            if "REPORT_REPEATED_TEXT" not in applied:
+                applied.append("REPORT_REPEATED_TEXT")
+            continue
+        kept_lines.append(line)
+    report_lines = kept_lines
 
     ptr_lines, changed = _drop_running_header_lines(ptr_lines, ptr_headers or set())
     if changed:
@@ -924,7 +942,50 @@ def safe_text_equivalence(
     reduced, extra = _reduce_report_repetitions(report_text, ptr_plain, ptr_text_by_clause or {})
     if extra and reduced == ptr_plain:
         return [*applied, *extra]
+    # The Report may write an un-numbered PTR table out as text, cell by cell.
+    tables = [table for table in (ptr_table_texts or []) if table]
+    for candidate, rules in ((report_plain, []), (reduced, extra)):
+        rest = candidate
+        removed = False
+        for table in tables:
+            table_text = "".join(table) if isinstance(table, (list, tuple)) else table
+            if len(table_text) >= 6 and table_text in rest:
+                rest = rest.replace(table_text, "")
+                removed = True
+        if removed and rest == ptr_plain:
+            return [*applied, *rules, "REPORT_TABLE_AS_TEXT"]
+        # Same content, but a wrapped cell is read in a different order:
+        # compare row by row (each PTR row must be found, as the same
+        # characters, in the same row order; a header row repeated on the
+        # next page is skipped).
+        if candidate.startswith(ptr_plain) and _rows_follow(candidate[len(ptr_plain):], tables):
+            return [*applied, *rules, "REPORT_TABLE_AS_TEXT"]
     return None
+
+
+def _rows_follow(text: str, tables: Sequence[Any]) -> bool:
+    from collections import Counter
+
+    position = 0
+    seen: set[str] = set()
+    for table in tables:
+        rows = list(table) if isinstance(table, (list, tuple)) else [table]
+        start, added = position, []
+        ok = True
+        for row in rows:
+            if not row or row in seen:
+                continue
+            segment = text[position:position + len(row)]
+            if Counter(segment) != Counter(row):
+                ok = False
+                break
+            position += len(row)
+            seen.add(row)
+            added.append(row)
+        if not ok:
+            position = start
+            seen.difference_update(added)
+    return position > 0 and position == len(text)
 
 
 _INLINE_NUMERIC_MARKER_RE = re.compile(
@@ -1807,6 +1868,14 @@ def _compare_text(
             report.get("text"),
             ptr_headers=context.get("ptr_headers"),
             ptr_text_by_clause=context.get("ptr_text_by_clause"),
+            ptr_table_texts=[
+                [
+                    _strip_punctuation(normalize_comparison_text("".join(str(cell or "") for cell in row)))
+                    for row in table.get("rows") or []
+                ]
+                for table in ptr.get("table_rows") or []
+                if table.get("binding") == "physical"
+            ],
         )
         if rules:
             text_status = MATCHED
@@ -1831,6 +1900,16 @@ def _compare_text(
         if ptr_binding_status == MATCHED and report_binding_status == MATCHED
         else MANUAL
     )
+    if (
+        row_expansion is not None
+        and row_expansion.get("rule") == "TABLE_ROW_KEYS"
+        and row_expansion.get("status") == MATCHED
+    ):
+        # Every row of the referenced tables was found and matched: the
+        # content itself binds the table numbers on both sides.
+        ptr_binding_status, report_binding_status = MATCHED, MATCHED
+        ptr_binding_reason = report_binding_reason = None
+        binding_status = MATCHED
     if row_expansion is not None and ptr_binding_status == MATCHED and report_binding_status != MATCHED:
         # The Report expansion was matched to a row of the bound PTR table:
         # that is the binding of the Report's “表N”.
@@ -1919,7 +1998,7 @@ def _compare_text(
         expansion = compare_row_expansion(ptr, report)
         if expansion is None:
             # Both sides print the table: compare it by row name.
-            expansion = compare_table_cells(ptr, report)
+            expansion = compare_table_cells(ptr, report, (context or {}).get("ptr_headers"))
         if expansion is not None:
             reduced = {
                 key: value
@@ -1930,6 +2009,24 @@ def _compare_text(
                 }
             }
             reduced["text"] = report_text_without_expansion(report, expansion)
+            ptr_for_text = ptr
+            if expansion.get("rule") == "TABLE_ROW_KEYS" and expansion.get("status") != MISMATCH:
+                # Table content the PTR prints as running text (merged cells)
+                # was verified row by row; leave only the clause sentences,
+                # captions and figure captions for the text/numeric rules.
+                ptr_for_text = {
+                    key: value
+                    for key, value in ptr.items()
+                    if key not in {"normalized_text", "numeric_signature", "raw_numeric_signature", "unit_labels"}
+                }
+                verified = "\n".join(
+                    _strip_punctuation(normalize_comparison_text(str(cell or "")))
+                    for table in report.get("table_rows") or []
+                    for cell in (table.get("matrix_row") or [])
+                )
+                ptr_for_text["text"] = _ptr_text_without_table_lines(
+                    str(ptr.get("text") or ""), (context or {}).get("ptr_headers") or set(), verified
+                )
             if expansion.get("rule") == "TABLE_ROW_KEYS":
                 # A caption printed inside the Report table (``表8 …``) is a
                 # reference of the Report clause as well.
@@ -1943,16 +2040,19 @@ def _compare_text(
                     normalize_comparison_text(re.match(r"\s*表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*", line).group(0))
                     for line in caption_lines
                 }
-                known = normalize_comparison_text(reduced["text"])
-                extra = [line for line in caption_lines if normalize_comparison_text(line) not in known]
-                if extra:
-                    reduced["text"] = "\n".join([reduced["text"], *extra])
+                # Table numbers are compared by the reference rule; captions
+                # are not part of the text comparison once the tables match.
+                reduced["text"] = "\n".join(
+                    line for line in str(reduced["text"]).splitlines()
+                    if not re.match(r"\s*表\s*[A-Za-z]?\d", line)
+                )
                 references = dict(report.get("references") or {})
                 references["tables"] = sorted(set(references.get("tables") or []) | captions)
                 reduced["references"] = references
             result = _compare_text(
-                ptr, reduced, has_children=has_children, context=context, row_expansion=expansion
+                ptr_for_text, reduced, has_children=has_children, context=context, row_expansion=expansion
             )
+            result["text_comparison"]["ptr_source"] = str(ptr.get("text") or "")
             # The diff view shows the Report text *without* the verified
             # expansion; the expansion itself is listed cell by cell.
             result["text_comparison"]["report_source"] = str(report.get("text") or "")
@@ -1963,6 +2063,27 @@ def _compare_text(
                 if index in set(expansion.get("consumed_report_lines") or [])
             )
             return result
+    if (
+        row_expansion is None
+        and table_comparison["status"] == MANUAL
+        and not report.get("table_rows")
+        and ptr.get("table_rows")
+        and all(str(t.get("binding") or "") == "reference" for t in ptr.get("table_rows") or [])
+        and (ptr.get("references") or {}).get("tables") == (report.get("references") or {}).get("tables")
+        and text_status == MATCHED
+        and numeric_status == MATCHED
+    ):
+        # Both sides only *name* a table/appendix printed elsewhere in the
+        # PTR (``产品特性见附录A``); neither restates its content here.
+        table_comparison = {
+            "status": MATCHED,
+            "reason_code": "TABLE_REFERENCED_BY_NAME_ONLY",
+            "ptr_tables": len(ptr.get("table_rows") or []),
+            "report_tables": 0,
+        }
+        if ptr_binding_status == MATCHED:
+            # The Report names the same table/appendix and has nothing to bind.
+            binding_status, binding_reason = MATCHED, None
     if row_expansion is not None:
         expansion_status = str(row_expansion.get("status"))
         table_comparison = {
@@ -2237,6 +2358,70 @@ def _summarise_shift_runs(
                 entry["clause_shift"]["run"] = run_info
 
 
+def _drop_duplicate_letter_items(
+    report_by_clause: Mapping[str, Sequence[Mapping[str, Any]]],
+    ptr_by_clause: Mapping[str, Any],
+) -> dict[str, list[Mapping[str, Any]]]:
+    """Remove a lettered Report item parsed twice.
+
+    ``2.2.3 水平和定位激光：2.2.3.1 激光波长：a) 水平激光…`` in one cell yields
+    both ``2.2.3.1a`` and a spurious ``2.2.3a`` with the same text.  The
+    spurious copy is dropped only when the PTR has no such clause and the
+    deeper item carries exactly the same text.
+    """
+
+    result = {key: list(value) for key, value in report_by_clause.items()}
+    for clause_id in list(result):
+        match = re.fullmatch(r"(.+\d)([a-z])", clause_id)
+        if not match or clause_id in ptr_by_clause:
+            continue
+        base, letter = match.groups()
+        texts = {_text_for_comparison(node.get("text"), role="report") for node in result[clause_id]}
+        for other, nodes in result.items():
+            if other == clause_id or other not in ptr_by_clause or not re.fullmatch(
+                re.escape(base) + r"(?:\.\d+)+" + letter, other
+            ):
+                continue
+            if texts & {_text_for_comparison(node.get("text"), role="report") for node in nodes}:
+                result.pop(clause_id)
+                break
+    return result
+
+
+def _ptr_text_without_table_lines(text: str, headers: set[str], verified: str) -> str:
+    """PTR clause text without captions and table content lines.
+
+    Used only after the clause's tables matched the Report row by row.  A
+    line is removed when it is a table/figure caption, a running header, or
+    when every word of it is printed in the Report table (``1 柔性旋转 ±1°``
+    is merged-cell table content printed as text).  Sentences survive.
+    """
+
+    kept: list[str] = []
+    started = False
+    for line in text.splitlines():
+        plain = _strip_punctuation(normalize_comparison_text(line))
+        if not plain:
+            continue
+        if not started:
+            # Title and requirement sentences before the first caption stay.
+            if not re.match(r"\s*表\s*[A-Za-z]?\d", line):
+                kept.append(line)
+                continue
+            started = True
+        if re.match(r"\s*表\s*[A-Za-z]?\d", line) or plain in headers:
+            continue
+        words = [
+            _strip_punctuation(normalize_comparison_text(word))
+            for word in re.split(r"\s+", line.strip())
+            if word and not re.fullmatch(r"\d{1,3}", word)
+        ]
+        if words and all(word and word in verified for word in words) and not re.search(r"应|须", line):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def compare_ptr_report(
     report_path: str | Path,
     ptr_path: str | Path,
@@ -2262,7 +2447,7 @@ def compare_ptr_report(
     ptr_cycle_labels = {label for cycle in ptr_reference_cycles for label in cycle.get("labels", [])}
     report_cycle_labels = {label for cycle in report_reference_cycles for label in cycle.get("labels", [])}
     ptr_by_clause = {str(node["clause_id"]): node for node in ptr["nodes"]}
-    report_by_clause = report["nodes_by_clause"]
+    report_by_clause = _drop_duplicate_letter_items(report["nodes_by_clause"], ptr_by_clause)
     children: defaultdict[str, set[str]] = defaultdict(set)
     for node in ptr["nodes"]:
         parent = node.get("parent_clause_id")

@@ -83,3 +83,35 @@ class LayoutPatternTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TableAsTextTests(unittest.TestCase):
+    TABLE = [["设备名称 患者手术平台", "", ""], ["接口 协议 用途", "", ""], ["RS485", "RS485", "用于手术台和患者手术平台"]]
+
+    @staticmethod
+    def rows(table):
+        from mvp.ptr_compare import _strip_punctuation, normalize_comparison_text
+
+        return [_strip_punctuation(normalize_comparison_text("".join(row))) for row in table]
+
+    def test_untitled_table_written_out_as_text(self) -> None:
+        report = "患者手术平台\n设备名称\n患者手术平台\n接口\n协议\n用途\nRS485\nRS485\n用于手术台\n和患者手术\n平台"
+        self.assertEqual(
+            safe_text_equivalence("患者手术平台", report, ptr_table_texts=[self.rows(self.TABLE)]),
+            ["REPORT_TABLE_AS_TEXT"],
+        )
+
+    def test_wrapped_cell_read_in_another_order_but_rows_cannot_swap(self) -> None:
+        table = [["接口 用途", ""], ["光纤 连接到无线电力传输", ""], ["网口 售后维护用", ""]]
+        reordered = "平台\n接口\n用途\n光纤\n无线电力传输\n连接到\n网口\n售后维护用"
+        self.assertEqual(
+            safe_text_equivalence("平台", reordered, ptr_table_texts=[self.rows(table)]), ["REPORT_TABLE_AS_TEXT"]
+        )
+        swapped = "平台\n接口\n用途\n光纤\n售后维护用\n网口\n连接到无线电力传输"
+        self.assertIsNone(safe_text_equivalence("平台", swapped, ptr_table_texts=[self.rows(table)]))
+
+    def test_repeated_standard_line(self) -> None:
+        ptr = "执行GB 9706.1-2020规定的所有要求。"
+        self.assertEqual(
+            safe_text_equivalence(ptr, ptr + "\nGB 9706.1-2020"), ["REPORT_REPEATED_TEXT"]
+        )

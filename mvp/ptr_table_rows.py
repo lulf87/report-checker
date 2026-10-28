@@ -469,19 +469,29 @@ def _numeric_equal(left: str, right: str) -> bool:
     return len(a) == len(b) and all(Decimal(x) == Decimal(y) for x, y in zip(a, b))
 
 
-def _ptr_table_rows(ptr_node: Mapping[str, Any], labels: set[str]) -> tuple[list[tuple[str, str, dict]], str]:
+def _ptr_table_rows(
+    ptr_node: Mapping[str, Any],
+    labels: set[str],
+    noise: set[str] | None = None,
+) -> tuple[list[tuple[str, str, dict]], str]:
     """PTR data rows as ``(key, value, table)`` plus the header text."""
 
     rows: list[tuple[str, str, dict]] = []
     header = ""
+    noise = noise or set()
     for table in ptr_node.get("table_rows") or []:
-        if labels and str(table.get("label") or "") not in labels:
+        if labels is not None and labels and str(table.get("label") or "") not in labels:
             continue
+        if noise and all(
+            not str(c or "").strip() or _plain(c) in noise or re.fullmatch(r"第?\d+/\d+页?", _plain(c))
+            for row in table.get("rows") or [] for c in row
+        ):
+            continue  # running header/footer mis-detected as a table
         for index, row in enumerate(table.get("rows") or []):
             cells = [str(c or "").strip() for c in row if str(c or "").strip()]
             if not cells:
                 continue
-            if index == 0 and not table.get("continuation_of"):
+            if index == 0 and not table.get("continuation_of") and not re.search(r"\d", "".join(cells)):
                 header += _plain(" ".join(cells))
                 continue
             if len(cells) == 1:
@@ -489,14 +499,24 @@ def _ptr_table_rows(ptr_node: Mapping[str, Any], labels: set[str]) -> tuple[list
                 # cell; a cell with several lines holds several sub-rows.
                 for line in cells[0].splitlines():
                     parts = re.split(r"\s+", line.strip(), maxsplit=1)
+                    # A leading row number (``1 3D观察窗：倾角 …``) is not the
+                    # row name; the Report often drops that column.
+                    if len(parts) == 2 and re.fullmatch(r"\d{1,3}", parts[0]):
+                        parts = re.split(r"\s+", parts[1], maxsplit=1)
                     if len(parts) == 2:
                         rows.append((_plain(parts[0]), parts[1], table))
                 continue
+            if len(cells) >= 3 and re.fullmatch(r"\d{1,3}", cells[0]):
+                cells = cells[1:]
             rows.append((_plain(cells[0]), " ".join(cells[1:]), table))
     return rows, header
 
 
-def compare_table_cells(ptr_node: Mapping[str, Any], report_node: Mapping[str, Any]) -> dict[str, Any] | None:
+def compare_table_cells(
+    ptr_node: Mapping[str, Any],
+    report_node: Mapping[str, Any],
+    headers: set[str] | None = None,
+) -> dict[str, Any] | None:
     """Compare a PTR table with the Report's table by row name.
 
     Column layout may differ (the Report may split one PTR table into a left
@@ -508,7 +528,17 @@ def compare_table_cells(ptr_node: Mapping[str, Any], report_node: Mapping[str, A
     from mvp.ptr_compare import _text_diff_segments
 
     labels = {compact_label(label) for label in (ptr_node.get("references") or {}).get("tables", [])}
-    ptr_rows, header = _ptr_table_rows(ptr_node, labels)
+    noise = {_plain(h) for h in (headers or set())}
+    ptr_rows, header = _ptr_table_rows(ptr_node, labels, noise)
+    if len(ptr_rows) < 2:
+        # Captions that did not attach to their grid (continued tables,
+        # captions above a page break): use the tables printed on the
+        # clause's own pages.
+        ptr_rows, header = _ptr_table_rows(
+            {**ptr_node, "table_rows": [t for t in ptr_node.get("table_rows") or [] if t.get("binding") == "physical"]},
+            set(),
+            noise,
+        )
     if len(ptr_rows) < 2:
         return None
     keys = {key for key, _, _ in ptr_rows}
@@ -527,12 +557,15 @@ def compare_table_cells(ptr_node: Mapping[str, Any], report_node: Mapping[str, A
         key_index = next((i for i, value in enumerate(plain_cells) if value in keys), None)
         if key_index is None:
             first = next(c for c in cells if c.strip())
+            non_empty = [c for c in cells if c.strip()]
+            if len(non_empty) == 1 and re.search(r"[:：]\s*$", non_empty[0]):
+                continue  # block heading such as ``2 号器械臂：``
             header_chars = set(header)
             if re.match(r"^\s*表\s*[A-Za-z]?\d", first) or all(
                 not value or set(value) <= header_chars for value in plain_cells
             ):
                 continue  # caption or (re-printed) header row
-            unmatched_report.append(" | ".join(c.strip() for c in cells if c.strip()))
+            unmatched_report.append((" | ".join(c.strip() for c in cells if c.strip()), [p for p in plain_cells if p]))
             continue
         data_rows += 1
         key = plain_cells[key_index]
@@ -560,6 +593,12 @@ def compare_table_cells(ptr_node: Mapping[str, Any], report_node: Mapping[str, A
                               "reason_code": "TABLE_ROW_MISSING_IN_REPORT", "ptr_page": table.get("pdf_page")})
             continue
         joined = "".join(got)
+        if re.search(r"[±+\-~～≤≥<>至或]\s*$", value.strip()) and joined != ptr_value:
+            # The PTR cell ends with an operator: its value continues on a
+            # line the table recovery did not attach.
+            cells_out.append({"column": key, "report": report_text, "ptr": value, "status": "manual",
+                              "reason_code": "CELL_PTR_CONTINUES", "ptr_page": table.get("pdf_page")})
+            continue
         if joined == ptr_value or all(item == ptr_value for item in got):
             status, reason = "matched", "CELL_EQUAL"
         elif _numeric_equal(joined, ptr_value) or all(_numeric_equal(item, ptr_value) for item in got):
@@ -575,9 +614,27 @@ def compare_table_cells(ptr_node: Mapping[str, Any], report_node: Mapping[str, A
             cell["report_segments"] = segments.get("report_segments")
             cell["ptr_segments"] = segments.get("ptr_segments")
         cells_out.append(cell)
-    for text in unmatched_report:
-        cells_out.append({"column": "Report 多出的行", "report": text, "ptr": "", "status": "manual",
-                          "reason_code": "TABLE_ROW_NOT_IN_PTR"})
+    # Rows the PTR prints as running text rather than as a grid (merged
+    # cells such as ``柔性旋转 / 1号臂 100° / 2号臂 105°``): accept a Report row
+    # only when every one of its cells is printed in the PTR clause.
+    from mvp.ptr_compare import _strip_punctuation, normalize_comparison_text
+
+    ptr_plain = _strip_punctuation(normalize_comparison_text(
+        str(ptr_node.get("text") or "") + "".join(
+            str(c or "") for t in ptr_node.get("table_rows") or [] for row in t.get("rows") or [] for c in row
+        )
+    ))
+    for text, parts in unmatched_report:
+        if len(parts) > 2 and len(parts[0]) <= 3:
+            parts = parts[1:]  # leading joint/row code such as ``θ1`` or ``d3``
+        found = bool(parts) and all(part in ptr_plain for part in parts) and any(_DECIMAL_RE.search(part) for part in parts)
+        cells_out.append({
+            "column": "Report 表格行",
+            "report": text,
+            "ptr": "（PTR 中以正文形式出现）" if found else "",
+            "status": "matched" if found else "manual",
+            "reason_code": "ROW_CELLS_IN_PTR_TEXT" if found else "TABLE_ROW_NOT_IN_PTR",
+        })
     statuses = {cell["status"] for cell in cells_out}
     status = "mismatch" if "mismatch" in statuses else "manual" if "manual" in statuses else "matched"
     first = ptr_rows[0][2]
