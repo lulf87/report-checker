@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlsplit
 from uuid import uuid4
 

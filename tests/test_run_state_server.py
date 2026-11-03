@@ -86,6 +86,24 @@ class RunStateServerTests(unittest.TestCase):
         self.assertEqual(cancelled["lifecycle_status"], "cancelled")
         self.assertIsNone(cancelled["machine_overall_status"])
 
+    def test_record_mode_preflight_reaches_report_scope_check(self) -> None:
+        # Regression (2026-11-02): the 9706.1/9706.202 preflight evaluates the
+        # Report standard scope and used ``Mapping`` without importing it, so
+        # every Report + Record preflight returned HTTP 500.
+        _, case = self.request_json(
+            "/api/v1/cases", method="POST", payload={"name": "202 预检测试"}, csrf=True
+        )
+        for mode in ("report_record_9706_202", "report_record_9706_1"):
+            with self.subTest(mode=mode):
+                status, preflight = self.request_json(
+                    f"/api/v1/cases/{case['id']}/runs:preflight",
+                    method="POST",
+                    payload={"mode": mode, "inputs": {"report_document_id": "r", "record_document_id": "w"}},
+                    csrf=True,
+                )
+                self.assertEqual(status, 200)
+                self.assertIn(preflight["report_scope"]["status"], {"unavailable", "not_applicable", "ready", "resolved"})
+
     def test_ptr_preflight_and_create_accept_enabled_role_pair(self) -> None:
         _, case = self.request_json(
             "/api/v1/cases", method="POST", payload={"name": "PTR 状态测试"}, csrf=True
