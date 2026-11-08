@@ -422,6 +422,8 @@ def report_text_without_expansion(report_node: Mapping[str, Any], result: Mappin
     else, including a changed sentence, stays for the text and numeric rules.
     """
 
+    if result.get("rule") == "TABLE_ROW_KEYS":
+        return str(report_node.get("text") or "")
     text_lines = [line for line in str(report_node.get("text") or "").splitlines() if line.strip()]
     consumed = set(result.get("consumed_report_lines") or [])
     first = min(consumed) if consumed else len(text_lines)
@@ -459,7 +461,7 @@ def _plain(value: Any) -> str:
 
 
 def _numeric_equal(left: str, right: str) -> bool:
-    """``0.70`` and ``0.7`` state the same value; everything else must match."""
+    """``0.70`` and ``0.7``: same value, different writing (reported as a difference)."""
 
     from decimal import Decimal
 
@@ -542,8 +544,22 @@ def compare_table_cells(
     if len(ptr_rows) < 2:
         return None
     keys = {key for key, _, _ in ptr_rows}
+    # Preserve punctuation in the actual printed row names. Normalized keys
+    # alone must not make distinct names (e.g. A/B and AB) interchangeable.
+    printed_keys: dict[str, set[str]] = {}
+    printed_values: dict[str, set[tuple[str, ...]]] = {}
+    for key, _, ptr_table in ptr_rows:
+        for raw_row in ptr_table.get("rows") or []:
+            printed_cells = [str(c) for c in raw_row if str(c or "").strip()]
+            if len(printed_cells) >= 3 and re.fullmatch(r"\d{1,3}", printed_cells[0]):
+                printed_cells = printed_cells[1:]
+            if printed_cells and _plain(printed_cells[0]) == key:
+                printed_keys.setdefault(key, set()).add(compact_label(printed_cells[0]))
+                printed_values.setdefault(key, set()).add(tuple(_plain(c) for c in printed_cells[1:]))
     report_values: dict[str, list[str]] = {}
     report_raw: dict[str, list[str]] = {}
+    identity_evidence: dict[str, list[dict[str, Any]]] = {}
+    identity_column_checks: dict[str, list[bool]] = {}
     unmatched_report: list[str] = []
     data_rows = 0
     for table in report_node.get("table_rows") or []:
@@ -552,6 +568,39 @@ def compare_table_cells(
             continue
         cells = [str(c or "") for c in row]
         plain_cells = [_plain(c) for c in cells]
+        # A remarks cell may supply a missing row name, never a requirement
+        # value. Require the same physical row, page and exact source hash.
+        raw_external_key = compact_label(table.get("row_key"))
+        external_keys = [key for key, labels in printed_keys.items()
+                         if labels == {raw_external_key}]
+        external_key = external_keys[0] if len(external_keys) == 1 else ""
+        identity = table.get("row_key_evidence") or {}
+        source_hash = table.get("source_sha256")
+        source_matches_node = report_node.get("source_sha256") == source_hash
+        identity_valid = (
+            external_key in keys and source_matches_node
+            and isinstance(source_hash, str) and bool(re.fullmatch(r"[a-f0-9]{64}", source_hash))
+            and identity.get("role") == "report" and identity.get("column") == "备注"
+            and identity.get("extraction_method") == "report_table_row_identity"
+            and identity.get("source_sha256") == source_hash
+            and identity.get("pdf_page") == table.get("pdf_page")
+            and identity.get("physical_table_id") == table.get("physical_table_id")
+            and bool(identity.get("physical_table_id"))
+            and identity.get("row_index") == table.get("row_index")
+            and isinstance(identity.get("row_index"), int)
+            and bool(identity.get("bbox"))
+            and compact_label(identity.get("text")) == raw_external_key
+        )
+        if identity_valid and not any(value in keys for value in plain_cells):
+            # Binding a row name must not join distinct columns into one
+            # string that happens to equal the PTR. Ambiguous layouts remain
+            # manual for this row only; a proven mismatch stays a mismatch.
+            expected_columns = printed_values.get(external_key, set())
+            identity_column_checks.setdefault(external_key, []).append(
+                len(expected_columns) == 1 and tuple(plain_cells) in expected_columns)
+            cells.insert(0, str(table["row_key"]))
+            plain_cells.insert(0, external_key)
+            identity_evidence.setdefault(external_key, []).append(identity)
         if not any(plain_cells):
             continue
         key_index = next((i for i, value in enumerate(plain_cells) if value in keys), None)
@@ -602,13 +651,19 @@ def compare_table_cells(
         if joined == ptr_value or all(item == ptr_value for item in got):
             status, reason = "matched", "CELL_EQUAL"
         elif _numeric_equal(joined, ptr_value) or all(_numeric_equal(item, ptr_value) for item in got):
-            status, reason = "matched", "CELL_NUMERIC_EQUAL"
+            # Same value written differently (``0.70``/``0.7``): the Report
+            # must copy the PTR figure exactly.
+            status, reason = "mismatch", "CELL_NUMBER_WRITTEN_DIFFERENTLY"
         elif _DECIMAL_RE.findall(joined) != _DECIMAL_RE.findall(ptr_value):
             status, reason = "mismatch", "CELL_VALUE_MISMATCH"
         else:
             status, reason = "manual", "CELL_TEXT_DIFFERENT"
+        if status == "matched" and key in identity_column_checks and not all(identity_column_checks[key]):
+            status, reason = "manual", "REMARK_BOUND_COLUMN_VALUES_NOT_VERIFIED"
         cell = {"column": key, "report": report_text, "ptr": value, "status": status, "reason_code": reason,
                 "ptr_page": table.get("pdf_page")}
+        if key in identity_evidence:
+            cell["report_row_identity_evidence"] = identity_evidence[key]
         if status != "matched":
             segments = _text_diff_segments(report_text, value)
             cell["report_segments"] = segments.get("report_segments")

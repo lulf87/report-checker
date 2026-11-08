@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mvp.ptr_compare import safe_text_equivalence
+from mvp.ptr_compare import safe_text_equivalence, wording_differences
 from mvp.ptr_layout import CAPTION, RESULT_QUALIFIER, VALUE_NOT_CLAUSE
 
 HEADERS = {"示例公司专有机密文件", "文件:1234567-01", "修订版:A"}
@@ -65,6 +65,34 @@ class SafeEquivalenceTests(unittest.TestCase):
         )
         wrong = {"2.5.7a": "平均显示延迟时间:≤80ms,可见光模式下。"}
         self.assertIsNone(safe_text_equivalence(ptr, report, ptr_text_by_clause=wrong))
+
+
+class WordingDifferenceTests(unittest.TestCase):
+    def test_same_meaning_but_different_words_is_not_equivalent(self) -> None:
+        for ptr, report in [
+            ("器械杆在Pitch和Yaw动作时不得有干扰使用者的晃动。", "器械杆在Pitch和Yaw动作时候不得有干扰使用者的晃动。"),
+            ("钳口不得有裂纹等缺陷。", "钳口不得有裂纹缺陷。"),
+            ("应符合表2-1规定的要求。", "符合表2-1规定的要求。"),
+        ]:
+            with self.subTest(report=report):
+                self.assertIsNone(safe_text_equivalence(ptr, report))
+
+    def test_few_chinese_characters_differ_is_a_wording_mismatch(self) -> None:
+        self.assertEqual(wording_differences("钳口不得有裂纹等缺陷。", "钳口不得有裂纹缺陷。"),
+                         [{"ptr": "等", "report": ""}])
+        self.assertEqual(wording_differences("动作时不得晃动", "动作时候不得晃动"), [{"ptr": "", "report": "候"}])
+        self.assertEqual(wording_differences("转向自如", "转向白如"), [{"ptr": "自", "report": "白"}])
+        self.assertEqual(wording_differences("机械臂(USM)/器械", "USM/器械"), [{"ptr": "机械臂", "report": ""}])
+
+    def test_other_differences_stay_for_review(self) -> None:
+        for ptr, report in [
+            ("制动距离≤20mm", "制动距离≤20mm。±X方向:"),          # result label with symbols/letters
+            ("尺寸:0.88毫米≤A≤0.89毫米", "A尺寸0.88毫米≤A≤0.89毫米"),  # moved values
+            ("应符合表2-1", "符合表2-1。逸搏间期本身不可程控"),          # added note
+            ("相同", "相同"),
+        ]:
+            with self.subTest(report=report):
+                self.assertIsNone(wording_differences(ptr, report))
 
 
 class LayoutPatternTests(unittest.TestCase):
@@ -142,3 +170,92 @@ class TocAndReferenceTests(unittest.TestCase):
         self.assertIn("REPORT_EXPANDED_REFERENCE", safe_text_equivalence(ptr, report, ptr_text_by_clause=clauses))
         changed = {"2.3.1.1": "直流电阻各电极与对应插头芯脚之间的直流电阻值应不大于5Ω。"}
         self.assertIsNone(safe_text_equivalence(ptr, report, ptr_text_by_clause=changed))
+
+
+class UnlabelledTableExceptionTests(unittest.TestCase):
+    """无编号表格：内容已逐行/逐格核对一致时保持一致，否则待确认。"""
+
+    TABLE = TableAsTextTests.TABLE
+    SECOND = [["指示灯 颜色", ""], ["电源 绿色", ""]]
+
+    @staticmethod
+    def node(text, tables, report=False):
+        from mvp.ptr_compare import normalize_comparison_text
+
+        return {
+            "text": text,
+            "normalized_text": normalize_comparison_text(text),
+            "role": "report" if report else "ptr",
+            "references": {"standards": [], "tables": []},
+            "reference_bindings": [],
+            "unit_labels": [],
+            "is_heading_only": False,
+            "table_rows": tables,
+        }
+
+    def physical(self, *tables):
+        return [{"rows": rows, "binding": "physical"} for rows in tables]
+
+    def compare(self, ptr, report):
+        from mvp.ptr_compare import _compare_text
+
+        return _compare_text(ptr, report, has_children=False)
+
+    def test_table_written_out_as_text_stays_matched(self) -> None:
+        report = "患者手术平台\n设备名称\n患者手术平台\n接口\n协议\n用途\nRS485\nRS485\n用于手术台\n和患者手术\n平台"
+        result = self.compare(
+            self.node("患者手术平台", self.physical(self.TABLE)), self.node(report, [], report=True)
+        )
+        self.assertEqual(result["decision"], "matched")
+        self.assertEqual(result["table_comparison"]["reason_code"], "UNLABELLED_TABLE_VERIFIED_AS_TEXT")
+        self.assertIn("REPORT_TABLE_AS_TEXT", [r["rule"] for r in result["text_comparison"]["equivalence_rules"]])
+
+    def test_only_some_tables_written_out_needs_review(self) -> None:
+        report = "患者手术平台\n设备名称\n患者手术平台\n接口\n协议\n用途\nRS485\nRS485\n用于手术台和患者手术平台"
+        result = self.compare(
+            self.node("患者手术平台", self.physical(self.TABLE, self.SECOND)), self.node(report, [], report=True)
+        )
+        self.assertEqual(result["decision"], "manual")
+        self.assertEqual(result["reason_code"], "UNLABELLED_TABLE_BINDING_UNVERIFIED")
+
+    def test_unexamined_table_needs_review(self) -> None:
+        result = self.compare(
+            self.node("患者手术平台", self.physical(self.TABLE)), self.node("患者手术平台", [], report=True)
+        )
+        self.assertEqual(result["decision"], "manual")
+        self.assertEqual(result["reason_code"], "UNLABELLED_TABLE_BINDING_UNVERIFIED")
+
+    def report_table(self, rows):
+        return [{"matrix_row": row, "table_id": "r1"} for row in rows]
+
+    def test_table_cells_all_matching_stays_matched(self) -> None:
+        ptr_rows = [["参数", "要求"], ["频率范围", "100Hz"], ["输出幅度", "5V"]]
+        result = self.compare(
+            self.node("参数应符合下列要求。", self.physical(ptr_rows)),
+            self.node("参数应符合下列要求。", self.report_table(ptr_rows), report=True),
+        )
+        self.assertEqual(result["decision"], "matched")
+        self.assertEqual(result["table_comparison"]["reason_code"], "TABLE_CELLS_MATCH")
+        self.assertTrue(result["table_comparison"]["unlabelled_table"])
+
+    def test_table_cell_difference_needs_review_not_mismatch(self) -> None:
+        ptr_rows = [["参数", "要求"], ["频率范围", "100Hz"], ["输出幅度", "5V"]]
+        report_rows = [["参数", "要求"], ["频率范围", "100Hz"], ["输出幅度", "6V"]]
+        result = self.compare(
+            self.node("参数应符合下列要求。", self.physical(ptr_rows)),
+            self.node("参数应符合下列要求。", self.report_table(report_rows), report=True),
+        )
+        self.assertEqual(result["decision"], "manual")
+        self.assertEqual(result["reason_code"], "UNLABELLED_TABLE_BINDING_UNVERIFIED")
+
+    def test_row_only_found_in_ptr_text_needs_review(self) -> None:
+        # A Report row whose cells merely occur in the PTR text does not bind
+        # an unlabelled table (ROW_CELLS_IN_PTR_TEXT is not enough).
+        ptr_rows = [["试验段", "断裂力"], ["头端与管身", "≥10"], ["管身与手柄", "≥15"]]
+        report_rows = [*ptr_rows, ["管身", "≥15"]]
+        result = self.compare(
+            self.node("断裂力应符合下表。管身", self.physical(ptr_rows)),
+            self.node("断裂力应符合下表。管身", self.report_table(report_rows), report=True),
+        )
+        self.assertEqual(result["decision"], "manual")
+        self.assertEqual(result["reason_code"], "UNLABELLED_TABLE_BINDING_UNVERIFIED")

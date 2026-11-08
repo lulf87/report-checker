@@ -80,6 +80,9 @@ def _finding(entry: Mapping[str, Any], *, rule_version: str) -> dict[str, Any]:
         "summary": f"{decision}: {entry.get('reason_code') or 'no_reason'}",
         "details": {
             "clause_id": entry.get("clause_id"),
+            "mapping": entry.get("mapping"),
+            "ptr_node_ids": entry.get("ptr_node_ids", [entry["ptr_node_id"]] if entry.get("ptr_node_id") else []),
+            "ptr_candidates": entry.get("ptr_candidates", []),
             "scope_decision": entry.get("scope_decision"),
             "scope_reason_code": entry.get("scope_reason_code"),
             "reason_code": entry.get("reason_code"),

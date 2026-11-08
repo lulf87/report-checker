@@ -108,12 +108,12 @@ class TableByRowNameTests(unittest.TestCase):
         self.assertEqual(by_row["腕夹"]["reason_code"], "TABLE_ROW_MISSING_IN_REPORT")
         self.assertEqual(result["status"], "mismatch")
 
-    def test_trailing_zero_is_the_same_value(self) -> None:
+    def test_trailing_zero_must_be_copied(self) -> None:
         ptr = ptr_table([["模式 光照均匀度的标称值", ""], ["非Firefly模式 0.75", ""], ["Firefly模式", "0.70"]], "表9")
         report = report_rows(["模式", "光照均匀度的标称值"], ["非\nFirefl\ny 模式", "0.75"], ["Firefl\ny 模式", "0.7"])
         result = compare_table_cells(ptr, report)
-        self.assertEqual(result["status"], "matched")
-        self.assertIn("CELL_NUMERIC_EQUAL", {cell["reason_code"] for cell in result["cells"]})
+        self.assertEqual(result["status"], "mismatch")
+        self.assertIn("CELL_NUMBER_WRITTEN_DIFFERENTLY", {cell["reason_code"] for cell in result["cells"]})
 
 
 class TableRowNumberAndTextRowsTests(unittest.TestCase):

@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - compatibility with older environments
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
 
-PARSER_VERSION = "ptr-layout-1.5"
+PARSER_VERSION = "ptr-layout-1.6"
 CLAUSE = re.compile(
     r"^\s*(2(?:\s*\.\s*\d+){1,8})"
     r"(?:\s+|[、，,:：)）]\s*|[.．](?!\s*\d)\s*|(?=[\u3400-\u9fff]))(\S.*)$"
@@ -421,13 +421,15 @@ def _label_continuation_tables(tables: list[dict[str, Any]]) -> None:
 
 def _ancestor_table_groups(
     node: Mapping[str, Any],
-    by_clause: Mapping[str, Mapping[str, Any]],
+    by_clause: Mapping[str, Mapping[str, Any] | None],
     group_ids: set[str],
 ) -> list[str]:
     clause = str(node.get("clause_id") or "")
     while "." in clause:
         clause = clause.rsplit(".", 1)[0]
         ancestor = by_clause.get(clause)
+        if clause in by_clause and ancestor is None:
+            return []  # A repeated parent cannot safely scope a table.
         if not ancestor:
             continue
         found = sorted({
@@ -637,6 +639,7 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
                     if re.match(r"^图\s*[0-9]+", text):
                         current["figures"].append({"caption": text, "pdf_page": page.number+1, "bbox": event["bbox"]})
     ocr = {"status": "not_requested", "used_backends": [], "reason_code": None}
+    ocr_section_failure = None
     if (not nodes or ocr_mode == "required") and ocr_mode != "never":
         # OCR channels are alternative observations, never concatenated as a
         # single source. Keep the primary channel for segmentation and retain
@@ -646,17 +649,51 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
         channels = ocr.get("used_backends", [])
         primary = next((name for name in channels if any(v[3] == f"ocr:{name}" for v in observations)), None)
         selected = [v for v in observations if v[3] == f"ocr:{primary}"]
+        # Preserve the complete OCR stream even if body detection fails.
+        ocr["primary_backend"] = primary
+        ocr["observations"] = [list(v) for v in observations]
         if selected:
-            ocr_nodes, _ = _parse_clause_lines(selected, role="ptr", source_sha256=digest)
+            from mvp.ptr_ocr_sections import select_ocr_requirement_section
+
+            section = select_ocr_requirement_section(selected)
+            ocr["section_selection"] = section
+            ocr_nodes = []
+            if section["status"] == "selected_body":
+                body_lines = [selected[i] for i in section["body_indices"]]
+                ocr_nodes, _ = _parse_clause_lines(body_lines, role="ptr", source_sha256=digest)
+                body_clauses = {node["clause_id"] for node in ocr_nodes}
+                # A TOC-only clause is an unresolved source discrepancy, not a
+                # safe deletion. Keep its original evidence and manual state.
+                toc_only_nodes = {}
+                for outline in section["candidates"]:
+                    if outline["classification"] != "toc_outline":
+                        continue
+                    for heading in outline["headings"]:
+                        clause = heading["clause_id"]
+                        if clause in body_clauses:
+                            continue
+                        node = toc_only_nodes.setdefault(clause, _new_node("ptr", clause, heading["title"], digest))
+                        record = selected[heading["index"]]
+                        observation = evidence("ptr", record[0], record[1], record[2], digest, record[3])
+                        observation.update(semantic_role="ptr_toc_entry", confidence=record[4] if len(record) > 4 else None)
+                        node["evidence"].append(observation)
+                        node["extraction_issues"] = ["OCR_TOC_BODY_DISCREPANCY"]
+                ocr_nodes.extend(toc_only_nodes.values())
+                if not ocr_nodes:
+                    ocr_section_failure = "PTR_OCR_BODY_PARSE_FAILED"
+            else:
+                ocr_section_failure = section["reason_code"]
             if ocr_nodes:
                 nodes = ocr_nodes
-                ocr["primary_backend"] = primary
-                ocr["observations"] = [list(v) for v in observations]
                 for node in nodes:
-                    node.update(table_rows=[], figures=[], extraction_issues=["OCR_REVIEW_REQUIRED"])
+                    node.update(table_rows=[], figures=[], extraction_issues=[*node.get("extraction_issues", []), "OCR_REVIEW_REQUIRED"])
     nodes = _split_inline_clauses(nodes)
     _label_continuation_tables(tables)
-    by_clause = {node["clause_id"]: node for node in nodes}
+    clause_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        clause_groups[str(node["clause_id"])].append(node)
+    # None is an explicit ambiguity barrier, not a silently chosen parent.
+    by_clause = {clause: group[0] if len(group) == 1 else None for clause, group in clause_groups.items()}
     for node in nodes:
         if "parts" in node:
             _enrich(node)
@@ -686,12 +723,12 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
     for node in nodes:
         if node["clause_id"] in duplicates:
             node["extraction_issues"].append("DUPLICATE_PTR_CLAUSE")
-    ocr_used = bool(nodes) and any(str(e.get("extraction_method", "")).startswith("ocr:") for n in nodes for e in n["evidence"])
+    ocr_used = bool(ocr.get("observations")) or (bool(nodes) and any(str(e.get("extraction_method", "")).startswith("ocr:") for n in nodes for e in n["evidence"]))
     return {"role": "ptr", "path": str(path), "source_sha256": digest, "nodes": nodes,
             "diagnostics": {"parser_version": PARSER_VERSION, "page_count": page_count, "text_length": total_text,
                 "candidate_count": len(nodes), "table_count": len(tables), "text_layer": bool(total_text),
                 "status": "ocr_manual" if ocr_used else "parsed" if nodes else "manual", "ocr_used": ocr_used,
-                "reason_code": "PTR_OCR_CANDIDATES_MANUAL" if ocr_used else None if nodes else "PTR_TEXT_LAYER_MISSING",
+                "reason_code": ocr_section_failure or ("PTR_OCR_CANDIDATES_MANUAL" if ocr_used else None if nodes else "PTR_TEXT_LAYER_MISSING"),
                 "duplicates": duplicates, "ocr": ocr}}
 
 
@@ -742,9 +779,23 @@ def _requirement_cells(
     return sorted(result, key=lambda c: c["bbox"][0])
 
 
+def report_clause_cell(value: Any) -> str:
+    """Clause id printed in a Report row's clause cell.
+
+    The item letter may sit on its own line (``2.3.4.3⏎c)``) and a long
+    number may wrap (``2.3.13.1⏎2 a)``); both mean a lettered clause.
+    """
+
+    clause = compact(value)
+    lettered = re.fullmatch(r"(2(?:\.\d+)+)([a-z])[)）]", clause, re.I)
+    if lettered:
+        return lettered.group(1) + lettered.group(2).lower()
+    return clause
+
+
 def extract_report_layout(path: Path) -> dict[str, Any]:
     from mvp.ptr_scope import extract_report_scope
-    from mvp.checker import align_report_table_row
+    from mvp.checker import align_report_table_row, report_table_cell
     digest = sha256_file(path)
     groups: dict[tuple[int, str], dict[str, Any]] = {}
     nodes = []
@@ -766,7 +817,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                     seq = re.fullmatch(r"(?:续)?(\d+)", compact(row[mapping["序号"]]))
                     if seq:
                         active_sequence = int(seq.group(1))
-                        active_clause = compact(row[mapping["标准条款"]])
+                        active_clause = report_clause_cell(row[mapping["标准条款"]])
                     if active_sequence is None or not re.fullmatch(r"2(?:\.\d+)+[a-z]?", active_clause, re.I):
                         continue
                     key = active_sequence, active_clause
@@ -795,6 +846,19 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                     cells = _requirement_cells(page, table, row_index, left, right, table_state.get("starts", starts))
                     if not cells or not any(cell.get("text") for cell in cells):
                         continue
+                    row_key = ""
+                    row_key_evidence = None
+                    physical_table_id = f"report:p{page.number + 1}:t{table_index}"
+                    remark_index = mapping.get("备注")
+                    if remark_index is not None and remark_index < len(row):
+                        row_key = str(row[remark_index] or "").strip()
+                        remark_cell = report_table_cell(table, row_index, remark_index)
+                        if (row_key and remark_cell is not None
+                                and compact(page.get_textbox(remark_cell)) == compact(row_key)):
+                            row_key_evidence = evidence("report", page.number + 1, remark_cell,
+                                                        row_key, digest, "report_table_row_identity")
+                            row_key_evidence.update(column="备注", row_index=row_index,
+                                                    physical_table_id=physical_table_id)
                     text = "\n".join(cell["text"] for cell in cells if cell["text"])
                     has_clause_heading = any(CLAUSE.match(line.strip()) for line in text.splitlines())
                     physical_columns = [
@@ -805,6 +869,21 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                     has_split_requirement_columns = len(physical_columns) > 1 or any(
                         index > 0 for index in physical_columns
                     )
+                    # A full-width prose continuation is not a matrix row.
+                    # Keep the text in its clause instead of losing d)…i).
+                    resumes_prose = (
+                        len(cells) == 1
+                        and float(cells[0]["bbox"][0]) <= left + 1.5
+                        and float(cells[0]["bbox"][2]) >= right - 1.5
+                        and not CAPTION.match(text)
+                        # A bare block heading (e.g. ``2号器械臂：``)
+                        # belongs to the following matrix. A colon followed
+                        # by content can introduce an actual condition and
+                        # must remain in the ordinary requirement text.
+                        and bool(re.search(r"[。；;]|^[a-z][)）]|^[^:：\n]{1,24}[:：]\s*\S", text))
+                    )
+                    if resumes_prose:
+                        table_state["mode"] = False
                     if has_split_requirement_columns and not has_clause_heading:
                         table_state["mode"] = True
                     if table_state.get("mode") and not has_clause_heading:
@@ -831,6 +910,8 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             "source_sha256": digest,
                             "extraction_method": "report_requirement_columns",
                             "binding": "physical",
+                            "row_key": row_key, "row_key_evidence": row_key_evidence,
+                            "row_index": row_index, "physical_table_id": physical_table_id,
                         })
                         group["current"]["evidence"].extend(
                             evidence(
@@ -843,6 +924,8 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             )
                             for cell in cells
                         )
+                        if row_key_evidence is not None:
+                            group["current"]["evidence"].append(row_key_evidence)
                         continue
                     # A multi-column row belongs to the active requirement
                     # table. All physical columns, including blank values,
@@ -859,9 +942,13 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             "table_id": f"report:table:item:{active_sequence}:clause:{current_node.get('clause_id', active_clause)}",
                             "cells": cells, "matrix_row": matrix_row,
                             "rows": [matrix_row], "source_sha256": digest,
-                            "extraction_method": "report_requirement_columns", "binding": "physical"})
+                            "extraction_method": "report_requirement_columns", "binding": "physical",
+                            "row_key": row_key, "row_key_evidence": row_key_evidence,
+                            "row_index": row_index, "physical_table_id": physical_table_id})
                         group["current"]["evidence"].extend(evidence("report", page.number+1, c["bbox"], c.get("raw_text", c["text"]), digest,
                                 "report_requirement_cell") for c in cells)
+                        if row_key_evidence is not None:
+                            group["current"]["evidence"].append(row_key_evidence)
                         continue
                     for cell in cells:
                         for line in cell["text"].splitlines():

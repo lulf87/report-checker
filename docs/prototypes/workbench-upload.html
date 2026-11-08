@@ -157,6 +157,8 @@
     .check-table .text-diff.replace, .check-table .text-diff.delete, .brief-comparison .text-diff.replace, .brief-comparison .text-diff.delete { color: #991b1b; background: #fee2e2; text-decoration: underline wavy #dc2626; text-decoration-thickness: 1px; }
     .check-table .text-diff.insert, .brief-comparison .text-diff.insert { color: #92400e; background: #fef3c7; text-decoration: underline wavy #d97706; text-decoration-thickness: 1px; }
     .check-table .check-empty { color: #8b979f; }
+    .ocr-empty-summary { padding: 8px; border-top: 1px solid #e7eef0; font-size: 12px; color: var(--muted); }
+    .ocr-empty-summary button { margin-left: 8px; }
     .loc-chip { display: inline-block; margin: 2px 4px 0 0; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--teal); background: #fff; font-size: 11px; line-height: 18px; }
     .loc-chip:hover { border-color: var(--teal); background: var(--teal-soft); }
     .check-result { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
@@ -328,6 +330,22 @@
     .decision-tag.not_problem { color: var(--pass); background: var(--pass-soft); }
     .decision-tag.notified { color: var(--teal); background: var(--teal-soft); }
     @media (max-width: 760px) { .history-item { grid-template-columns: 1fr auto; } .history-item .when, .history-item .counts { grid-column: 1; } }
+  
+    .evidence-view-toolbar { padding: 12px 16px; border-bottom: 1px solid var(--line, #ddd); }
+    .evidence-view-toolbar button { margin: 0 5px 8px 0; }
+    .evidence-view-toolbar button[aria-pressed="true"] { border-color: #1f5b9c; background: #eaf2fa; }
+    .evidence-view-note, #evidence-card-counts { font-size: 12px; line-height: 1.6; margin: 4px 0; color: #4e5867; }
+    .evidence-card { list-style: none; padding: 14px 16px; border-bottom: 1px solid #dce2ea; overflow-wrap: anywhere; }
+    .evidence-page-open, .evidence-entry-open { text-align: left; color: #175b96; background: transparent; border: none; padding: 3px 0; cursor: pointer; font: inherit; }
+    .evidence-page-open { font-weight: 650; }
+    .evidence-page-open:disabled { color: #735200; cursor: default; }
+    .evidence-card-status { margin: 6px 0; font-size: 12px; color: #664300; }
+    .evidence-card summary { cursor: pointer; padding: 6px 0; font-size: 12px; }
+    .evidence-condition { border-top: 1px dashed #dce2ea; padding: 8px 0; }
+    .evidence-condition > p { white-space: pre-wrap; margin: 4px 0; font-size: 12px; line-height: 1.55; }
+    .evidence-member { padding: 5px 0; }
+    .evidence-member small { display: block; font-size: 10px; color: #596576; }
+    .evidence-member pre { white-space: pre-wrap; max-height: 340px; overflow: auto; font-size: 10px; background: #f4f6f9; }
   </style>
 </head>
 <body>
@@ -476,6 +494,13 @@
           </div>
           <input class="finding-search" id="finding-search" type="search" placeholder="搜索序号、条款或文字，例如 96、13.2.3、委托方" aria-label="搜索结果">
         </div>
+        <div class="evidence-view-toolbar">
+          <button type="button" class="secondary" id="view-by-evidence" aria-pressed="true">按证据页查看</button>
+          <button type="button" class="secondary" id="view-by-finding" aria-pressed="false">逐条结果</button>
+          <button type="button" class="secondary" id="export-evidence-catalog">导出完整证据清单</button>
+          <p id="evidence-card-counts" aria-live="polite"></p>
+          <p class="evidence-view-note">同页证据放在一起阅读；各项目的状态和适用条件仍分别保留。展开可查看全部关联项，点击页码定位原 PDF。</p>
+        </div>
         <ol class="findings" id="findings" aria-live="polite"><li class="empty">核对完成后在这里显示结果。</li></ol>
       </aside>
 
@@ -528,6 +553,7 @@
             <tbody id="check-rows"></tbody>
           </table>
         </div>
+        <div id="ocr-empty-summary" class="ocr-empty-summary" hidden></div>
       </details>
       <div class="pdf-grid">
         <article class="pdf-pane" data-pane-role="report" data-finding-status="manual" aria-label="Report 原始 PDF">
@@ -579,6 +605,7 @@
     import * as pdfjsLib from "./vendor/pdfjs/pdf.min.mjs";
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = "./vendor/pdfjs/pdf.worker.min.mjs";
+    import { bindEvidenceLocation, catalogFromFindings, groupEvidence, renderEvidenceCards } from './evidence-cards.mjs';
 
     const MODE_META = Object.freeze({
       self: { apiMode: "report_self", label: "报告自检", recordRole: null, note: "报告自检只需要检验报告。" },
@@ -1055,8 +1082,9 @@
 
     function evidenceLocations(finding, role) {
       return (Array.isArray(finding?.evidence) ? finding.evidence : [])
-        .filter(item => item?.role === role && Number.isInteger(Number(item.pdf_page)) && Number(item.pdf_page) > 0 && validBbox(item.bbox))
-        .map(item => ({ ...item, pdf_page: Number(item.pdf_page), bbox: item.bbox.map(Number) }));
+        .filter(item => item?.role === role && validBbox(item.bbox))
+        .map(item => bindEvidenceLocation(item, activeDocuments, activeRun?.id || 'pending', item.semantic_role, role).location)
+        .filter(location => location?.bbox);
     }
 
     function sourceDocument(role) {
@@ -1194,7 +1222,10 @@
       const fc = c.field_comparisons || {};
       if (activeMode === "ptr" || item.rule_id === "PTR-P01") {
         const clause = d.clause_id || String(item.id || "").match(/clause:([^@]+)/)?.[1] || "未编号条款";
-        return `PTR 条款 ${clause} ↔ Report 接受标准 ${clause}`;
+        const mapping = d.mapping || {};
+        const reportClauses = mapping.report_clause_ids?.join('、') || clause;
+        const sequences = mapping.report_sequences?.join('、');
+        return `PTR 条款 ${clause} ↔ Report 条款 ${reportClauses}${sequences ? ` · 结果序号 ${sequences}` : ''}`;
       }
       if (d.record_item !== undefined && d.record_logical_row !== undefined) {
         const project = c.project?.record_project || (c.project?.report_projects || [])[0] || "";
@@ -1207,6 +1238,36 @@
         return `${sequence ? `序号${sequence} · ` : ""}${clause} ${clip(requirement, 26)}`.trim();
       }
       return item.title || item.rule_id || "核对结果";
+    }
+    function hasMatchingBasis(item) {
+      if (item.rule_id === 'PTR-P01') return true;
+      const mode = MODE_META[activeMode]?.recordRole;
+      return ['record_9706_1', 'record_9706_202'].includes(mode)
+        && typeof item.details?.mapping?.method === 'string' && Boolean(item.details.mapping.method);
+    }
+    function matchingBasis(item) {
+      const d = item.details || {}; const mapping = d.mapping || {};
+      const method = mapping.method;
+      if (item.rule_id === 'PTR-P01') {
+        if (!method) return '历史结果未记录匹配元数据；请按条款与原文位置复核，结果序号未提供。';
+        const sequences = mapping.report_sequences?.join('、') || '未提供';
+        return `匹配依据：同条款号候选；PTR ${mapping.ptr_candidate_count} 个候选，Report ${mapping.report_candidate_count} 个候选；报告结果序号 ${sequences}。${mapping.resolution === 'ambiguous_ptr' ? 'PTR 重复号，保留全部候选，需人工确定。' : '正文、数值及引用的判定仍分别保留。'}`;
+      }
+      const names = {clause_range_and_unique_requirement_text:'条款范围 + 唯一要求正文',
+        frozen_item_parent_clause_occurrence:'冻结项目映射 + 父条款 + 出现次序'};
+      const label = names[method] || (method?.startsWith('frozen_item_parent_clause_occurrence') ? '冻结项目映射 + 父条款 + 出现次序（结构变体）' : method);
+      if (!label) return '本结果未提供匹配依据元数据；请以原始证据核对。';
+      return `匹配依据：${label}${mapping.sequence !== undefined ? `；报告结果序号 ${mapping.sequence}` : ''}${mapping.record_item !== undefined ? `；记录项目 ${mapping.record_item}` : ''}${mapping.report_item !== undefined ? ` → 报告结果序号 ${mapping.report_item}` : ''}。`;
+    }
+    function uniqueDisplayLocations(locations) {
+      const seen = new Map();
+      return (locations || []).filter(location => {
+        if (!location || !validBbox(location.bbox) || !Number.isInteger(location.pdf_page)) return true;
+        const key = JSON.stringify([location.role, location.document_id, location.document_key,
+          location.document_sha256, location.source_sha256, location.pdf_page, location.bbox]);
+        if (seen.has(key)) return false;
+        seen.set(key, true); return true;
+      });
     }
     function ptrClauseId(item) {
       const details = item?.details || {};
@@ -1257,9 +1318,49 @@
     function ruleCode(item) { return String(item.rule_id || item.id || "").split("@")[0]; }
     function findingKey(item) { return String(item.id || item.rule_id || "").split("@")[0]; }
 
+    let evidenceView = true;
+    let evidenceOpenToken = 0;
+    function evidenceCatalog(items = activeFindings) {
+      return catalogFromFindings(items, { context: activeRun?.id || 'pending', documents: activeDocuments,
+        rowsFor: checkRowsFor, titleFor: displayTitle });
+    }
+    async function openEvidenceEntry(entry, location) {
+      const token = ++evidenceOpenToken;
+      const finding = activeFindings.find(item => item.id === entry.original_finding_id);
+      if (!finding) return;
+      selectedFindingId = finding.id;
+      await showFindingComparison(finding);
+      if (token !== evidenceOpenToken || selectedFindingId !== finding.id) return;
+      if (location) {
+        const bound = bindEvidenceLocation(location, activeDocuments, activeRun.id);
+        if (!bound.location) return;
+        // Require the full occurrence AND the side to belong to this entry.
+        if (!entry.locations.some(loc => loc.document_id === location.document_id && loc.role === location.role
+          && loc.pdf_page === location.pdf_page && JSON.stringify(loc.bbox) === JSON.stringify(location.bbox)
+          && loc.which === location.which)) return;
+        const pane = paneFor(location, location.which);
+        if (pane.root.dataset.documentId !== location.document_id) return;
+        comparisonCard.dataset.entryId = entry.entry_id;
+        if (entry.kind === 'check_row') showCheckRow(entry.raw, { focus: false });
+        if (location.bbox) await pane.setFinding(normStatus(entry.status), [location]);
+        else { await pane.setFinding(normStatus(entry.status), []); await pane.goToPage(location.pdf_page); }
+      } else if (entry.kind === 'check_row') showCheckRow(entry.raw);
+    }
+    document.getElementById('view-by-evidence').addEventListener('click', () => { evidenceView = true; renderFindings(); });
+    document.getElementById('view-by-finding').addEventListener('click', () => { evidenceView = false; renderFindings(); });
+    document.getElementById('export-evidence-catalog').addEventListener('click', () => {
+      const catalog = evidenceCatalog();
+      const payload = { ...catalog, grouping: groupEvidence(catalog), scope: '全部结果与原始证据；分组不改变状态或复核意见' };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = '完整证据清单.json'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    });
     function renderFindings() {
       const visible = visibleFindings();
       findings.replaceChildren();
+      document.getElementById('view-by-evidence').setAttribute('aria-pressed', String(evidenceView));
+      document.getElementById('view-by-finding').setAttribute('aria-pressed', String(!evidenceView));
+      document.getElementById('evidence-card-counts').textContent = '';
       if (!visible.length) {
         const empty = document.createElement("li");
         empty.className = "empty";
@@ -1270,6 +1371,14 @@
         renderFilters();
         updateFindingNav();
         return;
+      }
+      if (evidenceView) {
+        const metrics = renderEvidenceCards(findings, evidenceCatalog(visible), {
+          onOpen: (location, entry) => openEvidenceEntry(entry, location),
+          onInspect: (entry, location) => openEvidenceEntry(entry, location)
+        });
+        document.getElementById('evidence-card-counts').textContent = `当前筛选：${metrics.original_findings} 条原始结果 · ${metrics.entries} 条明细/证据 · ${metrics.display_cards} 张阅读卡片（${metrics.unlocated_cards} 张未定位）`;
+        renderFilters(); updateFindingNav(); return;
       }
       const SECTION_NAMES = { error: "问题", suspect: "疑似不一致（单路读数与报告对不上，请优先看）", manual: "需要确认", warning: "警示", pass: "一致" };
       const statusCount = {};
@@ -1285,6 +1394,7 @@
         findings.append(head);
       };
       visible.forEach(item => {
+        const status = item.status;
         if (sections && sectionOf(item) !== lastSection) {
           addHead(`${SECTION_NAMES[sectionOf(item)] || sectionOf(item)}（${statusCount[sectionOf(item)] ?? ""}）`, "section");
           lastSection = sectionOf(item);
@@ -1332,7 +1442,8 @@
         }
         const rule = document.createElement("div");
         rule.className = "finding-rule";
-        rule.textContent = isPtrFinding(item) ? "PTR 条款 ↔ Report 接受标准" : ruleCode(item);
+        rule.textContent = hasMatchingBasis(item) ? matchingBasis(item) : ruleCode(item);
+        rule.title = hasMatchingBasis(item) ? `${ruleCode(item)} · ${matchingBasis(item)}` : ruleCode(item);
         copy.append(title, detail, rule);
         row.append(badge, copy);
         findings.append(row);
@@ -1528,6 +1639,7 @@
     }
     function selectFinding(item, { scrollList = true } = {}) {
       if (!item) return;
+      evidenceOpenToken += 1;
       selectedFindingId = item.id;
       renderFindings();
       if (scrollList) findings.querySelector(`[data-finding-id="${CSS.escape(item.id)}"]`)?.scrollIntoView({ block: "nearest" });
@@ -1683,6 +1795,8 @@
       report_mapping_missing: "报告中没有对应行",
       TABLE_CONTENT_NOT_EXTRACTED: "表格没有被可靠地逐格提取，暂不能确认每一格内容一致",
       TEXT_REVIEW_REQUIRED: "条款文字存在差异，需要确认是排版、重复还是接受标准被改写",
+      TEXT_WORDING_MISMATCH: "条款文字与 PTR 有个别字不同（多字、少字或错字）",
+      UNIT_LABEL_WITHOUT_PRINTED_VALUE: "“单位：X”对应的数值不在正文中（多在表格或展开的条款里），需要人工确认",
       REFERENCE_BINDING_UNRESOLVED: "表格或附录引用无法唯一对应，需要人工确认引用内容",
       AMBIGUOUS_REPORT_MAPPING: "PTR 条款无法唯一对应到 Report 条款",
       PTR_OCR_CANDIDATES_MANUAL: "PTR 文字来自识别结果，需要人工查看原文",
@@ -1894,13 +2008,22 @@
       return { status: "different", left_segments: leftSegments, right_segments: rightSegments };
     }
     function toLoc(location, role, label) {
-      if (!location) return null;
+      if (location == null) return null;
+      // Preserve explicit identity claims before binding. Discarding them here
+      // would bypass the card-level checks and also affect the old detail view.
+      const expectedRole = role || (!Object.hasOwn(location, 'role') && !Object.hasOwn(location, 'document_role') ? 'report' : null);
+      const bound = bindEvidenceLocation(location, activeDocuments,
+        activeRun?.id || 'pending', label || location.source || '证据', expectedRole);
+      if (!bound.location) return {unlocated: true, reason: bound.reason, raw: location};
       const bbox = location.bbox || location.rect;
-      const page = Number(location.pdf_page);
-      if (!Number.isInteger(page) || page < 1 || !validBbox(bbox)) return null;
-      return { role: role || location.document_role || location.role || "report", pdf_page: page, bbox: bbox.map(Number), semantic_role: label || location.source || "证据" };
+      if (!validBbox(bbox)) return {unlocated: true, reason: 'invalid_bbox', raw: location};
+      const page = bound.location.pdf_page;
+      return {...bound.location, pdf_page: page, bbox: bbox.map(Number), semantic_role: label || location.source || '证据'};
     }
-    function side(text, loc, title = "", diff = null) { return { text: textOf(text), loc, title, diff: Array.isArray(diff) ? diff : null }; }
+    function side(text, loc, title = "", diff = null) {
+      return {text: textOf(text), loc: loc?.unlocated ? null : loc, title, diff: Array.isArray(diff) ? diff : null,
+        ...(loc?.unlocated ? {unlocated_evidence: {reason: loc.reason, raw: loc.raw}} : {})};
+    }
     function reasonText(item) {
       if (!item) return "";
       if (item.message) return item.message;
@@ -1962,6 +2085,14 @@
             ? `Report 展开的 PTR 表格行中，“${names}”与 PTR 单元格不同（其余 ${ok} 格一致）。`
             : `Report 展开的 PTR 表格行已逐格核对，${ok} 格一致；“${names}”需要人工确认。`,
           action: "请只看下方标红/待确认的单元格，对照 PTR 表格原文判断；其余单元格已自动核对一致。"
+        };
+      }
+      if (code === "TEXT_WORDING_MISMATCH") {
+        const diffs = ((comparison.text_comparison || {}).wording_differences || [])
+          .map((d) => `PTR“${d.ptr || "（无）"}”→ 报告“${d.report || "（无）"}”`).join("；");
+        return {
+          reason: `Report 正文与 PTR 有个别字不同${diffs ? "：" + diffs : ""}。数字、单位和引用一致。`,
+          action: "报告应逐字照抄 PTR 要求，请按 PTR 原文修改报告。"
         };
       }
       if (code === "TEXT_REVIEW_REQUIRED") {
@@ -2095,8 +2226,8 @@
           const odd = c.conclusion_conflict ? (pages.find(p => p.conclusion !== c.expected) || pages[0]) : null;
           const resultLoc = c.result_location ? toLoc(c.result_location, "report", "检验结果") : null;
           const samePage = !odd && resultLoc ? pages.find(p => p.pdf_page === resultLoc.pdf_page) : null;
-          const conclusionLoc = odd ? toLoc({ pdf_page: odd.pdf_page, rect: odd.rect }, "report", "单项结论")
-            : samePage ? toLoc({ pdf_page: samePage.pdf_page, rect: samePage.rect }, "report", "单项结论")
+          const conclusionLoc = odd ? toLoc(odd, "report", "单项结论")
+            : samePage ? toLoc(samePage, "report", "单项结论")
             : toLoc(c.location, "report", "单项结论");
           const bText = c.conclusion_conflict && pages.length
             ? pages.map(p => `${pageName(p)}写“${p.conclusion}”`).join("，") + `；应统一为“${c.expected}”`
@@ -2108,10 +2239,25 @@
             problem: c.status === "pass" ? "" : `序号${c.sequence}（${[c.project, c.clause].filter(Boolean).join(" ")}）：${c.message || bText}` });
         });
       } else if (id === "REPORT-R07-B" && Array.isArray(d.comparisons)) {
-        d.comparisons.forEach(c => rows.push({ label: `序号 ${c.sequence ?? ""}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+        d.comparisons.forEach(c => {
+          const conditions = (c.requirement_binding || c.angular_binding)?.unresolved_conditions || [];
+          const standard = c.criterion?.source || clip(c.requirement, 80);
+          const conditionText = condition => `附加条件（${condition.pdf_page ? `PDF 第 ${condition.pdf_page} 页` : "未定位"}）：${textOf(condition.text || condition.unresolved_text || condition.projection || "原文缺失，需人工确认").trim()}`;
+          const first = conditions[0];
+          rows.push({ label: `序号 ${c.sequence ?? ""}`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
           a: side(c.result, toLoc({ pdf_page: c.pdf_page, rect: c.result_rect }, "report", "检验结果")),
-          b: side(c.criterion?.source || clip(c.requirement, 80), null, "接受标准"),
-          status: c.status, note: reasonText(c) }));
+          b: side(first ? `${standard}\n${conditionText(first)}` : standard,
+            first ? toLoc(first, "report", "附加条件原文") : null, first ? "接受标准及附加条件" : "接受标准"),
+          status: c.status, note: c.requirement_binding && c.status === "pass"
+            ? "仅本行数值满足限值；父条款其他要求仍按各项结果判定" : reasonText(c),
+          ...(first ? {problem: `序号${c.sequence ?? ""}：实测${c.result}；接受标准${standard}；${conditionText(first)}；${reasonText(c)}`} : {}) });
+          conditions.slice(1).forEach(condition => rows.push({
+            label: `序号 ${c.sequence ?? ""} · 附加条件`, sub: [c.project, c.clause].filter(Boolean).join(" · "),
+            a: side(c.result, toLoc({ pdf_page: c.pdf_page, rect: c.result_rect }, "report", "检验结果")),
+            b: side(conditionText(condition), toLoc(condition, "report", "附加条件原文"), "附加条件"),
+            status: c.status, note: reasonText(c), problem: `序号${c.sequence ?? ""}：${conditionText(condition)}；${reasonText(c)}`
+          }));
+        });
       } else if (id === "REPORT-R08" && Array.isArray(d.items)) {
         const DEFECT_LABEL = { conclusion_cell_not_covering_item: "单项结论未覆盖整个序号", numeric_result_without_unit: "接受标准缺少“单位：”" };
         d.items.forEach(c => {
@@ -2213,7 +2359,7 @@
       CELL_PTR_CONTINUES: "PTR 单元格在页尾断开，续行没有提取到，请对照 PTR 下一页",
       TEST_POINT_IN_PTR: "测试点数值在 PTR 条款或表格中有依据",
       TEST_POINT_NOT_IN_PTR: "测试点中的数值在 PTR 中找不到",
-      CELL_NUMERIC_EQUAL: "数值相同（仅小数位写法不同，如 0.70 与 0.7）",
+      CELL_NUMBER_WRITTEN_DIFFERENTLY: "数值写法与 PTR 不同（如 PTR 0.70、报告 0.7）",
       TABLE_ROW_MISSING_IN_REPORT: "PTR 表格有这一行，Report 表格中没有",
       TABLE_ROW_NOT_IN_PTR: "Report 表格多出这一行，PTR 表格中没有",
       ROW_CELLS_IN_PTR_TEXT: "PTR 未按表格排版，这一行的每一格都在 PTR 原文中找到",
@@ -2229,9 +2375,17 @@
       const rows = [];
       const clause = d.clause_id || c.clause_id || String(finding.id || "").match(/clause:([^@]+)/)?.[1] || "";
       if (clause && !d.clause_shift) {
-        rows.push({ label: "条款对应", sub: "条款编号",
-          a: side(clause, reportLoc, "Report 条款"), b: side(clause, ptrLoc, "PTR 条款"),
-          status: "pass", note: "已按条款编号建立对应关系" });
+        rows.push({ label: "条款候选对应", sub: "条款号与报告结果序号分开记录",
+          a: side((d.mapping?.report_clause_ids || [clause]).join('、'), reportLoc, "Report 条款"), b: side(clause, ptrLoc, "PTR 条款"),
+          status: d.mapping?.resolution === 'ambiguous_ptr' ? 'manual' : 'info', note: `${matchingBasis(finding)} 编号候选找到不代表内容合格，不计入通过数。` });
+      }
+      if (d.mapping?.resolution === 'ambiguous_ptr') {
+        (d.ptr_candidates || []).forEach((candidate, index) => {
+          const loc = toLoc(candidate.evidence?.[0], 'ptr', `PTR 候选 ${index + 1}`);
+          rows.push({label:`PTR 同号候选 ${index + 1}`, sub:candidate.node_id || '',
+            a:side('尚未选择唯一对应来源', null, 'Report'), b:side(candidate.text || candidate.title || '', loc, 'PTR 原文'),
+            status:'manual', note:'相同条款号出现多次，全部保留；不能自动取首个或末个。'});
+        });
       }
       const shift = d.clause_shift;
       if (shift) {
@@ -2290,7 +2444,9 @@
       const expansion = table?.row_expansion;
       if (expansion) {
         const cells = Array.isArray(expansion.cells) ? expansion.cells : [];
-        const ptrTableLoc = toLoc({ ...(expansion.ptr_location || {}), role: "ptr" }, "ptr", "PTR 表格") || ptrLoc;
+        // Validate the actual source before any copying or role defaults. A
+        // declared but invalid source must not fall back to a different one.
+        const ptrTableLoc = expansion.ptr_location == null ? ptrLoc : toLoc(expansion.ptr_location, "ptr", "PTR 表格");
         const rowName = String(expansion.row_label || "").replace(/\s+/g, "");
         const tally = cells.reduce((acc, item) => { acc[item.status] = (acc[item.status] || 0) + 1; return acc; }, {});
         const byRowName = expansion.rule === "TABLE_ROW_KEYS";
@@ -2495,6 +2651,7 @@
     }
 
     const rowElements = new WeakMap();
+    const rowDisclosures = new WeakMap();
     async function refreshPageChips() {
       const chips = [...document.querySelectorAll("#check-rows .loc-chip[data-pdf-page]")];
       for (const chip of chips) {
@@ -2506,8 +2663,9 @@
       }
     }
 
-    function showCheckRow(row) {
+    function showCheckRow(row, { focus = true } = {}) {
       if (!row) return;
+      rowDisclosures.get(row)?.();
       const tr = rowElements.get(row);
       if (tr) {
         document.getElementById("check-details").open = true;
@@ -2516,12 +2674,43 @@
         setTimeout(() => tr.classList.remove("is-flash"), 1300);
         tr.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
-      focusCheckRow(row);
+      if (focus) focusCheckRow(row);
+    }
+
+    function emptyOcrDetailRows(finding, rows) {
+      // Presentation only: never infer that an empty extraction proves the
+      // original has no references/tables, and never change checkRowsFor.
+      if (finding?.status !== "manual" || ptrReasonCode(finding) !== "PTR_OCR_CANDIDATES_MANUAL") return [];
+      const d = finding.details || {};
+      const c = d.comparison || d;
+      if (d.clause_shift || c.clause_shift) return [];
+      const text = d.text_comparison || c.text_comparison;
+      if (typeof text?.ptr_source !== "string" || typeof text?.report_source !== "string" ||
+          !text.ptr_source.trim() || !text.report_source.trim()) return [];
+      if (["text_comparison", "numeric_comparison", "unit_comparison", "table_comparison", "reference_comparison"]
+        .some(name => (d[name] || c[name])?.status !== "matched")) return [];
+      const ref = d.reference_comparison || c.reference_comparison;
+      const table = d.table_comparison || c.table_comparison;
+      const empty = value => Array.isArray(value) && value.length === 0;
+      if (ref.binding_status !== "matched" || ref.binding_reason_code ||
+          ![ref.ptr?.standards, ref.ptr?.tables, ref.report?.standards, ref.report?.tables,
+            ref.ptr_bindings, ref.report_bindings].every(empty)) return [];
+      if (table.ptr_tables !== 0 || table.report_tables !== 0 || table.row_expansion || table.reason_code) return [];
+      // A missing/conflicting location or any displayed issue keeps the full
+      // detail view. Only the two explicitly empty matched dimensions fold.
+      if (rows.some(row => !["pass", "info"].includes(normStatus(row.status)) ||
+        row.a?.unlocated_evidence || row.b?.unlocated_evidence)) return [];
+      const selected = rows.filter(row => row.label === "引用" || row.label === "表格");
+      if (selected.length !== 2 || new Set(selected.map(row => row.label)).size !== 2) return [];
+      return selected.every(row => normStatus(row.status) === "pass" &&
+        row.a?.loc?.role === "report" && row.b?.loc?.role === "ptr") ? selected : [];
     }
 
     function renderCheckDetails(finding) {
       const box = document.getElementById("check-details");
       const body = document.getElementById("check-rows");
+      const compact = document.getElementById("ocr-empty-summary");
+      compact.replaceChildren(); compact.hidden = true;
       const meta = MODE_META[activeMode] || MODE_META.self;
       const rows = [...checkRowsFor(finding)];
       body.replaceChildren();
@@ -2585,6 +2774,25 @@
         rowElements.set(row, current);
         body.append(current);
       });
+      const emptyRows = emptyOcrDetailRows(finding, rows);
+      if (emptyRows.length) {
+        compact.hidden = false;
+        const note = document.createElement("span");
+        note.textContent = "2条空维度说明合并显示：提取内容未列出引用或表格，不代表原文没有。本条仍需人工核对原页。";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        let expanded = false;
+        const setExpanded = value => {
+          expanded = value;
+          emptyRows.forEach(row => { rowElements.get(row).hidden = !value; });
+          toggle.setAttribute("aria-expanded", String(value));
+          toggle.textContent = value ? "收起2条原始说明" : "展开2条原始说明";
+        };
+        toggle.addEventListener("click", () => setExpanded(!expanded));
+        emptyRows.forEach(row => rowDisclosures.set(row, () => setExpanded(true)));
+        setExpanded(false);
+        compact.append(note, toggle);
+      }
       box.hidden = false;
     }
 
@@ -2604,6 +2812,9 @@
 
     async function showFindingComparison(finding) {
       if (!finding || !activeRun) return;
+      comparisonCard.dataset.findingId = finding.id;
+      delete comparisonCard.dataset.entryId;
+      const status = finding.status;
       const token = ++comparisonToken;
       const meta = MODE_META[activeMode] || MODE_META.self;
       const reportDocument = sourceDocument("report");
@@ -2618,7 +2829,7 @@
         const top = comparisonCard.getBoundingClientRect().top;
         if (top > window.innerHeight * 0.6 || top < -40) comparisonCard.scrollIntoView({ behavior: "smooth", block: "start" });
       });
-      comparisonModeLabel.textContent = meta.label;
+      comparisonModeLabel.textContent = hasMatchingBasis(finding) ? `${meta.label} · ${matchingBasis(finding)}` : meta.label;
       renderComparisonSources(activeMode);
       reportPane.root.setAttribute("aria-label", "Report · 检验报告 PDF");
       configureComparisonPaneLabels(meta);
@@ -2753,6 +2964,7 @@
       }
       setMessage(text) { this.message.textContent = text; this.message.classList.toggle("visible", Boolean(text)); }
       async loadDocument(documentInfo, fallbackLabel) {
+        this.root.dataset.documentId = documentInfo?.id || '';
         const url = sourceUrl(documentInfo);
         if (!url) { this.setMessage(`${fallbackLabel} 文档不可用。`); return; }
         const label = documentInfo.original_filename || documentInfo.name || fallbackLabel;
@@ -2782,7 +2994,8 @@
       }
       async setFinding(status, locations) {
         this.root.dataset.findingStatus = status;
-        this.evidenceLocations = locations || [];
+        // Display deduplication only. Finding evidence and exported raw IDs remain intact.
+        this.evidenceLocations = uniqueDisplayLocations(locations);
         this.selectedEvidenceIndex = 0;
         this.renderEvidencePicker();
         await this.goToPage(this.evidenceLocations[0]?.pdf_page || this.pageNumber || 1, true);
@@ -2852,6 +3065,11 @@
           const [left, top, right, bottom] = location.bbox;
           const transformed = viewport.convertToViewportRectangle([left, pageView[3] - bottom, right, pageView[3] - top]);
           const highlight = document.createElement("div"); highlight.className = `evidence-highlight${index === this.selectedEvidenceIndex ? "" : " secondary"}`;
+          highlight.dataset.documentId = this.root.dataset.documentId;
+          highlight.dataset.pdfPage = String(location.pdf_page);
+          highlight.dataset.bbox = JSON.stringify(location.bbox);
+          highlight.dataset.role = location.role || '';
+          highlight.dataset.which = location.which || '';
           highlight.style.left = `${Math.min(transformed[0], transformed[2])}px`; highlight.style.top = `${Math.min(transformed[1], transformed[3])}px`;
           highlight.style.width = `${Math.max(8, Math.abs(transformed[2] - transformed[0]))}px`; highlight.style.height = `${Math.max(8, Math.abs(transformed[3] - transformed[1]))}px`;
           highlight.title = `第 ${location.pdf_page} 页证据位置`; this.highlightLayer.append(highlight);
@@ -2859,6 +3077,7 @@
       }
       async renderPage({ focusHighlight = false, preserveScroll = false } = {}) {
         if (!this.pdfDocument) return;
+        this.root.dataset.renderedPage = '';
         const token = ++this.renderToken; this.renderTask?.cancel();
         const scrollRatioX = preserveScroll && this.viewportElement.scrollWidth > this.viewportElement.clientWidth
           ? this.viewportElement.scrollLeft / (this.viewportElement.scrollWidth - this.viewportElement.clientWidth)
@@ -2883,6 +3102,7 @@
           this.renderTask = pdfPage.render({ canvasContext: context, viewport, transform: deviceScale === 1 ? null : [deviceScale, 0, 0, deviceScale, 0, 0] });
           await this.renderTask.promise; if (token !== this.renderToken) return;
           this.renderTask = null; this.addHighlights(pdfPage, viewport); this.setMessage("");
+          this.root.dataset.renderedPage = String(pdfPage.pageNumber);
           if (focusHighlight) {
             const highlight = this.highlightLayer.querySelector(".evidence-highlight:not(.secondary)") || this.highlightLayer.querySelector(".evidence-highlight");
             if (highlight) {
@@ -2937,6 +3157,7 @@
     function setStatusText(text) { statusMessage.textContent = text; }
 
     async function loadFindings(run, mode) {
+      evidenceOpenToken += 1;
       const payload = await apiJson(`/api/v1/runs/${encodeURIComponent(run.id)}/findings`);
       activeRun = run;
       activeMode = mode;

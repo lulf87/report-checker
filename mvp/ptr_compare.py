@@ -362,6 +362,18 @@ def _numeric_source_text(value: Any, *, role: str | None = None) -> str:
     text = re.sub(r"(?<=\d)厘米", "cm", text)
     text = re.sub(r"(?<=\d)米", "m", text)
     text = re.sub(r"(?<=\d)秒", "s", text)
+    # A unit prefix split from its base unit by a space or a line break
+    # (``5M Ω``, ``10μ⏎g/g``) is one unit.
+    text = re.sub(r"(?<=\d)(\s?[kMGmμ])\s(?=Ω)", r"\1", text)
+    text = re.sub(r"(?<=\d)(\s?μ)\s(?=[A-Za-z])", r"\1", text)
+    # Scientific notation whose superscript exponent lost its formatting:
+    # ``3.6×10³ Pa`` is extracted as ``3.6x103 Pa``. Only a single-digit
+    # exponent directly after ``x10`` is read this way.
+    def scientific(match: re.Match[str]) -> str:
+        value = Decimal(match.group(1)) * (Decimal(10) ** int(match.group(2)))
+        return _decimal_text(value) + " "
+
+    text = re.sub(r"(?<![\d.])(\d+(?:\.\d+)?)\s?x\s?10([1-9])(?!\d)\s?", scientific, text)
     text = re.sub(r"(?<!\d)(?:470066|470067)(?=(?:左路|右路|:))", "", text)
     text = STANDARD_RE.sub("", text)
     text = TABLE_RE.sub("", text)
@@ -707,6 +719,7 @@ SAFE_EQUIVALENCE_RULES = {
     "REPORT_REPEATED_TEXT": "Report 重复写了同一要求",
     "REPORT_EXPANDED_REFERENCE": "Report 展开写出了所引用的 PTR 条款原文（已与 PTR 原条款核对一致）",
     "REPORT_TABLE_AS_TEXT": "Report 把 PTR 表格逐格写成了文字（内容与 PTR 表格完全相同）",
+    "REPORT_PARENT_TITLE": "Report 在字母分项前写了上级条款的标题（与 PTR 上级条款标题相同）",
 }
 
 _FIGURE_CAPTION_RE = re.compile(r"^\s*图\s*\d+(?:[.\-－]\d+)*(?:\s|[㐀-鿿A-Za-z(（]|$)")
@@ -913,6 +926,30 @@ def safe_text_equivalence(
 ) -> list[str] | None:
     """Return the applied rule ids when the texts are equivalent, else ``None``."""
 
+    return _safe_text_equivalence(
+        ptr_source,
+        report_source,
+        ptr_headers=ptr_headers,
+        ptr_text_by_clause=ptr_text_by_clause,
+        ptr_table_texts=ptr_table_texts,
+    )[0]
+
+
+def _safe_text_equivalence(
+    ptr_source: Any,
+    report_source: Any,
+    *,
+    ptr_headers: set[str] | None = None,
+    ptr_text_by_clause: Mapping[str, str] | None = None,
+    ptr_table_texts: Sequence[Any] | None = None,
+) -> tuple[list[str] | None, bool]:
+    """Like :func:`safe_text_equivalence`, plus whether *every* PTR table was
+    verified as Report text (``REPORT_TABLE_AS_TEXT`` consumed all of them).
+    """
+
+    # Wording differences are never equivalent, even when the meaning is the
+    # same (“动作时候不得”/“动作时不得”, a dropped 等 or 应): the Report must
+    # copy the PTR requirement word for word.
     applied: list[str] = []
     ptr_lines = str(ptr_source or "").splitlines()
     report_body, _ = _split_report_auxiliary_lines(report_source)
@@ -948,36 +985,44 @@ def safe_text_equivalence(
         applied.append("REPORT_RESULT_LABELS")
     report_text = _text_for_comparison("\n".join(report_lines), role="report")
     if ptr_text == report_text:
-        return applied or None
+        return (applied or None), False
     ptr_plain = _strip_punctuation(ptr_text)
     report_plain = _strip_punctuation(report_text)
     if ptr_plain == report_plain:
-        return [*applied, "PUNCTUATION_ONLY"]
+        return [*applied, "PUNCTUATION_ONLY"], False
     reduced, extra = _reduce_report_repetitions(report_text, ptr_plain, ptr_text_by_clause or {})
     if extra and reduced == ptr_plain:
-        return [*applied, *extra]
+        return [*applied, *extra], False
     # The Report may write an un-numbered PTR table out as text, cell by cell.
     tables = [table for table in (ptr_table_texts or []) if table]
     for candidate, rules in ((report_plain, []), (reduced, extra)):
         rest = candidate
-        removed = False
+        removed = 0
         for table in tables:
             table_text = "".join(table) if isinstance(table, (list, tuple)) else table
             if len(table_text) >= 6 and table_text in rest:
                 rest = rest.replace(table_text, "")
-                removed = True
+                removed += 1
         if removed and rest == ptr_plain:
-            return [*applied, *rules, "REPORT_TABLE_AS_TEXT"]
+            return [*applied, *rules, "REPORT_TABLE_AS_TEXT"], removed == len(tables)
         # Same content, but a wrapped cell is read in a different order:
         # compare row by row (each PTR row must be found, as the same
         # characters, in the same row order; a header row repeated on the
         # next page is skipped).
         if candidate.startswith(ptr_plain) and _rows_follow(candidate[len(ptr_plain):], tables):
-            return [*applied, *rules, "REPORT_TABLE_AS_TEXT"]
-    return None
+            return [*applied, *rules, "REPORT_TABLE_AS_TEXT"], _rows_follow(
+                candidate[len(ptr_plain):], tables, require_all=True
+            )
+    return None, False
 
 
-def _rows_follow(text: str, tables: Sequence[Any]) -> bool:
+def _rows_follow(text: str, tables: Sequence[Any], *, require_all: bool = False) -> bool:
+    """Whether ``text`` is the PTR table rows, row by row.
+
+    By default a table whose rows are not found is skipped; with
+    ``require_all`` every table must be found (all PTR tables verified).
+    """
+
     from collections import Counter
 
     position = 0
@@ -997,6 +1042,8 @@ def _rows_follow(text: str, tables: Sequence[Any]) -> bool:
             seen.add(row)
             added.append(row)
         if not ok:
+            if require_all:
+                return False
             position = start
             seen.difference_update(added)
     return position > 0 and position == len(text)
@@ -1164,6 +1211,14 @@ def _parse_clause_lines(
             stopped = True
             continue
         match = CLAUSE_LINE_RE.match(line)
+        if match is None and role == "ptr" and extraction_method.startswith("ocr:"):
+            # OCR often removes the space before a model/shape letter:
+            # '2.1.1.11.1D弯'. Require a deep 2.x identifier and Chinese body
+            # after the Latin prefix; never rewrite the original evidence.
+            match = re.match(
+                r"^\s*(?P<clause>2(?:\s*\.\s*\d+){2,8})"
+                r"(?P<body>[A-Za-z][A-Za-z-]{0,15}[\u3400-\u9fff].*)$", line,
+            )
         candidate: tuple[str, str] | None = None
         if match:
             clause_id = _canonical_clause_id(match.group("clause"))
@@ -1533,10 +1588,17 @@ def _table_comparison(ptr: Mapping[str, Any], report: Mapping[str, Any]) -> dict
     """Compare only physically extracted table matrices; otherwise stay manual."""
 
     references = (ptr.get("references") or {}).get("tables", []) or (report.get("references") or {}).get("tables", [])
-    if not references:
-        return {"status": MATCHED, "reason_code": None, "ptr_tables": 0, "report_tables": 0}
     ptr_tables = list(ptr.get("table_rows") or [])
     report_tables = list(report.get("table_rows") or [])
+    if not references:
+        if ptr_tables:
+            # An inline grid is still a requirement when it has no numbered
+            # caption. The caption-based comparators below cannot prove its
+            # parameter/model binding. Keep the actual observations for
+            # review instead of silently treating an unexamined table as 0.
+            return {"status": MANUAL, "reason_code": "UNLABELLED_TABLE_BINDING_UNVERIFIED",
+                    "ptr_tables": len(ptr_tables), "report_tables": len(report_tables)}
+        return {"status": MATCHED, "reason_code": None, "ptr_tables": 0, "report_tables": 0}
     ptr_fingerprints = {_table_fingerprint(table.get("rows")) for table in ptr_tables}
     ptr_semantic_fingerprints = {_semantic_table_fingerprint(table.get("rows")) for table in ptr_tables}
     grouped_report: dict[str, list[list[str]]] = defaultdict(list)
@@ -1762,6 +1824,70 @@ def _entry_covers_scope(entry: Mapping[str, Any], scope_id: str) -> bool:
     return bool(clause_id and _is_descendant(clause_id, scope_id))
 
 
+_HAN_ONLY_RE = re.compile(r"^[\u4e00-\u9fff]*$")
+_BRACKETS_RE = re.compile(r"[()（）\[\]【】]")
+WORDING_DIFF_MAX_CHARS = 4
+
+
+def wording_differences(ptr_text: str, report_text: str) -> list[dict[str, str]] | None:
+    """Return the differences when the two texts differ only by a few Chinese
+    characters (“裂纹等缺陷”/“裂纹缺陷”, “动作时不得”/“动作时候不得”).
+
+    Every differing span, punctuation and brackets removed, must be Chinese characters only
+    and at most ``WORDING_DIFF_MAX_CHARS`` long on each side. Differences that
+    involve digits, letters or symbols (values, labels such as “X方向”), or
+    longer spans (moved or added sentences, notes) return ``None`` and stay
+    for manual review.
+    """
+
+    matcher = SequenceMatcher(None, ptr_text, report_text, autojunk=False)
+    found: list[dict[str, str]] = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            continue
+        ptr_part = _BRACKETS_RE.sub("", _strip_punctuation(ptr_text[i1:i2]))
+        report_part = _BRACKETS_RE.sub("", _strip_punctuation(report_text[j1:j2]))
+        if not ptr_part and not report_part:
+            continue
+        if not (_HAN_ONLY_RE.match(ptr_part) and _HAN_ONLY_RE.match(report_part)):
+            return None
+        if len(ptr_part) > WORDING_DIFF_MAX_CHARS or len(report_part) > WORDING_DIFF_MAX_CHARS:
+            return None
+        found.append({"ptr": ptr_part, "report": report_part})
+    return found or None
+
+
+def _report_parent_title_equivalence(
+    ptr: Mapping[str, Any],
+    ptr_text: str,
+    report_text: str,
+    context: Mapping[str, Any],
+) -> list[str] | None:
+    """A lettered item printed as its own Report row (clause cell ``2.1.13⏎b)``)
+    carries the item title of its parent (``耐腐蚀性能``) and sometimes the
+    letter marker again. Accept it only when that title is exactly the PTR
+    parent clause's title and the rest equals the PTR item text.
+    """
+
+    lettered = re.fullmatch(r"(.+\d)([a-z])", str(ptr.get("clause_id") or ""))
+    if not lettered:
+        return None
+    parent_title = _strip_punctuation(normalize_comparison_text(
+        (context.get("ptr_title_by_clause") or {}).get(lettered.group(1), "")
+    ))
+    ptr_plain = _strip_punctuation(ptr_text)
+    report_plain = _strip_punctuation(report_text)
+    if len(parent_title) < 2 or ptr_plain.startswith(parent_title) or not report_plain.startswith(parent_title):
+        return None
+    rest = re.sub(r"^" + lettered.group(2) + r"[)）]", "", report_plain[len(parent_title):])
+    if rest != ptr_plain:
+        return None
+    rules = ["REPORT_PARENT_TITLE"]
+    if report_text.replace(" ", "") != (parent_title + ptr_text).replace(" ", ""):
+        rules.append("PUNCTUATION_ONLY")
+    return rules
+
+
 def _ocr_derived(node: Mapping[str, Any]) -> bool:
     """Return true when any evidence for a node came from local OCR."""
 
@@ -1829,6 +1955,7 @@ def _unit_labels_match_numeric(
     if not raw_units:
         return True, None
     reasons: list[str] = []
+    unexplained = False
     for label in labels:
         matches: list[str] = []
         for raw_unit in raw_units:
@@ -1841,8 +1968,15 @@ def _unit_labels_match_numeric(
                 _, reason = _unit_equivalent(label, raw_unit, peak_context=peak_context)
                 if reason == "UNIT_SCALE_MISMATCH":
                     return False, reason
-            return False, "UNIT_LABEL_CONTRADICTS_NUMERIC"
+            unexplained = True
+            continue
         reasons.extend(matches)
+    if unexplained:
+        # Other labels of the same cell match the printed values, so this
+        # label belongs to values not printed in the text (a table or an
+        # expanded clause, e.g. ``单位：°`` for an angle table): it cannot be
+        # verified here, but it is not a contradiction either.
+        return False, "UNIT_LABEL_WITHOUT_PRINTED_VALUE" if reasons else "UNIT_LABEL_CONTRADICTS_NUMERIC"
     if "UNIT_PEAK_SUFFIX_EQUIVALENT" in reasons:
         return True, "UNIT_PEAK_SUFFIX_EQUIVALENT"
     if "UNIT_SI_EQUIVALENT" in reasons:
@@ -1879,9 +2013,12 @@ def _compare_text(
         text_status = MISMATCH
         reason = "TEXT_MISMATCH"
     equivalence_rules: list[str] = []
+    wording: list[dict[str, str]] | None = None
+    # Every physical PTR table was found, row by row, as Report text.
+    tables_verified_as_text = False
     if text_status == MISMATCH:
         context = context or {}
-        rules = safe_text_equivalence(
+        rules, tables_verified_as_text = _safe_text_equivalence(
             ptr.get("text"),
             report.get("text"),
             ptr_headers=context.get("ptr_headers"),
@@ -1895,10 +2032,20 @@ def _compare_text(
                 if table.get("binding") == "physical"
             ],
         )
+        tables_verified_as_text = bool(
+            rules
+            and "REPORT_TABLE_AS_TEXT" in rules
+            and tables_verified_as_text
+            and all(table.get("binding") == "physical" for table in ptr.get("table_rows") or [])
+        )
+        if not rules:
+            rules = _report_parent_title_equivalence(ptr, ptr_text, report_text, context)
         if rules:
             text_status = MATCHED
             reason = "SAFE_TEXT_EQUIVALENCE"
             equivalence_rules = rules
+        elif not (_ocr_derived(ptr) or _ocr_derived(report)):
+            wording = wording_differences(ptr_text, report_text)
     ptr_numbers = list(
         ptr.get("numeric_signature")
         or _numeric_signature(ptr.get("text"), role=str(ptr.get("role") or ""))
@@ -1908,6 +2055,20 @@ def _compare_text(
         or _numeric_signature(report.get("text"), role=str(report.get("role") or ""))
     )
     numeric_status = MATCHED if _numeric_facts_equal(ptr_numbers, report_numbers) else MISMATCH
+    if numeric_status == MISMATCH and tables_verified_as_text:
+        # Every PTR table was found cell by cell in the Report text, so its
+        # values are printed there too (in Report order). The facts must be
+        # the same set: PTR text plus PTR table cells against the Report.
+        table_numbers = _numeric_signature(
+            "\n".join(
+                " ".join(str(cell or "") for cell in row)
+                for table in ptr.get("table_rows") or []
+                for row in table.get("rows") or []
+            ),
+            role="ptr",
+        )
+        if sorted(map(tuple, ptr_numbers + table_numbers)) == sorted(map(tuple, report_numbers)):
+            numeric_status = MATCHED
     ptr_refs = ptr.get("references") or _references(ptr.get("text"))
     report_refs = report.get("references") or _references(report.get("text"))
     reference_status = MATCHED if ptr_refs == report_refs else MISMATCH
@@ -1959,7 +2120,13 @@ def _compare_text(
     report_label_ok, report_label_reason = _unit_labels_match_numeric(
         report_units, sorted(report_raw_units), peak_context=peak_context
     )
-    if not ptr_label_ok or not report_label_ok:
+    label_reasons = {
+        reason for ok, reason in ((ptr_label_ok, ptr_label_reason), (report_label_ok, report_label_reason)) if not ok
+    }
+    if label_reasons == {"UNIT_LABEL_WITHOUT_PRINTED_VALUE"}:
+        unit_status = MANUAL
+        unit_reason = "UNIT_LABEL_WITHOUT_PRINTED_VALUE"
+    elif not ptr_label_ok or not report_label_ok:
         unit_status = MISMATCH
         unit_reason = ptr_label_reason or report_label_reason or "UNIT_LABEL_CONTRADICTS_NUMERIC"
     elif ptr_units and report_units:
@@ -2007,80 +2174,21 @@ def _compare_text(
         unit_status = MATCHED
         unit_reason = ptr_label_reason or report_label_reason or "NO_CONTRADICTORY_UNIT_LABEL"
     table_comparison = _table_comparison(ptr, report)
-    if row_expansion is None and table_comparison["status"] == MANUAL:
+    if (row_expansion is None and table_comparison["status"] == MANUAL
+            and table_comparison.get("reason_code") != "UNLABELLED_TABLE_BINDING_UNVERIFIED"):
         # The Report may expand the referenced PTR table row as labelled
         # values.  Verify that expansion cell by cell, then compare the rest
         # of the Report text with the ordinary rules.
-        from mvp.ptr_table_rows import compare_row_expansion, compare_table_cells, report_text_without_expansion
+        from mvp.ptr_table_rows import compare_row_expansion, compare_table_cells
 
         expansion = compare_row_expansion(ptr, report)
         if expansion is None:
             # Both sides print the table: compare it by row name.
             expansion = compare_table_cells(ptr, report, (context or {}).get("ptr_headers"))
         if expansion is not None:
-            reduced = {
-                key: value
-                for key, value in report.items()
-                if key not in {
-                    "normalized_text", "numeric_signature", "raw_numeric_signature",
-                    "unit_labels", "auxiliary_lines", "table_rows",
-                }
-            }
-            reduced["text"] = report_text_without_expansion(report, expansion)
-            ptr_for_text = ptr
-            if expansion.get("rule") == "TABLE_ROW_KEYS" and expansion.get("status") != MISMATCH:
-                # Table content the PTR prints as running text (merged cells)
-                # was verified row by row; leave only the clause sentences,
-                # captions and figure captions for the text/numeric rules.
-                ptr_for_text = {
-                    key: value
-                    for key, value in ptr.items()
-                    if key not in {"normalized_text", "numeric_signature", "raw_numeric_signature", "unit_labels"}
-                }
-                verified = "\n".join(
-                    _strip_punctuation(normalize_comparison_text(str(cell or "")))
-                    for table in report.get("table_rows") or []
-                    for cell in (table.get("matrix_row") or [])
-                )
-                ptr_for_text["text"] = _ptr_text_without_table_lines(
-                    str(ptr.get("text") or ""), (context or {}).get("ptr_headers") or set(), verified
-                )
-            if expansion.get("rule") == "TABLE_ROW_KEYS":
-                # A caption printed inside the Report table (``表8 …``) is a
-                # reference of the Report clause as well.
-                caption_lines = [
-                    str(cell or "").strip().splitlines()[0]
-                    for table in report.get("table_rows") or []
-                    for cell in (table.get("matrix_row") or [])
-                    if re.match(r"\s*表\s*[A-Za-z]?\d", str(cell or ""))
-                ]
-                captions = {
-                    normalize_comparison_text(re.match(r"\s*表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*", line).group(0))
-                    for line in caption_lines
-                }
-                # Table numbers are compared by the reference rule; captions
-                # are not part of the text comparison once the tables match.
-                reduced["text"] = "\n".join(
-                    line for line in str(reduced["text"]).splitlines()
-                    if not re.match(r"\s*表\s*[A-Za-z]?\d", line)
-                )
-                references = dict(report.get("references") or {})
-                references["tables"] = sorted(set(references.get("tables") or []) | captions)
-                reduced["references"] = references
-            result = _compare_text(
-                ptr_for_text, reduced, has_children=has_children, context=context, row_expansion=expansion
+            return _compare_with_table_expansion(
+                ptr, report, expansion, has_children=has_children, context=context
             )
-            result["text_comparison"]["ptr_source"] = str(ptr.get("text") or "")
-            # The diff view shows the Report text *without* the verified
-            # expansion; the expansion itself is listed cell by cell.
-            result["text_comparison"]["report_source"] = str(report.get("text") or "")
-            result["text_comparison"]["report_expansion_text"] = "\n".join(
-                line for index, line in enumerate(
-                    [item for item in str(report.get("text") or "").splitlines() if item.strip()]
-                )
-                if index in set(expansion.get("consumed_report_lines") or [])
-            )
-            return result
     if (
         row_expansion is None
         and table_comparison["status"] == MANUAL
@@ -2114,6 +2222,32 @@ def _compare_text(
             "report_tables": 0,
             "row_expansion": dict(row_expansion),
         }
+    parent_tables_reason: str | None = None
+    if (
+        reason == "REPORT_HEADING_WITH_CHILDREN"
+        and reference_status == MISMATCH
+        and not report_refs.get("standards")
+        and not report_refs.get("tables")
+        and not ptr_refs.get("standards")
+        and ptr_refs.get("tables")
+    ):
+        # The Report prints only the heading of a parent clause whose PTR
+        # text names the tables used by its sub-clauses. The tables are
+        # checked there; a table no sub-clause cites stays for review.
+        clause = str(ptr.get("clause_id") or "")
+        child_tables = {
+            label
+            for other, labels in ((context or {}).get("ptr_tables_by_clause") or {}).items()
+            if other.startswith(clause + ".")
+            for label in labels
+        }
+        if set(ptr_refs.get("tables") or []) <= child_tables:
+            reference_status = MATCHED
+            parent_tables_reason = "PARENT_TABLES_CHECKED_IN_CHILDREN"
+            table_comparison = {**table_comparison, "status": MATCHED, "reason_code": parent_tables_reason}
+        else:
+            reference_status = MANUAL
+            parent_tables_reason = "PARENT_TABLES_NOT_CITED_BY_CHILDREN"
     if numeric_status == MISMATCH and (
         row_expansion is not None
         or not (
@@ -2129,6 +2263,12 @@ def _compare_text(
     elif reference_status == MISMATCH:
         decision = MISMATCH
         decision_reason = "REFERENCE_MISMATCH"
+    elif unit_status == MANUAL:
+        decision = MANUAL
+        decision_reason = unit_reason
+    elif reference_status == MANUAL:
+        decision = MANUAL
+        decision_reason = parent_tables_reason or "REFERENCE_REVIEW_REQUIRED"
     elif binding_status != MATCHED:
         decision = MANUAL
         decision_reason = binding_reason or "REFERENCE_BINDING_UNRESOLVED"
@@ -2136,8 +2276,14 @@ def _compare_text(
         decision = text_status
         decision_reason = reason
         if text_status == MISMATCH:
-            decision = MANUAL
-            decision_reason = "TEXT_REVIEW_REQUIRED"
+            if wording and numeric_status == MATCHED:
+                # A few characters reworded, dropped or mistyped: the Report
+                # must copy the PTR requirement word for word.
+                decision = MISMATCH
+                decision_reason = "TEXT_WORDING_MISMATCH"
+            else:
+                decision = MANUAL
+                decision_reason = "TEXT_REVIEW_REQUIRED"
     if (
         table_comparison["status"] == MANUAL
         and (ptr_refs.get("tables") or report_refs.get("tables"))
@@ -2149,6 +2295,51 @@ def _compare_text(
     if table_comparison["status"] == MISMATCH and decision != MISMATCH:
         decision = MISMATCH
         decision_reason = str(table_comparison.get("reason_code") or "TABLE_CELL_MISMATCH")
+    if (table_comparison.get("reason_code") == "UNLABELLED_TABLE_BINDING_UNVERIFIED"
+            and decision == MATCHED):
+        if tables_verified_as_text:
+            # Exception: the Report writes every PTR table out as text and
+            # each row was found with the same characters, in the same order
+            # (REPORT_TABLE_AS_TEXT).  The content itself is verified.
+            table_comparison = {
+                **table_comparison,
+                "status": MATCHED,
+                "reason_code": "UNLABELLED_TABLE_VERIFIED_AS_TEXT",
+            }
+        else:
+            if row_expansion is None:
+                # Exception: both sides print the table and every row
+                # matches cell by cell by row name (TABLE_ROW_KEYS).  Only a
+                # complete match is accepted; anything else stays manual.
+                from mvp.ptr_table_rows import compare_table_cells
+
+                expansion = compare_table_cells(ptr, report, (context or {}).get("ptr_headers"))
+                # Every cell must be bound by its row name; a Report row only
+                # "found somewhere in the PTR text" (ROW_CELLS_IN_PTR_TEXT)
+                # does not prove the binding of an unlabelled table.
+                if (
+                    expansion is not None
+                    and expansion.get("rule") == "TABLE_ROW_KEYS"
+                    and expansion.get("status") == MATCHED
+                    and expansion.get("cells")
+                    and all(
+                        cell.get("reason_code") == "CELL_EQUAL"
+                        for cell in expansion.get("cells") or []
+                    )
+                ):
+                    verified = _compare_with_table_expansion(
+                        ptr, report, expansion, has_children=has_children, context=context
+                    )
+                    if verified.get("decision") == MATCHED:
+                        verified["table_comparison"] = {
+                            **verified["table_comparison"],
+                            "unlabelled_table": True,
+                        }
+                        return verified
+            # Apply the same result at the comparison and ledger boundaries;
+            # an independent numeric/unit/reference conflict keeps precedence.
+            decision = MANUAL
+            decision_reason = "UNLABELLED_TABLE_BINDING_UNVERIFIED"
     return {
         "title_comparison": {"status": text_status, "reason_code": reason},
         "text_comparison": {
@@ -2161,6 +2352,7 @@ def _compare_text(
             "equivalence_rules": [
                 {"rule": rule, "label": SAFE_EQUIVALENCE_RULES[rule]} for rule in equivalence_rules
             ],
+            "wording_differences": list(wording or []),
             "report_auxiliary_lines": list(
                 report.get("auxiliary_lines")
                 or _split_report_auxiliary_lines(report.get("text"))[1]
@@ -2173,6 +2365,7 @@ def _compare_text(
         },
         "reference_comparison": {
             "status": reference_status,
+            "reason_code": parent_tables_reason,
             "binding_status": binding_status,
             "binding_reason_code": binding_reason,
             "ptr": ptr_refs,
@@ -2202,6 +2395,84 @@ def _compare_text(
     }
 
 
+def _compare_with_table_expansion(
+    ptr: Mapping[str, Any],
+    report: Mapping[str, Any],
+    expansion: Mapping[str, Any],
+    *,
+    has_children: bool,
+    context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Compare a clause whose table was verified cell by cell (``expansion``):
+    the rest of the Report text is compared with the ordinary rules."""
+
+    from mvp.ptr_table_rows import report_text_without_expansion
+
+    reduced = {
+        key: value
+        for key, value in report.items()
+        if key not in {
+            "normalized_text", "numeric_signature", "raw_numeric_signature",
+            "unit_labels", "auxiliary_lines", "table_rows",
+        }
+    }
+    reduced["text"] = report_text_without_expansion(report, expansion)
+    ptr_for_text = ptr
+    if expansion.get("rule") == "TABLE_ROW_KEYS" and expansion.get("status") != MISMATCH:
+        # Table content the PTR prints as running text (merged cells)
+        # was verified row by row; leave only the clause sentences,
+        # captions and figure captions for the text/numeric rules.
+        ptr_for_text = {
+            key: value
+            for key, value in ptr.items()
+            if key not in {"normalized_text", "numeric_signature", "raw_numeric_signature", "unit_labels"}
+        }
+        verified = "\n".join(
+            _strip_punctuation(normalize_comparison_text(str(cell or "")))
+            for table in report.get("table_rows") or []
+            for cell in (table.get("matrix_row") or [])
+        )
+        ptr_for_text["text"] = _ptr_text_without_table_lines(
+            str(ptr.get("text") or ""), (context or {}).get("ptr_headers") or set(), verified
+        )
+    if expansion.get("rule") == "TABLE_ROW_KEYS":
+        # A caption printed inside the Report table (``表8 …``) is a
+        # reference of the Report clause as well.
+        caption_lines = [
+            str(cell or "").strip().splitlines()[0]
+            for table in report.get("table_rows") or []
+            for cell in (table.get("matrix_row") or [])
+            if re.match(r"\s*表\s*[A-Za-z]?\d", str(cell or ""))
+        ]
+        captions = {
+            normalize_comparison_text(re.match(r"\s*表\s*[A-Za-z]?\d+(?:[.\-－]\d+)*", line).group(0))
+            for line in caption_lines
+        }
+        # Table numbers are compared by the reference rule; captions
+        # are not part of the text comparison once the tables match.
+        reduced["text"] = "\n".join(
+            line for line in str(reduced["text"]).splitlines()
+            if not re.match(r"\s*表\s*[A-Za-z]?\d", line)
+        )
+        references = dict(report.get("references") or {})
+        references["tables"] = sorted(set(references.get("tables") or []) | captions)
+        reduced["references"] = references
+    result = _compare_text(
+        ptr_for_text, reduced, has_children=has_children, context=context, row_expansion=expansion
+    )
+    result["text_comparison"]["ptr_source"] = str(ptr.get("text") or "")
+    # The diff view shows the Report text *without* the verified
+    # expansion; the expansion itself is listed cell by cell.
+    result["text_comparison"]["report_source"] = str(report.get("text") or "")
+    result["text_comparison"]["report_expansion_text"] = "\n".join(
+        line for index, line in enumerate(
+            [item for item in str(report.get("text") or "").splitlines() if item.strip()]
+        )
+        if index in set(expansion.get("consumed_report_lines") or [])
+    )
+    return result
+
+
 def _ledger_entry(
     *,
     ptr: Mapping[str, Any] | None,
@@ -2220,6 +2491,16 @@ def _ledger_entry(
         "id": f"comparison:{clause_id}:{identity}",
         "ptr_node_id": str(ptr["node_id"]) if ptr else None,
         "report_item_ids": report_ids,
+        "mapping": {
+            "method": "clause_number_candidates",
+            "ptr_clause_id": str(ptr.get("clause_id")) if ptr else None,
+            "report_clause_ids": list(dict.fromkeys(str(item.get("clause_id")) for item in reports)),
+            "report_sequences": list(dict.fromkeys(item.get("sequence") for item in reports if item.get("sequence") is not None)),
+            "report_candidate_count": len(reports),
+            "ptr_candidate_count": 1 if ptr else 0,
+            "resolution": "unique_candidate" if ptr and len(reports) == 1 else "unresolved",
+            "note": "条款号用于建立候选；正文、数值及引用比较另行判定。",
+        },
         "clause_id": clause_id,
         "scope_decision": scope_decision,
         "scope_reason_code": scope_reason,
@@ -2464,8 +2745,13 @@ def compare_ptr_report(
     report_reference_cycles = _reference_cycle_candidates(report["nodes"])
     ptr_cycle_labels = {label for cycle in ptr_reference_cycles for label in cycle.get("labels", [])}
     report_cycle_labels = {label for cycle in report_reference_cycles for label in cycle.get("labels", [])}
-    ptr_by_clause = {str(node["clause_id"]): node for node in ptr["nodes"]}
-    report_by_clause = _drop_duplicate_letter_items(report["nodes_by_clause"], ptr_by_clause)
+    ptr_candidates_by_clause: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for node in ptr["nodes"]:
+        ptr_candidates_by_clause[str(node["clause_id"])].append(node)
+    # Only unique clauses may be used for automatic comparison, text
+    # equivalence or renumbering diagnostics. Keep every duplicate candidate.
+    ptr_by_clause = {clause: nodes[0] for clause, nodes in ptr_candidates_by_clause.items() if len(nodes) == 1}
+    report_by_clause = _drop_duplicate_letter_items(report["nodes_by_clause"], ptr_candidates_by_clause)
     children: defaultdict[str, set[str]] = defaultdict(set)
     for node in ptr["nodes"]:
         parent = node.get("parent_clause_id")
@@ -2476,12 +2762,30 @@ def compare_ptr_report(
         "ptr_text_by_clause": {
             clause: _text_for_comparison(node.get("text"), role="ptr") for clause, node in ptr_by_clause.items()
         },
+        "ptr_title_by_clause": {clause: str(node.get("title") or "") for clause, node in ptr_by_clause.items()},
+        "ptr_tables_by_clause": {
+            clause: list((node.get("references") or {}).get("tables") or []) for clause, node in ptr_by_clause.items()
+        },
     }
     ledger: list[dict[str, Any]] = []
     accounted_report_ids: set[str] = set()
-    for clause_id, ptr_node in sorted(ptr_by_clause.items(), key=lambda item: _clause_sort_key(item[0])):
+    for clause_id, ptr_candidates in sorted(ptr_candidates_by_clause.items(), key=lambda item: _clause_sort_key(item[0])):
         scope_decision, scope_reason = _scope_decision(scope, clause_id)
         candidates = list(report_by_clause.get(clause_id, []))
+        if len(ptr_candidates) != 1:
+            entry = _ledger_entry(ptr=None, reports=candidates, clause_id=clause_id,
+                scope_decision=scope_decision, scope_reason=scope_reason, comparison=None,
+                decision=MANUAL, reason_code="AMBIGUOUS_PTR_MAPPING")
+            entry["id"] = f"comparison:{clause_id}:ambiguous-ptr"
+            entry["ptr_node_ids"] = [str(node["node_id"]) for node in ptr_candidates]
+            entry["ptr_candidates"] = [dict(node) for node in ptr_candidates]
+            entry["evidence"] = [*[dict(e) for node in ptr_candidates for e in node.get("evidence", [])],
+                                 *[e for node in ptr_candidates for e in _node_table_evidence(node)], *entry["evidence"]]
+            entry["mapping"].update(ptr_clause_id=clause_id, ptr_candidate_count=len(ptr_candidates), resolution="ambiguous_ptr")
+            ledger.append(entry)
+            accounted_report_ids.update(str(item["node_id"]) for item in candidates)
+            continue
+        ptr_node = ptr_candidates[0]
         if scope_decision == EXCLUDED:
             ledger.append(
                 _ledger_entry(
@@ -2507,6 +2811,14 @@ def compare_ptr_report(
                     reason_code=scope_reason,
                 )
             )
+            accounted_report_ids.update(str(item["node_id"]) for item in candidates)
+            continue
+        if "OCR_TOC_BODY_DISCREPANCY" in ptr_node.get("extraction_issues", []):
+            ledger.append(_ledger_entry(
+                ptr=ptr_node, reports=candidates, scope_decision=scope_decision,
+                scope_reason=scope_reason, comparison=None, decision=MANUAL,
+                reason_code="PTR_OCR_TOC_BODY_DISCREPANCY",
+            ))
             accounted_report_ids.update(str(item["node_id"]) for item in candidates)
             continue
         if not candidates:
@@ -2641,7 +2953,7 @@ def compare_ptr_report(
     # order.  Keep affected rows manual even when the surrounding text and
     # numeric facts happen to look identical.
     for entry in ledger:
-        if entry.get("decision") == EXCLUDED:
+        if entry.get("decision") == EXCLUDED or entry.get("reason_code") == "AMBIGUOUS_PTR_MAPPING":
             continue
         ptr_node = next((node for node in ptr["nodes"] if str(node.get("node_id")) == str(entry.get("ptr_node_id"))), None)
         report_nodes = [
@@ -2677,13 +2989,13 @@ def compare_ptr_report(
     accounted_count = sum(
         1
         for entry in ledger
-        if entry["decision"] != EXCLUDED and (entry.get("ptr_node_id") or entry.get("report_item_ids"))
+        if entry["decision"] != EXCLUDED and (entry.get("ptr_node_id") or entry.get("ptr_node_ids") or entry.get("report_item_ids"))
     )
     unaccounted_ledger_ids = [
         str(entry["id"])
         for entry in ledger
         if entry["decision"] != EXCLUDED
-        and not (entry.get("ptr_node_id") or entry.get("report_item_ids"))
+        and not (entry.get("ptr_node_id") or entry.get("ptr_node_ids") or entry.get("report_item_ids"))
     ]
     llm_queue: list[dict[str, Any]] = []
     if comparison_mode == "rules+llm":
