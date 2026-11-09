@@ -159,8 +159,12 @@ class UploadWorkbenchTests(unittest.TestCase):
         for required in (
             "Report · 检验报告",
             "PTR · 产品技术要求",
-            "PTR 条款 ${clause} ↔ Report 接受标准 ${clause}",
+            "PTR 条款 ${clause} ↔ Report 条款 ${reportClauses}",
             "function ptrCheckRows(finding)",
+            "function wordingSentence(diff)",
+            '["哪里不对", guidance.reason, "brief-reason"], ["你要做", guidance.action, "brief-action"]',
+            "UNLABELLED_TABLE_BINDING_UNVERIFIED",
+            "UNIT_LABEL_WITHOUT_PRINTED_VALUE",
             'label: "条款要求"',
             "function ptrManualGuidance(finding)",
             "function ptrReviewExplanation(finding)",

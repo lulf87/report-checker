@@ -1827,6 +1827,24 @@ def _entry_covers_scope(entry: Mapping[str, Any], scope_id: str) -> bool:
 _HAN_ONLY_RE = re.compile(r"^[\u4e00-\u9fff]*$")
 _BRACKETS_RE = re.compile(r"[()（）\[\]【】]")
 WORDING_DIFF_MAX_CHARS = 4
+WORDING_CONTEXT_CHARS = 6
+_CONTEXT_STOP_RE = re.compile(r"[，,。；;、：:\n]")
+
+
+def _context_before(window: str) -> str:
+    """Characters just before a difference, cut at the last phrase break so
+    the quote does not start in the previous sentence (“裂纹” not “眼、裂纹”)."""
+
+    parts = _CONTEXT_STOP_RE.split(window)
+    tail = parts[-1].strip()
+    if tail or len(parts) == 1:
+        return tail
+    # The difference starts right after a comma: keep the phrase and the comma.
+    return window[len(window) - len(parts[-2]) - 1:].strip()
+
+
+def _context_after(window: str) -> str:
+    return _CONTEXT_STOP_RE.split(window)[0].strip()
 
 
 def wording_differences(ptr_text: str, report_text: str) -> list[dict[str, str]] | None:
@@ -1853,7 +1871,16 @@ def wording_differences(ptr_text: str, report_text: str) -> list[dict[str, str]]
             return None
         if len(ptr_part) > WORDING_DIFF_MAX_CHARS or len(report_part) > WORDING_DIFF_MAX_CHARS:
             return None
-        found.append({"ptr": ptr_part, "report": report_part})
+        # A few characters around the difference let the result page show
+        # “裂纹等缺陷” → “裂纹缺陷” instead of a bare “等”. Display only.
+        found.append({
+            "ptr": ptr_part,
+            "report": report_part,
+            "before": _context_before(ptr_text[max(0, i1 - WORDING_CONTEXT_CHARS):i1]),
+            "ptr_span": ptr_text[i1:i2],
+            "report_span": report_text[j1:j2],
+            "after": _context_after(ptr_text[i2:i2 + WORDING_CONTEXT_CHARS]),
+        })
     return found or None
 
 

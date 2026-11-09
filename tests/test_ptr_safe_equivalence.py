@@ -78,11 +78,21 @@ class WordingDifferenceTests(unittest.TestCase):
                 self.assertIsNone(safe_text_equivalence(ptr, report))
 
     def test_few_chinese_characters_differ_is_a_wording_mismatch(self) -> None:
-        self.assertEqual(wording_differences("钳口不得有裂纹等缺陷。", "钳口不得有裂纹缺陷。"),
-                         [{"ptr": "等", "report": ""}])
-        self.assertEqual(wording_differences("动作时不得晃动", "动作时候不得晃动"), [{"ptr": "", "report": "候"}])
-        self.assertEqual(wording_differences("转向自如", "转向白如"), [{"ptr": "自", "report": "白"}])
-        self.assertEqual(wording_differences("机械臂(USM)/器械", "USM/器械"), [{"ptr": "机械臂", "report": ""}])
+        def parts(ptr: str, report: str):
+            return [{"ptr": d["ptr"], "report": d["report"]} for d in wording_differences(ptr, report)]
+        self.assertEqual(parts("钳口不得有裂纹等缺陷。", "钳口不得有裂纹缺陷。"), [{"ptr": "等", "report": ""}])
+        self.assertEqual(parts("动作时不得晃动", "动作时候不得晃动"), [{"ptr": "", "report": "候"}])
+        self.assertEqual(parts("转向自如", "转向白如"), [{"ptr": "自", "report": "白"}])
+        self.assertEqual(parts("机械臂(USM)/器械", "USM/器械"), [{"ptr": "机械臂", "report": ""}])
+
+    def test_wording_difference_carries_context_for_display(self) -> None:
+        [diff] = wording_differences("钳口不得有裂纹等缺陷。", "钳口不得有裂纹缺陷。")
+        self.assertEqual((diff["before"], diff["ptr_span"], diff["report_span"], diff["after"]),
+                         ("口不得有裂纹", "等", "", "缺陷"))
+        [diff] = wording_differences("砂眼、裂纹等缺陷。b)钳头", "砂眼、裂纹缺陷。b)钳头")
+        self.assertEqual((diff["before"], diff["after"]), ("裂纹", "缺陷"))
+        [diff] = wording_differences("配合使用时,机械臂(USM)/器械", "配合使用时,USM)/器械")
+        self.assertEqual(diff["before"], "配合使用时,")
 
     def test_other_differences_stay_for_review(self) -> None:
         for ptr, report in [
