@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw
 # Report-self extensions are intentionally imported here (rather than through
 # ``run_full_2795``) so the production Report-only runner can use the same
 # deterministic rule implementations without creating an import cycle.
+from mvp import table_cache
 from mvp.full_report_attempt import scan_report_numeric_file
 from mvp.full_report_photo import analyze_report_photo_rules
 from mvp.photo_ocr import PhotoOcrProvider, engine_versions, photo_ocr_enabled
@@ -599,7 +600,7 @@ def _report_header_template(document: fitz.Document) -> dict[str, Any] | None:
         return cached
     template: dict[str, Any] | None = None
     for page in document:
-        for table in page.find_tables().tables:
+        for table in table_cache.find_tables(page):
             if not is_formal_report_table(table):
                 continue
             header = table.extract()[0]
@@ -662,7 +663,7 @@ def report_page_tables(page: fitz.Page) -> list[Any]:
     sequence number ("138" or "续138").
     """
 
-    tables = list(page.find_tables().tables)
+    tables = table_cache.find_tables(page)
     if any(is_formal_report_table(table) for table in tables):
         return tables
     document = page.parent

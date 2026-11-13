@@ -2,6 +2,7 @@
 
 ## 未发布（2026-10-26）
 
+- PTR 核对提速（2026-11-12）：新增 `mvp/table_cache.py`，把 PyMuPDF 表格检测结果（表格与单元格坐标、提取的文字矩阵）和扫描件 PTR 的逐页 OCR 原始结果缓存到 `output/table-cache/`。缓存只取决于 PDF 内容哈希、PyMuPDF/OCR 引擎版本和调用参数，与核对规则无关，改规则后仍然有效；只在 PTR 核对路径启用，其他模式不变。13 组样本在关闭缓存、首次建缓存、命中缓存三种情况下的完整结果逐字节相同；命中缓存后 13 组并行从约 55 秒降到 2.2 秒，`tests.test_ptr_compare` 从 2 分多钟降到约 24 秒。环境变量 `REPORT_CHECKER_TABLE_CACHE=off` 可关闭，设为目录可改位置。
 - 状态数据库瘦身（schema v9，2026-11-12）：输入快照只在 Run 上保存一份，Finding/Evidence 不再各存一份副本（旧库 3.06 GB 中约 2.9 GB 是这些副本），读取时按 `run_id` 取回，`list_findings`/`get_finding` 返回内容不变；为 `evidence(finding_id)`、`evidence(run_id)`、`review_actions` 补索引。旧库首次启动时自动迁移并 VACUUM（实测约 12 秒，3.06 GB → 137 MB，16240 条 Finding、77561 条 Evidence 的快照逐条核对一致）。
 - 统一 PTR-P01 规则版本为 `0.5.0-draft`：合同、比较器、能力目录、验收门和结果共用唯一版本源；按该版本重新生成 `output/ptr-review-package-20261026-v7/`，旧的 `0.4.0-draft` 验收包保留为历史快照并要求重新签字。
 - PTR 条款提取会过滤 `第 x 页共 y 页`、`第 x 页 / 共 y 页` 和 `Page x of y` 页脚，不再把打印页码拼进条款正文；PTR 核对明细新增两侧文字差异片段，删除/替换标红、新增标黄。

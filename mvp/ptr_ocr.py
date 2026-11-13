@@ -10,6 +10,7 @@ coordinates so a later review can jump back to the source page.
 from __future__ import annotations
 
 import hashlib
+import platform
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -17,6 +18,8 @@ try:
     import pymupdf as fitz
 except ImportError:  # pragma: no cover - compatibility with older environments
     import fitz
+
+from mvp import table_cache
 
 
 PTR_OCR_SCHEMA_VERSION = "ptr-ocr-0.1"
@@ -42,6 +45,39 @@ def _run_backend(backend: str, png: bytes, width: int, height: int) -> list[dict
     if engine is None:
         raise ValueError(f"未知 OCR 后端：{backend}")
     return [dict(item) for item in engine(png, width, height)]
+
+
+def _plain(value: Any) -> Any:
+    """OCR output as plain JSON values; float() of a numpy scalar is exact."""
+
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    try:
+        import numbers
+
+        if isinstance(value, numbers.Integral):
+            return int(value)
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"OCR 结果包含无法缓存的值：{type(value).__name__}") from exc
+
+
+def _backend_cache_key(backend: str) -> str:
+    """Everything besides the page image that decides a backend's output."""
+
+    from mvp.photo_ocr import engine_versions
+
+    try:
+        version = engine_versions([backend]).get(backend)
+    except Exception:
+        version = None
+    # Apple Vision's recognition model ships with macOS, not with ocrmac.
+    system = platform.mac_ver()[0] if backend == "apple_vision" else ""
+    return f"{backend}@{version}@{system}"
 
 
 def _render_page(page: fitz.Page) -> tuple[bytes, int, int, float, float]:
@@ -147,25 +183,52 @@ def iter_ptr_ocr_lines(
     lines: list[tuple[int, list[float], str, str, float]] = []
     if not requested:
         return lines, diagnostics
+    # Raw backend output per page depends on the PDF bytes, the renderer and
+    # the OCR engine only, so it is cached like table detection.  Failures are
+    # never cached; ``_row_lines`` and everything after it always run.
+    store = table_cache.open_store(
+        diagnostics["source_sha256"],
+        f"ocr-pymupdf-{fitz.VersionBind}-side{MAX_RENDER_SIDE}-scale{MAX_RENDER_SCALE}",
+    )
+    backend_keys = {backend: _backend_cache_key(backend) for backend in requested}
     with fitz.open(source) as document:
         diagnostics["page_count"] = document.page_count
         for page_number, page in enumerate(document, start=1):
-            try:
-                png, width, height, scale_x, scale_y = _render_page(page)
-            except Exception as exc:
-                diagnostics["errors"].append(
-                    {"page": page_number, "backend": None, "reason": f"render:{type(exc).__name__}: {exc}"}
-                )
-                continue
-            page_had_text = False
-            for backend in requested:
+            cached = store.calls.setdefault(str(page_number), {}) if store is not None else {}
+            cached_items = cached.setdefault("items", {})
+            png = None
+            if "render" in cached and all(backend_keys[backend] in cached_items for backend in requested):
+                width, height, scale_x, scale_y = cached["render"]
+            else:
                 try:
-                    items = _run_backend(backend, png, width, height)
+                    png, width, height, scale_x, scale_y = _render_page(page)
                 except Exception as exc:
                     diagnostics["errors"].append(
-                        {"page": page_number, "backend": backend, "reason": f"{type(exc).__name__}: {exc}"}
+                        {"page": page_number, "backend": None, "reason": f"render:{type(exc).__name__}: {exc}"}
                     )
                     continue
+                cached["render"] = [width, height, scale_x, scale_y]
+            page_had_text = False
+            for backend in requested:
+                items = cached_items.get(backend_keys[backend]) if png is None else None
+                if items is None:
+                    try:
+                        items = _run_backend(backend, png, width, height)
+                    except Exception as exc:
+                        diagnostics["errors"].append(
+                            {"page": page_number, "backend": backend, "reason": f"{type(exc).__name__}: {exc}"}
+                        )
+                        continue
+                    try:
+                        # Use the plain form on the first run too, so a cached
+                        # run sees exactly the same values.
+                        items = _plain(items)
+                    except TypeError:
+                        pass
+                    else:
+                        if store is not None:
+                            cached_items[backend_keys[backend]] = items
+                            store.dirty = True
                 if backend not in diagnostics["used_backends"]:
                     diagnostics["used_backends"].append(backend)
                 rows = _row_lines(items)
@@ -178,6 +241,8 @@ def iter_ptr_ocr_lines(
                     page_had_text = True
             if page_had_text:
                 diagnostics["pages_with_text"].append(page_number)
+    if store is not None:
+        store.flush()
     if lines:
         diagnostics["status"] = "observed"
         diagnostics["reason_code"] = None

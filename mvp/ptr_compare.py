@@ -42,6 +42,7 @@ from mvp.checker import (
     sha256_file,
 )
 from mvp.ptr_scope import extract_report_scope
+from mvp import table_cache
 from mvp.ptr_ocr import iter_ptr_ocr_lines
 from mvp.ptr_llm import build_review_task, validate_llm_review
 from mvp.ptr_report_contract import PTR_P01_RULE_VERSION
@@ -1313,6 +1314,7 @@ def extract_ptr_clauses(ptr_path: str | Path, *, ocr_mode: str = "auto") -> dict
     return result
 
 
+@table_cache.flush_after
 def _report_cell_evidence_all(
     document: fitz.Document,
     source_sha256: str,
@@ -1321,6 +1323,7 @@ def _report_cell_evidence_all(
 
     values: dict[int, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     active_sequence: int | None = None
+    table_cache.enable(document, source_sha256)
     for page in document:
         for table_index, table in enumerate(report_page_tables(page), start=1):
             if not is_formal_report_table(table):

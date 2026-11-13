@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - compatibility with older environments
     import fitz
 
 from mvp.checker import compact, header_map, is_formal_report_table, report_page_tables, sha256_file
+from mvp import table_cache
 
 PARSER_VERSION = "ptr-layout-1.6"
 CLAUSE = re.compile(
@@ -515,6 +516,7 @@ def _text_table(page: fitz.Page, caption: Mapping[str, Any], lines: Sequence[Map
     }
 
 
+@table_cache.flush_after
 def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
     from mvp.ptr_ocr import iter_ptr_ocr_lines
     digest = sha256_file(path)
@@ -524,11 +526,12 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
     stopped = False
     total_text = 0
     with fitz.open(path) as doc:
+        table_cache.enable(doc, digest)
         page_count = len(doc)
         for page in doc:
             total_text += len(page.get_text())
             lines = page_lines(page)
-            raw_tables = list(page.find_tables(strategy="lines_strict").tables)
+            raw_tables = table_cache.find_tables(page, strategy="lines_strict")
             page_tables = [_table(page, t, digest, lines, i) for i, t in enumerate(raw_tables)]
             captions = [line for line in lines if CAPTION.match(str(line.get("text") or ""))]
             for caption_index, caption in enumerate(captions, start=len(page_tables)):
@@ -793,6 +796,7 @@ def report_clause_cell(value: Any) -> str:
     return clause
 
 
+@table_cache.flush_after
 def extract_report_layout(path: Path) -> dict[str, Any]:
     from mvp.ptr_scope import extract_report_scope
     from mvp.checker import align_report_table_row, report_table_cell
@@ -803,6 +807,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
     active_clause = ""
     product_count = 0
     with fitz.open(path) as doc:
+        table_cache.enable(doc, digest)
         for page in doc:
             for table_index, table in enumerate(report_page_tables(page), start=1):
                 if not is_formal_report_table(table):
