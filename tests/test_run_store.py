@@ -457,6 +457,23 @@ class RunStoreTests(unittest.TestCase):
         self.assertEqual(finding["evidence"][0]["run_id"], run["id"])
         self.assertEqual(finding["evidence"][0]["rule_execution_id"], finding["rule_execution_id"])
         self.assertEqual(finding["evidence"][0]["document_sha256"], "a" * 64)
+        self.assertEqual(finding["evidence"][0]["input_snapshot"], finding["input_snapshot"])
+        with store._lock:
+            # The Run row is the only stored copy of the snapshot; a copy per
+            # Finding/Evidence row once made the database 30 times larger.
+            stored_copies = store._connection.execute(
+                """SELECT (SELECT COUNT(*) FROM findings WHERE input_snapshot_json IS NOT NULL)
+                        + (SELECT COUNT(*) FROM evidence WHERE input_snapshot_json IS NOT NULL)"""
+            ).fetchone()[0]
+            plans = [
+                " ".join(str(row["detail"]) for row in store._connection.execute(
+                    f"EXPLAIN QUERY PLAN SELECT id FROM evidence WHERE {column} = ?", ("x",)
+                ))
+                for column in ("finding_id", "run_id")
+            ]
+        self.assertEqual(stored_copies, 0)
+        self.assertIn("evidence_finding_idx", plans[0])
+        self.assertIn("evidence_run_idx", plans[1])
         compact = store.list_findings_compact(run["id"])[0]
         self.assertNotIn("input_snapshot", compact)
         self.assertEqual(

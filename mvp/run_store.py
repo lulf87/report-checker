@@ -82,10 +82,20 @@ def _parse_json(value: str) -> Any:
     return json.loads(value)
 
 
+# The Run row holds the single stored copy of the immutable input snapshot.
+# A Finding/Evidence row stores its own ``input_snapshot_json`` only when it
+# differs from the Run's (possible only in pre-v9 data); otherwise it is NULL
+# and resolved through these expressions.  Aliases: e=evidence, f=findings,
+# r=runs.
+_EFFECTIVE_FINDING_SNAPSHOT = "COALESCE(f.input_snapshot_json, r.input_snapshot_json)"
+_EFFECTIVE_EVIDENCE_SNAPSHOT = "COALESCE(e.input_snapshot_json, f.input_snapshot_json, r.input_snapshot_json)"
+_VACUUM_MIN_FREE_BYTES = 64 * 1024 * 1024
+
+
 class RunStore:
     """Thread-safe SQLite repository for the local checker domain."""
 
-    schema_version = 8
+    schema_version = 9
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = str(path)
@@ -108,6 +118,7 @@ class RunStore:
         except Exception:
             self._connection.close()
             raise
+        self._reclaim_free_pages()
 
     def _initialize(self) -> None:
         with self._lock:
@@ -401,41 +412,70 @@ class RunStore:
         # already have a rule_execution_id while still missing its input
         # snapshot; coupling both updates behind one WHERE clause was the
         # source of a silent v6->v7 data-loss path.
+        #
+        # The input snapshot is NOT backfilled into Finding/Evidence rows.
+        # Since v9 the Run row holds the single copy and readers resolve it
+        # through ``run_id`` (see ``_EFFECTIVE_*_SNAPSHOT``); a row keeps its
+        # own ``input_snapshot_json`` only when it differs from the Run's.
         self._connection.execute(
             """UPDATE findings
                SET rule_execution_id = (
                        SELECT re.id FROM rule_executions re
                        WHERE re.run_id = findings.run_id AND re.rule_id = findings.rule_id
                        ORDER BY re.plan_order LIMIT 1
-                   ),
-                   input_snapshot_json = (
-                       SELECT r.input_snapshot_json FROM runs r WHERE r.id = findings.run_id
                    )
                WHERE rule_execution_id IS NULL"""
         )
         self._connection.execute(
-            """UPDATE findings
-               SET input_snapshot_json = (
-                       SELECT r.input_snapshot_json FROM runs r WHERE r.id = findings.run_id
-                   )
-               WHERE input_snapshot_json IS NULL"""
-        )
-        self._connection.execute(
             """UPDATE evidence
-               SET run_id = (SELECT f.run_id FROM findings f WHERE f.id = evidence.finding_id),
-                   rule_execution_id = (
-                       SELECT f.rule_execution_id FROM findings f WHERE f.id = evidence.finding_id
+               SET run_id = COALESCE(
+                       run_id, (SELECT f.run_id FROM findings f WHERE f.id = evidence.finding_id)
                    ),
-                   input_snapshot_json = (
-                       SELECT f.input_snapshot_json FROM findings f WHERE f.id = evidence.finding_id
+                   rule_execution_id = COALESCE(
+                       rule_execution_id,
+                       (SELECT f.rule_execution_id FROM findings f WHERE f.id = evidence.finding_id)
                    )
-               WHERE run_id IS NULL OR rule_execution_id IS NULL OR input_snapshot_json IS NULL"""
+               WHERE run_id IS NULL OR rule_execution_id IS NULL"""
         )
+        # These indexes cannot live in the CREATE TABLE script: a v6 evidence
+        # table has no run_id column until the ALTER TABLE above.  Without
+        # them every result page and every cascade delete scans all Evidence.
+        self._connection.execute("CREATE INDEX IF NOT EXISTS evidence_finding_idx ON evidence(finding_id)")
+        self._connection.execute("CREATE INDEX IF NOT EXISTS evidence_run_idx ON evidence(run_id, finding_id)")
+        self._connection.execute("CREATE INDEX IF NOT EXISTS review_actions_run_idx ON review_actions(run_id)")
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS review_actions_finding_idx ON review_actions(finding_id)"
+        )
+        if stored_version < 9:
+            # v9: drop the per-row copies of the Run snapshot.  Only byte-equal
+            # copies are removed, so the effective snapshot of every row is
+            # unchanged; a row that differs keeps its own value.  Evidence is
+            # compared first, while its Finding still holds its copy.
+            self._connection.execute(
+                """UPDATE evidence SET input_snapshot_json = NULL
+                   WHERE input_snapshot_json IS NOT NULL
+                     AND input_snapshot_json = (
+                         SELECT COALESCE(f.input_snapshot_json, r.input_snapshot_json)
+                         FROM findings f JOIN runs r ON r.id = f.run_id
+                         WHERE f.id = evidence.finding_id
+                     )"""
+            )
+            self._connection.execute(
+                """UPDATE findings SET input_snapshot_json = NULL
+                   WHERE input_snapshot_json IS NOT NULL
+                     AND input_snapshot_json = (
+                         SELECT r.input_snapshot_json FROM runs r WHERE r.id = findings.run_id
+                     )"""
+            )
         # Fill document identity/hash from the immutable Run input snapshot;
         # rows whose role cannot be resolved remain legacy-invalid and are
         # rejected below instead of being exposed with a guessed source.
         evidence_rows = self._connection.execute(
-            "SELECT id, role, input_snapshot_json FROM evidence WHERE document_id IS NULL OR document_sha256 IS NULL"
+            f"""SELECT e.id, e.role, {_EFFECTIVE_EVIDENCE_SNAPSHOT} AS input_snapshot_json
+                FROM evidence e
+                LEFT JOIN findings f ON f.id = e.finding_id
+                LEFT JOIN runs r ON r.id = f.run_id
+                WHERE e.document_id IS NULL OR e.document_sha256 IS NULL"""
         ).fetchall()
         for evidence_row in evidence_rows:
             snapshot = _parse_json(evidence_row["input_snapshot_json"]) if evidence_row["input_snapshot_json"] else None
@@ -567,20 +607,23 @@ class RunStore:
             unresolved.extend(
                 {"table": "findings", "id": row["id"], "reason": "missing_traceability"}
                 for row in self._connection.execute(
-                    "SELECT id FROM findings WHERE rule_execution_id IS NULL OR input_snapshot_json IS NULL"
+                    f"""SELECT f.id FROM findings f LEFT JOIN runs r ON r.id = f.run_id
+                        WHERE f.rule_execution_id IS NULL OR {_EFFECTIVE_FINDING_SNAPSHOT} IS NULL"""
                 ).fetchall()
             )
             unresolved.extend(
                 {"table": "evidence", "id": row["id"], "reason": "missing_document_binding"}
                 for row in self._connection.execute(
-                    """SELECT e.id FROM evidence e
+                    f"""SELECT e.id FROM evidence e
                        LEFT JOIN documents d ON d.id = e.document_id
                        LEFT JOIN blobs b ON b.id = d.blob_id
+                       LEFT JOIN findings f ON f.id = e.finding_id
+                       LEFT JOIN runs r ON r.id = f.run_id
                        WHERE e.run_id IS NULL OR e.rule_execution_id IS NULL
                           OR e.document_id IS NULL OR d.id IS NULL
                           OR e.document_sha256 IS NULL OR b.sha256 IS NULL
                           OR e.document_sha256 != b.sha256
-                          OR e.input_snapshot_json IS NULL"""
+                          OR {_EFFECTIVE_EVIDENCE_SNAPSHOT} IS NULL"""
                 ).fetchall()
             )
             unresolved.extend(
@@ -659,6 +702,31 @@ class RunStore:
                     status=500,
                     details={"table": table, "missing": sorted(required - actual)},
                 )
+
+    def _reclaim_free_pages(self) -> None:
+        """Give back the file space freed by the v9 snapshot de-duplication.
+
+        SQLite keeps freed pages inside the file, so removing ~2.9 GB of
+        repeated snapshots does not shrink it until a VACUUM.  Run one only
+        when at least a quarter of a non-trivial file is free; that is true
+        once after the v9 migration and practically never afterwards.  The
+        data is already correct at this point, so a failed VACUUM (disk full,
+        another connection) is not a startup error.
+        """
+
+        if self.path == ":memory:":
+            return
+        with self._lock:
+            try:
+                page_size = int(self._connection.execute("PRAGMA page_size").fetchone()[0])
+                page_count = int(self._connection.execute("PRAGMA page_count").fetchone()[0])
+                free_pages = int(self._connection.execute("PRAGMA freelist_count").fetchone()[0])
+                if free_pages * page_size < _VACUUM_MIN_FREE_BYTES or free_pages * 4 < page_count:
+                    return
+                self._connection.execute("VACUUM")
+                self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                return
 
     def close(self) -> None:
         with self._lock:
@@ -1232,6 +1300,15 @@ class RunStore:
         execution_by_rule: Mapping[str, Mapping[str, Any]] | None = None,
         input_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
+        # The Run row already stores this snapshot; rows reference it through
+        # run_id and keep a copy only if the caller passes a different one.
+        row_snapshot_json = _json(input_snapshot) if input_snapshot is not None else None
+        if row_snapshot_json is not None:
+            run_snapshot = self._connection.execute(
+                "SELECT input_snapshot_json FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run_snapshot is not None and run_snapshot["input_snapshot_json"] == row_snapshot_json:
+                row_snapshot_json = None
         status_rank = {"error": 0, "manual": 1, "warning": 2, "pass": 3}
         rule_rank = {rule_id: index for index, rule_id in enumerate(planned_rule_ids or ())}
         findings = sorted(
@@ -1300,7 +1377,7 @@ class RunStore:
                     display_sequence,
                     rule_id,
                     execution["id"],
-                    _json(input_snapshot) if input_snapshot is not None else None,
+                    row_snapshot_json,
                     finding["status"],
                     finding.get("title"),
                     finding.get("summary"),
@@ -1358,7 +1435,7 @@ class RunStore:
                         execution["id"],
                         document_id,
                         document_sha256,
-                        _json(input_snapshot) if input_snapshot is not None else None,
+                        row_snapshot_json,
                         role.strip(),
                         page,
                         _json([float(value) for value in bbox]),
@@ -1649,7 +1726,9 @@ class RunStore:
             return []
         with self._lock:
             rows = self._connection.execute(
-                "SELECT * FROM findings WHERE run_id = ? ORDER BY display_sequence",
+                f"""SELECT f.*, {_EFFECTIVE_FINDING_SNAPSHOT} AS effective_snapshot_json
+                    FROM findings f JOIN runs r ON r.id = f.run_id
+                    WHERE f.run_id = ? ORDER BY f.display_sequence""",
                 (run_id,),
             ).fetchall()
             findings = []
@@ -1662,8 +1741,8 @@ class RunStore:
     def list_findings_compact(self, run_id: str) -> list[dict[str, Any]]:
         """Return the UI Finding list without repeated audit snapshots.
 
-        ``findings.input_snapshot_json`` and the equivalent evidence snapshot
-        are intentionally retained for audit and export APIs.  Sending those
+        ``list_findings``/``get_finding`` return the Run's input snapshot with
+        every Finding and Evidence item for audit and export.  Sending those
         full page-geometry snapshots with every Finding makes a large Record
         run needlessly expensive for the workbench (over 190 MB for 1,102
         Findings).  The upload UI only needs the Finding summary and evidence
@@ -1724,7 +1803,8 @@ class RunStore:
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._connection.execute(
-                """SELECT f.*, r.lifecycle_status
+                f"""SELECT f.*, r.lifecycle_status,
+                           {_EFFECTIVE_FINDING_SNAPSHOT} AS effective_snapshot_json
                    FROM findings f JOIN runs r ON r.id = f.run_id
                    WHERE f.id = ?""",
                 (finding_id,),
@@ -2002,9 +2082,13 @@ class RunStore:
 
     def _attach_evidence_locked(self, finding: dict[str, Any]) -> None:
         rows = self._connection.execute(
-            """SELECT id, role, pdf_page, bbox_json, semantic_role, created_at,
-                      run_id, rule_execution_id, document_id, document_sha256, input_snapshot_json
-               FROM evidence WHERE finding_id = ? ORDER BY rowid""",
+            f"""SELECT e.id, e.role, e.pdf_page, e.bbox_json, e.semantic_role, e.created_at,
+                       e.run_id, e.rule_execution_id, e.document_id, e.document_sha256,
+                       {_EFFECTIVE_EVIDENCE_SNAPSHOT} AS input_snapshot_json
+               FROM evidence e
+               JOIN findings f ON f.id = e.finding_id
+               JOIN runs r ON r.id = f.run_id
+               WHERE e.finding_id = ? ORDER BY e.rowid""",
             (finding["id"],),
         ).fetchall()
         finding["evidence"] = [
@@ -2044,8 +2128,8 @@ class RunStore:
             "display_sequence": row["display_sequence"],
             "rule_id": row["rule_id"],
             "rule_execution_id": row["rule_execution_id"],
-            "input_snapshot": _parse_json(row["input_snapshot_json"])
-            if row["input_snapshot_json"]
+            "input_snapshot": _parse_json(row["effective_snapshot_json"])
+            if row["effective_snapshot_json"]
             else None,
             "machine_status": row["machine_status"],
             "title": row["title"],

@@ -2,6 +2,7 @@
 
 ## 未发布（2026-10-26）
 
+- 状态数据库瘦身（schema v9，2026-11-12）：输入快照只在 Run 上保存一份，Finding/Evidence 不再各存一份副本（旧库 3.06 GB 中约 2.9 GB 是这些副本），读取时按 `run_id` 取回，`list_findings`/`get_finding` 返回内容不变；为 `evidence(finding_id)`、`evidence(run_id)`、`review_actions` 补索引。旧库首次启动时自动迁移并 VACUUM（实测约 12 秒，3.06 GB → 137 MB，16240 条 Finding、77561 条 Evidence 的快照逐条核对一致）。
 - 统一 PTR-P01 规则版本为 `0.5.0-draft`：合同、比较器、能力目录、验收门和结果共用唯一版本源；按该版本重新生成 `output/ptr-review-package-20261026-v7/`，旧的 `0.4.0-draft` 验收包保留为历史快照并要求重新签字。
 - PTR 条款提取会过滤 `第 x 页共 y 页`、`第 x 页 / 共 y 页` 和 `Page x of y` 页脚，不再把打印页码拼进条款正文；PTR 核对明细新增两侧文字差异片段，删除/替换标红、新增标黄。
 - PTR-P01 比较规则升为 `ptr-compare-0.5` / `0.5.0-draft`、布局解析器升为 `ptr-layout-1.3`：Report 标准要求中的测试条件、模式/缩放参数和型号行与接受标准分离并保留原文证据；页码、图号、文件编号和协议编号不再作为测量数值。

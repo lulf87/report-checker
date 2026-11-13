@@ -201,6 +201,63 @@ class SchemaMigrationTests(unittest.TestCase):
             )
             reopened.close()
 
+    def test_v8_upgrade_removes_snapshot_copies_without_changing_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "v8.sqlite3"
+            _create_v6_database(database)
+            RunStore(database).close()
+            # Rebuild the v8 shape: every Finding and Evidence row carries its
+            # own copy of the Run snapshot.  One extra Evidence row carries a
+            # different snapshot and must keep it.
+            other_snapshot = '{"report":{"document_id":"other"}}'
+            connection = sqlite3.connect(database)
+            connection.execute("UPDATE schema_meta SET value = '8' WHERE key = 'schema_version'")
+            connection.execute("DELETE FROM schema_migrations WHERE version > 8")
+            connection.execute(
+                "UPDATE findings SET input_snapshot_json = (SELECT input_snapshot_json FROM runs WHERE id = run_id)"
+            )
+            connection.execute(
+                "UPDATE evidence SET input_snapshot_json = (SELECT input_snapshot_json FROM runs WHERE id = run_id)"
+            )
+            connection.execute(
+                """INSERT INTO evidence(
+                    id, finding_id, run_id, rule_execution_id, document_id, document_sha256,
+                    input_snapshot_json, role, pdf_page, bbox_json, semantic_role, created_at
+                ) VALUES('evidence-other', ?, ?, ?, ?, ?, ?, 'report', 1, '[1,2,3,4]', NULL, ?)""",
+                (FINDING_ID, RUN_ID, EXECUTION_ID, DOC_ID, SHA256, other_snapshot, NOW),
+            )
+            run_snapshot = connection.execute(
+                "SELECT input_snapshot_json FROM runs WHERE id = ?", (RUN_ID,)
+            ).fetchone()[0]
+            connection.commit()
+            connection.close()
+
+            for _ in range(2):  # the second open must leave the result as is
+                store = RunStore(database)
+                finding = store.list_findings(RUN_ID)[0]
+                self.assertEqual(finding["input_snapshot"], json.loads(run_snapshot))
+                self.assertEqual(store.get_finding(FINDING_ID)["input_snapshot"], json.loads(run_snapshot))
+                by_id = {item["id"]: item for item in finding["evidence"]}
+                self.assertEqual(by_id[EVIDENCE_ID]["input_snapshot"], json.loads(run_snapshot))
+                self.assertEqual(by_id["evidence-other"]["input_snapshot"], json.loads(other_snapshot))
+                with store._lock:
+                    stored = {
+                        row["id"]: row["input_snapshot_json"]
+                        for row in store._connection.execute(
+                            """SELECT id, input_snapshot_json FROM findings
+                               UNION ALL SELECT id, input_snapshot_json FROM evidence"""
+                        )
+                    }
+                    versions = [
+                        row["version"]
+                        for row in store._connection.execute("SELECT version FROM schema_migrations ORDER BY version")
+                    ]
+                self.assertEqual(
+                    stored, {FINDING_ID: None, EVIDENCE_ID: None, "evidence-other": other_snapshot}
+                )
+                self.assertEqual(versions, list(range(7, store.schema_version + 1)))
+                store.close()
+
     def test_future_schema_version_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "future.sqlite3"
