@@ -11,6 +11,7 @@
     .venv/bin/python -m mvp.ptr_gold merge 导出文件.json   # 导入复核页导出的结果
     .venv/bin/python -m mvp.ptr_gold claude 判断.jsonl     # 写入 Claude 的逐条判断（不覆盖人工确认）
     .venv/bin/python -m mvp.ptr_gold check [--run 文件]   # 当前结果对答案
+    .venv/bin/python -m mvp.ptr_gold diff [提交]          # 改规则后的回归：某个提交（默认 HEAD）↔ 当前代码
 
 ``expected`` 取值与 ledger 的 ``decision`` 相同：matched / mismatch / manual / excluded。
 ``status``：``draft``（工具结果预填、未复核）、``claude``（Claude 逐条判断，带把握程度与理由，
@@ -387,6 +388,186 @@ def print_check(result: Mapping[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Regression: an earlier commit ↔ the current code
+# ---------------------------------------------------------------------------
+
+# Runs inside a checkout of the baseline commit.  It must not rely on this
+# module (older commits do not have it) nor on anything but
+# ``compare_ptr_report``.
+_BASELINE_SCRIPT = r"""
+import json, os, sys
+from concurrent.futures import ProcessPoolExecutor
+
+
+def one(job):
+    import mvp
+    from mvp.ptr_compare import compare_ptr_report
+
+    if not os.path.realpath(mvp.__file__).startswith(os.path.realpath(os.getcwd()) + os.sep):
+        raise SystemExit("基线没有使用基线提交里的代码：" + mvp.__file__)
+    sample, report, ptr = job
+    result = compare_ptr_report(report, ptr, comparison_mode="rules", ocr_mode="auto")
+    return sample, {
+        "rule_version": (result.get("rule") or {}).get("version"),
+        "inputs": {},
+        "coverage_ledger": result["coverage_ledger"],
+    }
+
+
+if __name__ == "__main__":
+    jobs, out, workers = json.loads(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+    with ProcessPoolExecutor(workers) as pool:
+        results = dict(pool.map(one, jobs))
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(results, handle, ensure_ascii=False, default=str)
+"""
+
+
+def run_samples_at(revision: str, samples: Sequence[str] = SAMPLES, workers: int = 6) -> dict[str, Any]:
+    """Run the samples with the code of ``revision`` in a temporary worktree.
+
+    The worktree is removed afterwards.  The sample PDFs are passed by their
+    real paths, and the table/OCR cache of this checkout is shared, so a
+    baseline whose PDFs are already cached takes seconds.
+    """
+
+    import subprocess
+    import tempfile
+
+    from mvp import table_cache
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+
+    commit = git("rev-parse", "--verify", f"{revision}^{{commit}}")
+    jobs = [[sample, *(str(path) for path in _sample_paths(sample))] for sample in samples]
+    environment = dict(os.environ)
+    cache = table_cache.cache_directory()
+    if cache is not None:
+        environment[table_cache.ENVIRONMENT_VARIABLE] = str(cache.resolve())
+    with tempfile.TemporaryDirectory(prefix="ptr-gold-baseline-") as temporary:
+        tree = Path(temporary) / "tree"
+        script = Path(temporary) / "run_baseline.py"
+        out = Path(temporary) / "baseline.json"
+        script.write_text(_BASELINE_SCRIPT, encoding="utf-8")
+        git("worktree", "add", "--detach", str(tree), commit)
+        try:
+            environment["PYTHONPATH"] = str(tree)
+            done = subprocess.run(
+                [sys.executable, str(script), json.dumps(jobs, ensure_ascii=False), str(out), str(workers)],
+                cwd=tree, env=environment, capture_output=True, text=True,
+            )
+            if done.returncode != 0:
+                raise RuntimeError(f"基线 {revision} 运行失败：\n{done.stderr[-4000:]}")
+            results = json.loads(out.read_text(encoding="utf-8"))
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=ROOT, capture_output=True)
+            subprocess.run(["git", "worktree", "prune"], cwd=ROOT, capture_output=True)
+    return {"generated_at": None, "git_head": git("rev-parse", "--short", commit), "samples": results}
+
+
+DIFF_CATEGORIES = {
+    "regression": "变差，需要处理：原“一致”不再一致，或原“不一致”消失（且答案不支持这个变化）",
+    "explained": "原“一致”不再一致 / 原“不一致”消失，但与标准答案相符（提交说明里逐条写原因）",
+    "other": "其他判定变化",
+    "added": "新增条目（基线里没有）",
+    "removed": "消失的条目（当前结果里没有）",
+    "reason_only": "判定不变、原因码变了",
+}
+
+
+def _gold_answers(sample: str) -> dict[str, Mapping[str, Any]]:
+    gold = load_gold(sample)
+    if gold is None:
+        return {}
+    return {str(g["key"]): g for g in gold["entries"] if g.get("status") in {"confirmed", "claude"}}
+
+
+def diff_runs(base: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare every ledger entry's decision between two runs.
+
+    An entry that was 一致 and is no longer, or was 不一致 and is no longer,
+    is a regression unless the reviewed answer (gold) says the new decision is
+    right.  Entries are matched by sample and clause key.
+    """
+
+    findings: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    totals: Counter = Counter()
+    for sample in sorted(set(base["samples"]) | set(current["samples"])):
+        if sample not in base["samples"] or sample not in current["samples"]:
+            findings["regression"].append({
+                "sample": sample, "key": "*", "before": None, "after": None,
+                "note": "只有一边跑了这个样本",
+            })
+            continue
+        before = dict(keyed_entries(base["samples"][sample]["coverage_ledger"]))
+        after = dict(keyed_entries(current["samples"][sample]["coverage_ledger"]))
+        answers = _gold_answers(sample)
+        for key in list(before) + [key for key in after if key not in before]:
+            old, new = before.get(key), after.get(key)
+            answer = answers.get(key)
+            item = {
+                "sample": sample, "key": key,
+                "before": old.get("decision") if old else None,
+                "after": new.get("decision") if new else None,
+                "before_reason": old.get("reason_code") if old else None,
+                "after_reason": new.get("reason_code") if new else None,
+                "expected": answer.get("expected") if answer else None,
+                "answer_source": answer.get("status") if answer else None,
+            }
+            totals["entries"] += 1
+            if item["before"] == item["after"]:
+                if item["before_reason"] != item["after_reason"]:
+                    findings["reason_only"].append(item)
+                else:
+                    totals["unchanged"] += 1
+                continue
+            agrees = bool(answer) and new is not None and (
+                item["after"] == answer["expected"] or item["after"] in (answer.get("acceptable") or [])
+            )
+            item["agrees_with_answer"] = agrees if answer else None
+            if item["before"] in {"matched", "mismatch"}:
+                findings["explained" if agrees else "regression"].append(item)
+            elif old is None:
+                findings["added"].append(item)
+            elif new is None:
+                findings["removed"].append(item)
+            else:
+                findings["other"].append(item)
+    return {
+        "base": base.get("git_head"), "current": current.get("git_head"),
+        "totals": dict(totals),
+        "findings": {name: findings[name] for name in DIFF_CATEGORIES if findings.get(name)},
+    }
+
+
+def print_diff(result: Mapping[str, Any]) -> None:
+    totals = result["totals"]
+    changed = sum(len(items) for name, items in result["findings"].items() if name != "reason_only")
+    print(f"回归对比：基线 {result['base']} → 当前 {result['current']}")
+    print(f"共 {totals.get('entries', 0)} 条，判定变化 {changed} 条，"
+          f"变差 {len(result['findings'].get('regression', []))} 条。")
+    if not changed:
+        print("判定 0 变化。")
+    for name, items in result["findings"].items():
+        print(f"\n## {DIFF_CATEGORIES[name]}（{len(items)}）")
+        for item in items:
+            if item.get("note"):
+                print(f"  {item['sample']}: {item['note']}")
+                continue
+            before = LABELS.get(str(item["before"]), "无")
+            after = LABELS.get(str(item["after"]), "无")
+            reasons = f"（{item['before_reason'] or '—'} → {item['after_reason'] or '—'}）"
+            answer = ""
+            if item.get("expected"):
+                source = "Claude" if item.get("answer_source") == "claude" else "人工"
+                answer = f" ｜ 答案（{source}）：{LABELS.get(str(item['expected']), item['expected'])}"
+            elif name != "reason_only":
+                answer = " ｜ 无答案"
+            print(f"  {item['sample']} {item['key']}: {before} → {after}{reasons}{answer}")
+
+
+# ---------------------------------------------------------------------------
 # Review page
 # ---------------------------------------------------------------------------
 
@@ -505,6 +686,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_check.add_argument("--run", type=Path, help="已有的结果缓存；不给则现跑")
     p_check.add_argument("--samples", nargs="*")
     p_check.add_argument("--json", action="store_true", help="以 JSON 输出")
+    p_diff = sub.add_parser("diff", help="回归：某个提交与当前代码逐条比较判定")
+    p_diff.add_argument("base", nargs="?", default="HEAD", help="基线提交（默认 HEAD，即比较未提交的改动）")
+    p_diff.add_argument("--samples", nargs="*", default=SAMPLES)
+    p_diff.add_argument("--json", action="store_true", help="以 JSON 输出")
     args = parser.parse_args(argv)
 
     if args.command == "run":
@@ -530,6 +715,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print_check(result)
         return 1 if any(result["findings"].get(k) for k in ("missed", "wrongly_passed")) else 0
+    elif args.command == "diff":
+        result = diff_runs(run_samples_at(args.base, args.samples), run_samples(args.samples))
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print_diff(result)
+        return 1 if result["findings"].get("regression") else 0
     return 0
 
 

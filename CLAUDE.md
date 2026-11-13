@@ -37,8 +37,8 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。
 ## 必须遵守的工作约定
 
 1. **不能让原来 OK 的变成不 OK。** 每家 PTR 写法都不同。改任何 PTR 规则后：
-   - 先用**上一个提交**（`git worktree add /tmp/prev HEAD`，在其中软链 `素材`）跑全部样本作为基线，再用新代码跑；
-   - 逐条比较 `coverage_ledger` 的 `decision`：原“一致”不得变成待确认/不一致，原“不一致”不得消失；
+   - 跑 `.venv/bin/python -m mvp.ptr_gold diff`（默认拿 HEAD 当基线，比较未提交的改动；也可写 `diff <提交>`）。它会在临时 worktree 里用基线代码跑全部样本、再用当前代码跑，逐条比较 `coverage_ledger` 的 `decision`，跑完自动删除 worktree；有缓存时几秒钟。
+   - 原“一致”不得变成待确认/不一致，原“不一致”不得消失：出现在“变差，需要处理”里的条目退出码为 1，必须处理；与标准答案相符的变化单独列出；
    - 有变化的条目逐条说明原因，写进提交说明。
    - 跑单个样本：`compare_ptr_report(report_pdf, ptr_pdf, comparison_mode="rules", ocr_mode="auto")`（`mvp/ptr_compare.py`），样本在 `素材/report/<编号>/`、`素材/ptr/<编号>/`。
    - 当前样本（13 组）：0596 0775 0778 0780 1539 2170 2795 2948 3940 4788 5332 5780 5782（5780、5782 为扫描件 PTR）。
@@ -52,7 +52,7 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。
 
 - `素材/gold/<编号>.json`：每条 `expected`（matched/mismatch/manual/excluded）、`acceptable`、`status`（draft=工具结果预填未复核 / confirmed=人工确认）、`issue`。只有 confirmed 算答案。`素材/expected/` 是早期工具的输出快照，**不是答案**（如 2795 2.5 被记成一致）。
 - 工具：`mvp/ptr_gold.py`（`run` / `draft` / `review-page` / `merge` / `check`），复核页模板 `mvp/ptr_gold_review.html`，生成到 `output/gold-review/index.html`，用 `.claude/launch.json` 的 `gold-review`（8790 端口）打开。
-- 改规则后：`.venv/bin/python -m mvp.ptr_gold check` 对答案（漏报、不该放行时退出码 1），未复核条目仍按上面的回归流程比较。
+- 改规则后：先 `.venv/bin/python -m mvp.ptr_gold diff` 看判定变化，再 `.venv/bin/python -m mvp.ptr_gold check` 对答案（漏报、不该放行时退出码 1），未复核条目仍按上面的回归流程比较。
 - `status=claude`：Claude 逐条判断（带 `claude.confidence`/`reason`），与人工确认分开统计；人工确认优先。复核页默认只显示“Claude 不确定 + 抽查样本”。
 - 进度（2026-11-08）：52 条人工确认（含 13 条不确定项裁定、24 条抽查，抽查 23/24 与 Claude 一致）；944 条 Claude 已判（A/B/C 逐条看文字，表格和扫描件对照 PDF/页面图像；D/E 用脚本核对）。
 - 用户裁定口径：与 PTR 文字不同即“不一致”（删“等”/“应”、简写、图题少字、漏写标称值、“动作时候”≠“动作时”、“0.7”≠“0.70”都算）；PTR 笔误而报告写对（0596 “0Dplus”）也报不一致；只列送检型号且全部相同 → 待确认；不检条款（结果“/”）的抄录错误 → 排除；PTR 自身目录/正文不一致 → 排除；父条款只有标题、内容在子条款核对 → 一致；页眉页脚、报告单位行和结果小标题、全半角括号、冒号、换行空格 → 忽略。

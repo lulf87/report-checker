@@ -53,6 +53,35 @@ class PtrGoldTests(unittest.TestCase):
         result = gold.check(drifted)
         self.assertEqual(list(result["findings"]), ["draft_drift"])
 
+    def test_diff_separates_regressions_from_changes_the_answer_supports(self) -> None:
+        base = self.run_of(
+            entry("2.1", "matched"), entry("2.2", "matched"), entry("2.3", "mismatch", "UNIT_MISMATCH"),
+            entry("2.4", "manual", "TEXT_REVIEW_REQUIRED"), entry("2.5", "matched"), entry("2.6", "matched"),
+            entry("2.7", "matched"),
+        )
+        gold.draft(base)
+        gold.merge({"verdicts": [{"sample": "9999", "key": "2.2", "expected": "mismatch", "issue": "少字"}]})
+        current = self.run_of(
+            entry("2.1", "manual", "TEXT_REVIEW_REQUIRED"),      # 一致 → 待确认，无答案：变差
+            entry("2.2", "mismatch", "TEXT_WORDING_MISMATCH"),   # 一致 → 不一致，答案支持
+            entry("2.3", "matched"),                             # 不一致消失：变差
+            entry("2.4", "matched", "SAFE_TEXT_EQUIVALENCE"),    # 待确认 → 一致：其他变化
+            entry("2.5", "matched", "SAFE_TEXT_EQUIVALENCE"),    # 只有原因码变了
+            entry("2.6", "matched"),                             # 不变
+            entry("2.8", "manual", "TEXT_REVIEW_REQUIRED"),      # 新增；2.7 消失：变差
+        )
+        result = gold.diff_runs(base, current)
+        keys = {name: [item["key"] for item in items] for name, items in result["findings"].items()}
+        self.assertEqual(keys, {
+            "regression": ["2.1", "2.3", "2.7"],
+            "explained": ["2.2"],
+            "other": ["2.4"],
+            "added": ["2.8"],
+            "reason_only": ["2.5"],
+        })
+        self.assertEqual(result["totals"], {"entries": 8, "unchanged": 1})
+        self.assertEqual(gold.diff_runs(base, base)["findings"], {})
+
 
 if __name__ == "__main__":
     unittest.main()
