@@ -25,7 +25,7 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。
 ## 测试
 
 ```bash
-.venv/bin/python -m unittest tests.test_ptr_compare            # 约 2–7 分钟，需要 素材/
+.venv/bin/python -m unittest tests.test_ptr_compare            # 首次约 2 分钟，有缓存后约 25 秒，需要 素材/
 .venv/bin/python -m unittest tests.test_ptr_safe_equivalence tests.test_ptr_table_rows
 .venv/bin/python -m unittest tests.test_ptr_draft_runner tests.test_ptr_formal_runner
 .venv/bin/python -m unittest tests.test_run_state_server tests.test_workbench_upload
@@ -65,7 +65,8 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。
 
 ## 当前状态（2026-11-08）
 
-- 数据库瘦身（11-12，已提交）：`run_store.py` 升到 schema v9，输入快照只存在 `runs` 上，`findings`/`evidence` 的 `input_snapshot_json` 只在与 Run 不同时才有值（读取用 `_EFFECTIVE_*_SNAPSHOT`）；补了 evidence/review_actions 索引。旧库在下次重启服务时自动迁移并 VACUUM（副本实测 3.06 GB → 137 MB，约 12 秒）。**迁移后旧版本代码打不开这个库**（会报 `UNSUPPORTED_SCHEMA_VERSION`）。
+- 表格/OCR 缓存（11-12，已提交 651baf3）：`mvp/table_cache.py` 把 PTR 核对路径上的 `find_tables` 结果和扫描件 OCR 原始结果存到 `output/table-cache/`（键 = PDF 哈希 + PyMuPDF/OCR 版本 + 参数，**与规则代码无关，改规则不用清缓存**；删掉整个目录即可重建）。命中后 13 组样本约 2 秒跑完。做回归时让基线 worktree 共用缓存：`REPORT_CHECKER_TABLE_CACHE=<本项目>/output/table-cache`；怀疑缓存时设 `REPORT_CHECKER_TABLE_CACHE=off` 对比。**改了 `table_cache.py` 的存储内容要把 `FORMAT_VERSION` 加一。**
+- 数据库瘦身（11-12，已提交 f66b5d2）：`run_store.py` 升到 schema v9，输入快照只存在 `runs` 上，`findings`/`evidence` 的 `input_snapshot_json` 只在与 Run 不同时才有值（读取用 `_EFFECTIVE_*_SNAPSHOT`）；补了 evidence/review_actions 索引。旧库在下次重启服务时自动迁移并 VACUUM（副本实测 3.06 GB → 137 MB，约 12 秒）。**迁移后旧版本代码打不开这个库**（会报 `UNSUPPORTED_SCHEMA_VERSION`）。
 - 结果页改成直白说明（11-08，已提交 15ca3f1）：PTR 每条问题/待确认在详情顶部写“哪里不对 / 你要做”（`ptrManualGuidance`，按原因码给出页码和判断方法）；措辞差异带上下文（`wording_differences` 新增 `before`/`ptr_span`/`report_span`/`after`，只供显示，判定不变）；PTR 不再每条显示“匹配依据”、隐藏唯一对应时的“条款候选对应”行；只有空格的差异不再标红；默认“逐条结果”；历史记录显示实际用时。13 组判定 0 变化，`check` 通过，`test_workbench_upload` 的旧标题期望已更新（现在全部通过）。
 - 分支：2026-11-11 起直接在 `main` 上工作（`codex/ptr-rules-0.5.1` 已合并进 `main`，db537f8；合并时保留了 `ptr_scope.py`，未应用 main 上的 285e248 撤销）。
 - 已提交的最近工作：
