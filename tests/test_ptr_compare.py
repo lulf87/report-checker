@@ -11,6 +11,7 @@ import pymupdf as fitz
 from mvp.ptr_compare import (
     EXCLUDED,
     MANUAL,
+    OCR_DUAL_ENGINE_MATCH,
     MISMATCH,
     MATCHED,
     apply_llm_review,
@@ -327,6 +328,88 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         self.assertEqual(missing["decision"], MISMATCH)
         self.assertEqual(missing["reason_code"], "PTR_CLAUSE_MISSING")
         self.assertTrue(result["summary"]["conserved"])
+
+    def _ocr_case(self, primary_text, second_texts, *, report_text="输入阻抗应不小于 5MΩ。",
+                  report_ocr=False, issues=()):
+        def node(role, text, method=None, extra_issues=()):
+            evidence = {"role": role, "pdf_page": 1, "bbox": [1, 1, 10, 10], "source_sha256": role}
+            if method:
+                evidence["extraction_method"] = method
+            return {
+                "node_id": f"{role}:clause:2.1:{method}:{text}", "role": role, "clause_id": "2.1",
+                "parent_clause_id": "2", "title": "输入阻抗", "text": text, "normalized_text": text,
+                "references": {"standards": [], "tables": []}, "reference_bindings": [],
+                "is_heading_only": False, "pages": [1], "evidence": [evidence], "table_rows": [],
+                "source_sha256": role, "extraction_issues": ["OCR_REVIEW_REQUIRED", *extra_issues] if method else [],
+            }
+
+        report_node = node("report", report_text, "ocr:apple_vision" if report_ocr else None)
+        ptr_node = node("ptr", primary_text, "ocr:apple_vision", issues)
+        report = {
+            "source_sha256": "report", "nodes": [report_node], "nodes_by_clause": {"2.1": [report_node]},
+            "scope": {"status": "parsed", "included_clause_ids": ["2.1"], "excluded_clause_ids": []},
+            "diagnostics": {"status": "parsed"},
+        }
+        ptr = {
+            "source_sha256": "ptr", "nodes": [ptr_node],
+            "diagnostics": {"status": "ocr_manual", "ocr_used": True},
+            "ocr_alternate_nodes": {
+                engine: [node("ptr", text, f"ocr:{engine}") for text in texts]
+                for engine, texts in second_texts.items()
+            },
+        }
+        with patch("mvp.ptr_compare.extract_report_clauses", return_value=report), patch(
+            "mvp.ptr_compare.extract_ptr_clauses", return_value=ptr
+        ), patch("mvp.ptr_compare.ptr_running_header_lines", return_value=[]):
+            result = compare_ptr_report("report.pdf", "ptr.pdf", comparison_mode="rules")
+        entry = next(item for item in result["coverage_ledger"] if item["clause_id"] == "2.1")
+        return entry, entry["text_comparison"]["ocr_confirmation"]
+
+    def test_scanned_ptr_passes_only_when_every_ocr_engine_matches_the_report(self) -> None:
+        same = "输入阻抗应不小于 5MΩ。"
+        entry, confirmation = self._ocr_case(same, {"rapidocr": [same]})
+        self.assertEqual((entry["decision"], entry["reason_code"]), (MATCHED, OCR_DUAL_ENGINE_MATCH))
+        self.assertEqual(confirmation["engines"], ["apple_vision", "rapidocr"])
+        self.assertEqual(entry["text_comparison"]["equivalence_rules"][-1]["rule"], OCR_DUAL_ENGINE_MATCH)
+
+        refused = {
+            "NO_SECOND_ENGINE": self._ocr_case(same, {}),
+            # The second engine read another number: one of the two is wrong.
+            "SECOND_ENGINE_READING_NOT_MATCHED": self._ocr_case(same, {"rapidocr": ["输入阻抗应不小于 6MΩ。"]}),
+            "SECOND_ENGINE_CLAUSE_NOT_UNIQUE": self._ocr_case(same, {"rapidocr": [same, same]}),
+            "PRIMARY_READING_NOT_MATCHED": self._ocr_case("输入阻抗应不小于 6MΩ。", {"rapidocr": [same]}),
+            "PTR_EXTRACTION_ISSUE": self._ocr_case(same, {"rapidocr": [same]}, issues=["DUPLICATE_PTR_CLAUSE"]),
+            "REPORT_ALSO_FROM_OCR": self._ocr_case(same, {"rapidocr": [same]}, report_ocr=True),
+        }
+        for reason, (entry, confirmation) in refused.items():
+            with self.subTest(reason=reason):
+                self.assertEqual((entry["decision"], entry["reason_code"]), (MANUAL, "PTR_OCR_CANDIDATES_MANUAL"))
+                self.assertEqual((confirmation["status"], confirmation["reason"]), ("not_confirmed", reason))
+        # A third engine that disagrees also blocks the pass.
+        entry, confirmation = self._ocr_case(same, {"rapidocr": [same], "other": ["输入阻抗应不小于 5GΩ。"]})
+        self.assertEqual(entry["decision"], MANUAL)
+        self.assertEqual(confirmation["engine"], "other")
+        # A segmentation marker alone does not block it.
+        entry, _ = self._ocr_case(same, {"rapidocr": [same]}, issues=["LETTERED_CLAUSE_PARENT"])
+        self.assertEqual(entry["decision"], MATCHED)
+
+    def test_appendix_named_word_for_word_on_both_sides_needs_no_table(self) -> None:
+        def node(role: str, text: str, tables: list[str]) -> dict:
+            return {"node_id": f"{role}:2.6", "role": role, "clause_id": "2.6", "title": "安全要求", "text": text,
+                    "references": {"standards": [], "tables": tables}, "reference_bindings": [],
+                    "table_rows": [], "evidence": [], "pages": [1]}
+
+        text = "安全要求\n产品特征见附录A。"
+        same = _compare_text(node("ptr", text, ["附录A"]), node("report", text, ["附录A"]), has_children=False)
+        self.assertEqual(same["decision"], MATCHED)
+        self.assertEqual(same["table_comparison"]["reason_code"], "APPENDIX_REFERENCED_BY_NAME_ONLY")
+        # A table that neither side could extract may be an image on both sides.
+        table_text = "安全要求\n应符合表5 的要求。"
+        table = _compare_text(node("ptr", table_text, ["表5"]), node("report", table_text, ["表5"]), has_children=False)
+        self.assertEqual(table["decision"], MANUAL)
+        other = _compare_text(node("ptr", text, ["附录A"]),
+                              node("report", text.replace("附录A", "附录B"), ["附录B"]), has_children=False)
+        self.assertNotEqual(other["decision"], MATCHED)
 
     def test_declared_scope_hole_is_explicitly_unaccounted(self) -> None:
         report = {
@@ -817,7 +900,18 @@ class PtrCompareSampleTests(unittest.TestCase):
             self.assertEqual(result["ptr"]["diagnostics"]["ocr"]["status"], "observed")
         eligible = [entry for entry in result["coverage_ledger"] if entry["decision"] != EXCLUDED]
         self.assertTrue(eligible)
-        self.assertTrue(all(entry["decision"] == MANUAL for entry in eligible))
+        # OCR text never yields 不一致; it yields 一致 only when every OCR
+        # engine's own reading matches the Report.
+        for entry in eligible:
+            if entry["decision"] == MANUAL:
+                continue
+            self.assertEqual(entry["decision"], MATCHED, entry["clause_id"])
+            self.assertEqual(entry["reason_code"], OCR_DUAL_ENGINE_MATCH, entry["clause_id"])
+            confirmation = entry["text_comparison"]["ocr_confirmation"]
+            self.assertEqual(confirmation["status"], "confirmed")
+            self.assertGreaterEqual(len(confirmation["engines"]), 2)
+            self.assertIn(OCR_DUAL_ENGINE_MATCH, [rule["rule"] for rule in entry["text_comparison"]["equivalence_rules"]])
+        self.assertTrue(any(entry["decision"] == MANUAL for entry in eligible))
         self.assertEqual(result["summary"]["counts"][MISMATCH], 0)
         self.assertEqual(result["summary"]["decision"], MANUAL)
         self.assertFalse(result["publishable"])

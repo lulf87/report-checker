@@ -518,6 +518,45 @@ def _text_table(page: fitz.Page, caption: Mapping[str, Any], lines: Sequence[Map
 
 @table_cache.flush_after
 def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
+    """PTR clauses and tables; for a scanned PTR also every other OCR reading.
+
+    A scanned PTR is segmented from the primary OCR engine's lines.  Each
+    other engine that produced lines is segmented independently in exactly the
+    same way and returned under ``ocr_alternate_nodes`` (engine → nodes), so
+    the comparison can require that independent readings agree before it
+    trusts OCR text.  Alternate nodes are never merged into ``nodes``.
+    """
+
+    shared: dict[str, Any] = {}
+    result = _extract_ptr_layout(path, ocr_mode=ocr_mode, ocr_shared=shared)
+    ocr = result["diagnostics"].get("ocr") or {}
+    primary = ocr.get("primary_backend")
+    alternates: dict[str, list[dict[str, Any]]] = {}
+    if primary and result["diagnostics"].get("ocr_used"):
+        for backend in ocr.get("used_backends", []):
+            if backend == primary:
+                continue
+            other = _extract_ptr_layout(path, ocr_mode=ocr_mode, ocr_channel=str(backend), ocr_shared=shared)
+            other_ocr = other["diagnostics"].get("ocr") or {}
+            if other_ocr.get("primary_backend") == backend and other["diagnostics"].get("ocr_used"):
+                alternates[str(backend)] = other["nodes"]
+    result["ocr_alternate_nodes"] = alternates
+    return result
+
+
+def _extract_ptr_layout(
+    path: Path,
+    *,
+    ocr_mode: str = "auto",
+    ocr_channel: str | None = None,
+    ocr_shared: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One pass; ``ocr_channel`` selects which OCR engine is segmented.
+
+    ``ocr_shared`` carries the OCR observations between passes so the page
+    images are recognised once.
+    """
+
     from mvp.ptr_ocr import iter_ptr_ocr_lines
     digest = sha256_file(path)
     nodes: list[dict[str, Any]] = []
@@ -647,10 +686,19 @@ def extract_ptr_layout(path: Path, *, ocr_mode: str = "auto") -> dict[str, Any]:
         # OCR channels are alternative observations, never concatenated as a
         # single source. Keep the primary channel for segmentation and retain
         # all observations for audit/review.
-        observations, ocr = iter_ptr_ocr_lines(path)
+        if ocr_shared is not None and "observations" in ocr_shared:
+            observations, ocr = ocr_shared["observations"], dict(ocr_shared["diagnostics"])
+        else:
+            observations, ocr = iter_ptr_ocr_lines(path)
+            if ocr_shared is not None:
+                ocr_shared.update(observations=observations, diagnostics=dict(ocr))
         from mvp.ptr_compare import _parse_clause_lines
         channels = ocr.get("used_backends", [])
-        primary = next((name for name in channels if any(v[3] == f"ocr:{name}" for v in observations)), None)
+        with_lines = [name for name in channels if any(v[3] == f"ocr:{name}" for v in observations)]
+        if ocr_channel is None:
+            primary = with_lines[0] if with_lines else None
+        else:
+            primary = ocr_channel if ocr_channel in with_lines else None
         selected = [v for v in observations if v[3] == f"ocr:{primary}"]
         # Preserve the complete OCR stream even if body detection fails.
         ocr["primary_backend"] = primary

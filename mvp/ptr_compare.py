@@ -35,6 +35,7 @@ from mvp.checker import (
     display_text,
     header_map,
     is_formal_report_table,
+    page_three_fields,
     rect_list,
     report_page_tables,
     report_table_cell,
@@ -346,12 +347,24 @@ def _raw_numeric_signature(value: Any, *, role: str | None = None) -> list[tuple
     ]
 
 
+_EXPONENT_UNIT_LINE_RE = re.compile(
+    r"^\s*单位\s*[:：]\s*[A-Za-zμΩ°%]+-?\d(?:[/·.][A-Za-zμΩ°%]+(?:-?\d)?)*\s*$"
+)
+
+
 def _numeric_source_text(value: Any, *, role: str | None = None) -> str:
     """Remove references that look numeric but are not measured facts."""
 
     source = value
     if str(role or "").lower() == "report":
         source, _ = _split_report_auxiliary_lines(value)
+        # The Report's own unit line (``单位：min−1``, ``单位：mm2``) names a
+        # unit; its exponent is not a measured value.  The unit itself is
+        # still compared through ``unit_labels``.
+        source = "\n".join(
+            line for line in str(source).splitlines()
+            if not _EXPONENT_UNIT_LINE_RE.match(unicodedata.normalize("NFKC", line).replace("−", "-"))
+        )
     text = _strip_document_noise(_normalization_for_numeric(source))
     # A line break inside a Chinese word (``详见附\n录C.1``) must not turn the
     # appendix number into a measured value.
@@ -1793,6 +1806,26 @@ def _report_nodes_from_item(
     return nodes
 
 
+def report_submitted_models(report_path: str | Path) -> list[str]:
+    """Models registered in the 型号规格 field on the Report's page 3.
+
+    Empty when the field is missing or only points elsewhere
+    (``见“样品描述”栏``); callers must then not assume any model.
+    """
+
+    try:
+        with fitz.open(Path(report_path).expanduser()) as document:
+            if document.page_count < 3:
+                return []
+            value = page_three_fields(document[2]).get("型号规格", ("", None))[0]
+    except (RuntimeError, ValueError, OSError):
+        return []
+    models = [part.strip() for part in re.split(r"[、，,;；\n]+", str(value or "")) if part.strip()]
+    if not models or any(re.search(r"见|详见|附页|/$", model) for model in models):
+        return []
+    return models
+
+
 def extract_report_clauses(report_path: str | Path) -> dict[str, Any]:
     """Extract all physical requirement columns, excluding Report results."""
     from mvp.ptr_layout import extract_report_layout
@@ -2209,9 +2242,19 @@ def _compare_text(
         # The Report may expand the referenced PTR table row as labelled
         # values.  Verify that expansion cell by cell, then compare the rest
         # of the Report text with the ordinary rules.
-        from mvp.ptr_table_rows import compare_row_expansion, compare_table_cells
+        from mvp.ptr_table_rows import (
+            compare_multi_row_expansion, compare_parameter_column, compare_row_expansion, compare_table_cells,
+        )
 
-        expansion = compare_row_expansion(ptr, report)
+        expansion = compare_row_expansion(ptr, report, (context or {}).get("report_models"))
+        if expansion is None:
+            # The clause covers several table rows (two parameters, or one
+            # row per product model); the Report copies each as a block.
+            expansion = compare_multi_row_expansion(ptr, report, (context or {}).get("report_models"))
+        if expansion is None:
+            # The table has a column named after the clause's parameter and
+            # the Report copies that column as ``row name：value`` lines.
+            expansion = compare_parameter_column(ptr, report)
         if expansion is None:
             # Both sides print the table: compare it by row name.
             expansion = compare_table_cells(ptr, report, (context or {}).get("ptr_headers"))
@@ -2240,6 +2283,28 @@ def _compare_text(
         if ptr_binding_status == MATCHED:
             # The Report names the same table/appendix and has nothing to bind.
             binding_status, binding_reason = MATCHED, None
+    if (
+        row_expansion is None
+        and table_comparison["status"] == MANUAL
+        and not report.get("table_rows")
+        and not ptr.get("table_rows")
+        and ptr_refs.get("tables")
+        and ptr_refs.get("tables") == report_refs.get("tables")
+        and all(str(label).startswith("附录") for label in ptr_refs.get("tables") or [])
+        and text_status == MATCHED
+        and numeric_status == MATCHED
+    ):
+        # ``产品特性见附录A`` on both sides, word for word: the clause only
+        # points at an appendix and neither side restates it.  Limited to
+        # appendices – a *table* that was extracted on neither side may be an
+        # image on both and must stay for review.
+        table_comparison = {
+            "status": MATCHED,
+            "reason_code": "APPENDIX_REFERENCED_BY_NAME_ONLY",
+            "ptr_tables": 0,
+            "report_tables": 0,
+        }
+        binding_status, binding_reason = MATCHED, None
     if row_expansion is not None:
         expansion_status = str(row_expansion.get("status"))
         table_comparison = {
@@ -2501,6 +2566,84 @@ def _compare_with_table_expansion(
         if index in set(expansion.get("consumed_report_lines") or [])
     )
     return result
+
+
+OCR_DUAL_ENGINE_MATCH = "OCR_DUAL_ENGINE_MATCH"
+# Markers that only describe how a clause was segmented; text-layer PTRs carry
+# them too and are compared normally.  Any other issue (duplicate clause
+# number, table of contents ≠ body, …) blocks an OCR pass.
+_OCR_HARMLESS_ISSUES = frozenset(
+    {"OCR_REVIEW_REQUIRED", "LETTERED_CLAUSE_PARENT", "INLINE_LETTERED_CLAUSE_SPLIT", "INLINE_CLAUSE_SPLIT"}
+)
+
+
+def _ocr_dual_engine_confirmation(
+    ptr: Mapping[str, Any],
+    report: Mapping[str, Any],
+    comparison: Mapping[str, Any],
+    alternates_by_clause: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
+    *,
+    has_children: bool,
+    context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """May a scanned-PTR clause be passed without a person reading it?
+
+    Only when every one of these holds; anything else stays manual:
+
+    * the Report side comes from its text layer, not from OCR;
+    * the clause segmented from the primary OCR engine is 一致 with the
+      Report under the ordinary rules, with nothing left for manual review;
+    * at least one other OCR engine read the document, and *each* other
+      engine, segmented on its own, has exactly one clause with this number
+      which is also 一致 with the Report under the same rules;
+    * neither reading of the PTR clause has an extraction issue other than
+      the segmentation markers in ``_OCR_HARMLESS_ISSUES``.
+
+    Two engines misreading the same characters so that both happen to equal
+    the Report's printed text is what this rule accepts as negligible.  It can
+    only produce 一致; an OCR difference is never reported as 不一致.
+    """
+
+    primary = sorted({
+        str(item.get("extraction_method", ""))[4:]
+        for item in ptr.get("evidence", [])
+        if str(item.get("extraction_method", "")).startswith("ocr:")
+    })
+
+    def refused(reason: str, **extra: Any) -> dict[str, Any]:
+        return {"rule": OCR_DUAL_ENGINE_MATCH, "status": "not_confirmed", "reason": reason,
+                "engines": primary, **extra}
+
+    def clean_match(result: Mapping[str, Any]) -> bool:
+        return (
+            result.get("decision") == MATCHED
+            and (result.get("table_comparison") or {}).get("status") != MANUAL
+        )
+
+    if _ocr_derived(report):
+        return refused("REPORT_ALSO_FROM_OCR")
+    if len(primary) != 1:
+        return refused("PRIMARY_ENGINE_NOT_UNIQUE")
+    if set(ptr.get("extraction_issues") or []) - _OCR_HARMLESS_ISSUES:
+        return refused("PTR_EXTRACTION_ISSUE")
+    if not clean_match(comparison):
+        return refused("PRIMARY_READING_NOT_MATCHED")
+    others = {backend: nodes for backend, nodes in alternates_by_clause.items() if backend != primary[0]}
+    if not others:
+        return refused("NO_SECOND_ENGINE")
+    clause_id = str(ptr.get("clause_id"))
+    for backend in sorted(others):
+        candidates = list(others[backend].get(clause_id) or [])
+        if len(candidates) != 1:
+            return refused("SECOND_ENGINE_CLAUSE_NOT_UNIQUE", engine=backend, candidate_count=len(candidates))
+        if set(candidates[0].get("extraction_issues") or []) - _OCR_HARMLESS_ISSUES:
+            return refused("SECOND_ENGINE_EXTRACTION_ISSUE", engine=backend)
+        second = _compare_text(candidates[0], report, has_children=has_children, context=context)
+        if not clean_match(second):
+            return refused("SECOND_ENGINE_READING_NOT_MATCHED", engine=backend,
+                           second_reason_code=second.get("reason_code"))
+    return {"rule": OCR_DUAL_ENGINE_MATCH, "status": "confirmed", "reason": None,
+            "engines": [primary[0], *sorted(others)]}
 
 
 def _ledger_entry(
@@ -2788,6 +2931,7 @@ def compare_ptr_report(
         if parent:
             children[str(parent)].add(str(node["clause_id"]))
     equivalence_context = {
+        "report_models": report_submitted_models(report_path),
         "ptr_headers": ptr_running_header_lines(ptr_path),
         "ptr_text_by_clause": {
             clause: _text_for_comparison(node.get("text"), role="ptr") for clause, node in ptr_by_clause.items()
@@ -2797,6 +2941,12 @@ def compare_ptr_report(
             clause: list((node.get("references") or {}).get("tables") or []) for clause, node in ptr_by_clause.items()
         },
     }
+    ocr_alternates_by_clause: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
+    for backend, alternate_nodes in (ptr.get("ocr_alternate_nodes") or {}).items():
+        grouped: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for node in alternate_nodes:
+            grouped[str(node["clause_id"])].append(node)
+        ocr_alternates_by_clause[str(backend)] = dict(grouped)
     ledger: list[dict[str, Any]] = []
     accounted_report_ids: set[str] = set()
     for clause_id, ptr_candidates in sorted(ptr_candidates_by_clause.items(), key=lambda item: _clause_sort_key(item[0])):
@@ -2901,8 +3051,27 @@ def compare_ptr_report(
             decision = MANUAL
             reason_code = str(comparison["table_comparison"].get("reason_code") or "TABLE_CONTENT_NOT_EXTRACTED")
         elif _ocr_derived(ptr_node) or ptr.get("diagnostics", {}).get("ocr_used"):
-            decision = MANUAL
-            reason_code = "PTR_OCR_CANDIDATES_MANUAL"
+            confirmation = _ocr_dual_engine_confirmation(
+                ptr_node,
+                report_node,
+                comparison,
+                ocr_alternates_by_clause,
+                has_children=bool(children.get(clause_id)),
+                context=equivalence_context,
+            )
+            comparison["text_comparison"]["ocr_confirmation"] = confirmation
+            if confirmation["status"] == "confirmed":
+                decision = MATCHED
+                reason_code = OCR_DUAL_ENGINE_MATCH
+                comparison["text_comparison"].setdefault("equivalence_rules", []).append(
+                    {
+                        "rule": OCR_DUAL_ENGINE_MATCH,
+                        "label": "扫描件：" + "、".join(confirmation["engines"]) + " 各自识别的文字都与报告一致",
+                    }
+                )
+            else:
+                decision = MANUAL
+                reason_code = "PTR_OCR_CANDIDATES_MANUAL"
         else:
             reason_code = comparison["reason_code"]
         if comparison_mode == "rules+llm" and decision == MISMATCH and comparison["reason_code"] == "TEXT_MISMATCH":

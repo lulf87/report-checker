@@ -93,12 +93,37 @@ def _clause_parameter(ptr_node: Mapping[str, Any]) -> str:
     return _key(title)
 
 
+def _clause_aliases(ptr_node: Mapping[str, Any]) -> set[str]:
+    """Names the clause title gives in brackets: ``心室后心房不应期（PVARP）``.
+
+    An alias only ever selects a table row whose name equals it exactly, so a
+    unit in brackets (``(ms)``) selects nothing.
+    """
+
+    title = str(ptr_node.get("title") or str(ptr_node.get("text") or "").split("\n", 1)[0])
+    title = re.split(r"[:：]", unicodedata.normalize("NFKC", title), maxsplit=1)[0]
+    return {_key(name) for name in re.findall(r"\(([^()]+)\)", title) if _key(name)}
+
+
+def _continues_previous_page(table: Mapping[str, Any], row_index: int, row: Sequence[str]) -> bool:
+    """A table row cut by a page break: the next page's table starts with the
+    rest of it, and its first cell holds only the rest of the row name – a
+    bracketed unit such as ``（ms）`` – not a new name."""
+
+    return bool(
+        table.get("continuation_of") and row_index == 0 and row
+        and str(row[0]).strip() and not _key(row[0])
+        and any(str(cell or "").strip() for cell in row[1:])
+    )
+
+
 def ptr_row_cells(ptr_node: Mapping[str, Any]) -> dict[str, Any] | None:
     """Find the PTR table row for this clause and return its labelled cells."""
 
     parameter = _clause_parameter(ptr_node)
     if not parameter:
         return None
+    aliases = _clause_aliases(ptr_node)
     header: list[str] | None = None
     groups: list[dict[str, Any]] = []
     table_numbers: set[float] = set()
@@ -109,6 +134,8 @@ def ptr_row_cells(ptr_node: Mapping[str, Any]) -> dict[str, Any] | None:
             if _is_header(row, first_row=row_index == 0 and not table.get("continuation_of")):
                 header = row
                 continue
+            if _continues_previous_page(table, row_index, row) and groups:
+                row = ["", *row[1:]]
             if row and row[0].strip():
                 groups.append({"key": _key(row[0]), "rows": [row], "header": header, "table": table})
             elif groups:
@@ -116,7 +143,8 @@ def ptr_row_cells(ptr_node: Mapping[str, Any]) -> dict[str, Any] | None:
     matches = [
         g for g in groups
         if g["key"] and g["header"]
-        and (g["key"] == parameter or g["key"].startswith(parameter) or g["key"].endswith(parameter))
+        and (g["key"] == parameter or g["key"].startswith(parameter) or g["key"].endswith(parameter)
+             or g["key"] in aliases)
     ]
     if len(matches) != 1:
         return None
@@ -219,11 +247,17 @@ def _column_for(label: str, ptr_row: Mapping[str, Any]) -> str | None | bool:
 def compare_row_expansion(
     ptr_node: Mapping[str, Any],
     report_node: Mapping[str, Any],
+    models: Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
     """Compare a Report's expansion of the PTR table row, cell by cell.
 
     Returns ``None`` when the clause does not have that structure (no unique
     PTR row, or no Report value labelled with a PTR column).
+
+    ``models`` are the models registered on the Report's page 3.  When it is
+    given (an empty list means “not stated”) and the PTR row has different
+    values for different product models, a Report value is accepted only if
+    it is the value of a registered model; see ``_require_submitted_model``.
     """
 
     ptr_row = ptr_row_cells(ptr_node)
@@ -281,6 +315,14 @@ def compare_row_expansion(
                     value = lines[index]
                     span.append(index)
                     index += 1
+                    # ``磁频率（min−1）:`` then ``BOS：96min−1`` – the value
+                    # line carries the label of the PTR cell it copies.
+                    inner = _LABELLED_RE.match(value)
+                    if inner and _column_for(inner.group("label"), ptr_row) not in (False, None):
+                        labelled, column = inner, _column_for(inner.group("label"), ptr_row)
+                        value = inner.group("value")
+                        candidates = [c["value"] for c in ptr_row["cells"] if c["column"] == column]
+                        raw_candidates = [c.get("raw", c["value"]) for c in ptr_row["cells"] if c["column"] == column]
             # Absorb wrapped lines while the text stays a contiguous part of
             # the PTR cell (the PTR text decides where the value ends).
             while index < len(lines) and not _UNIT_LINE_RE.match(lines[index]):
@@ -400,6 +442,8 @@ def compare_row_expansion(
             for op, a, b, c, d in SequenceMatcher(None, closest, report_value, autojunk=False).get_opcodes()
             if op != "equal"
         ]
+    if models is not None:
+        _require_submitted_model(ptr_node, ptr_row, cells, models)
     statuses = {cell["status"] for cell in cells}
     status = "mismatch" if "mismatch" in statuses else "manual" if "manual" in statuses else "matched"
     return {
@@ -411,6 +455,474 @@ def compare_row_expansion(
         "cells": cells,
         "consumed_report_lines": sorted(consumed),
     }
+
+
+# ---------------------------------------------------------------------------
+# A clause that covers several PTR table rows
+# ---------------------------------------------------------------------------
+
+_MODEL_HEADERS = {"型号", "规格型号", "型号规格", "适用型号", "产品型号"}
+_ALL_MODELS = {"全部型号", "所有型号", "全部", "通用"}
+
+
+def _spaced(value: Any) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(value or ""))).strip()
+
+
+def _model_applies(model_cell: str, models: Sequence[str]) -> bool:
+    """Is one of the submitted ``models`` printed in this PTR model cell?
+
+    The name must stand on its own (``DR-T`` is not found inside ``SR-T`` and
+    ``6232`` not inside ``62320``); a wrapped name (``Alpha 8⏎DR-T``) counts.
+    """
+
+    cell = _spaced(model_cell)
+    if _key(cell) in _ALL_MODELS:
+        return True
+    for model in models:
+        name = _spaced(model)
+        start = cell.find(name) if name else -1
+        while start >= 0:
+            before = cell[start - 1] if start else " "
+            after = cell[start + len(name)] if start + len(name) < len(cell) else " "
+            if not (before.isalnum() or before == "-") and not (after.isalnum() or after == "-"):
+                return True
+            start = cell.find(name, start + 1)
+    return False
+
+
+def _rows_with_merged_cells(table: Mapping[str, Any]) -> list[list[str]]:
+    """Table rows with vertically merged cells repeated in every row they span.
+
+    PyMuPDF reports a merged cell once, in its first row, with a rectangle
+    that covers all its rows; the rows below have *no* cell there (box
+    ``None``), unlike a real empty cell, which has its own rectangle.  A
+    missing cell takes the text of the cell above only when that cell's
+    rectangle reaches down to this row.  The first column is left alone: an
+    empty first cell is what marks a continuation row everywhere else.
+    """
+
+    rows = [[str(cell or "") for cell in row] for row in table.get("rows") or []]
+    boxes = table.get("cell_boxes") or []
+    if len(boxes) != len(rows):
+        return rows
+    for r, row in enumerate(rows):
+        own = [box for box in boxes[r] if box is not None]
+        if not own:
+            continue
+        bottom = max(float(box[3]) for box in own)
+        for c in range(1, min(len(row), len(boxes[r]))):
+            if boxes[r][c] is not None or row[c].strip():
+                continue
+            for q in range(r - 1, -1, -1):
+                if c < len(boxes[q]) and boxes[q][c] is not None:
+                    if float(boxes[q][c][3]) >= bottom - 1.5:
+                        row[c] = rows[q][c]
+                    break
+    return rows
+
+
+def _row_names(label: str) -> list[str]:
+    """Parameter names in a first cell; one cell may serve two parameters
+    (``房室间期(ms)⏎感知后的房室间期(ms)``)."""
+
+    text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(label or "")))
+    names = [part for part in re.split(r"(?<=\))(?=[^(①-⑳*])", text) if _key(part)]
+    return names or [text]
+
+
+def _clause_row_records(ptr_node: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every PTR table row that belongs to the clause's parameter.
+
+    One record per physical row (merged cells repeated).  Only a row with an
+    empty first cell at the top of a continuation table (the table went on to
+    the next page) is joined to the record before it.
+    """
+
+    parameter = _clause_parameter(ptr_node)
+    if not parameter:
+        return []
+    aliases = _clause_aliases(ptr_node)
+
+    def related(key: str) -> bool:
+        return bool(key) and (key == parameter or key.startswith(parameter) or key.endswith(parameter)
+                              or key in aliases)
+
+    header: list[str] | None = None
+    group: dict[str, Any] | None = None
+    records: list[dict[str, Any]] = []
+    for table in ptr_node.get("table_rows") or []:
+        for row_index, row in enumerate(_rows_with_merged_cells(table)):
+            if _is_header(row, first_row=row_index == 0 and not table.get("continuation_of")):
+                header = row
+                continue
+            if _continues_previous_page(table, row_index, row) and records:
+                row = ["", *row[1:]]
+            if row and row[0].strip():
+                names = [name for name in _row_names(row[0]) if related(_key(name))]
+                if not names and related(_key(row[0])):
+                    names = [re.sub(r"\s+", "", row[0])]
+                group = {"names": names, "header": header, "table": table} if names and header else None
+            elif group is not None and group["table"] is not table and records and records[-1]["group"] is group:
+                # The row continues on the next page.  A model cell cut by the
+                # page break (``Alpha 8 DR`` / ``Alpha 8⏎DR-T``) is one cell.
+                record = records[-1]
+                index = record["model_index"]
+                if index is not None and index < len(row) and row[index].strip():
+                    record["model"] = "\n".join(part for part in (record["model"], row[index].strip()) if part)
+                record["rows"].append(row)
+                continue
+            if group is None:
+                continue
+            head = group["header"]
+            model_index = next((i for i, name in enumerate(head) if i and _key(name) in _MODEL_HEADERS), None)
+            model = row[model_index].strip() if model_index is not None and model_index < len(row) else ""
+            records.append({
+                "group": group, "names": group["names"], "keys": {_key(name) for name in group["names"]},
+                "header": head, "model_index": model_index, "rows": [row], "model": model or None,
+                "pdf_page": table.get("pdf_page"), "bbox": table.get("bbox"),
+            })
+    return records
+
+
+def compare_multi_row_expansion(
+    ptr_node: Mapping[str, Any],
+    report_node: Mapping[str, Any],
+    models: Sequence[str] | None = None,
+) -> dict[str, Any] | None:
+    """Row expansion for a clause whose parameter has several PTR table rows.
+
+    ``灵敏度`` covers the rows ``心房感知灵敏度`` and ``右心室感知灵敏度``;
+    ``房室间期`` is printed as three rows; a row may exist once per product
+    model.  The Report copies each row as its own block (the row name, then
+    ``常规数值：…`` / ``标准设置：…`` / ``允许误差：…``).
+
+    Every Report block is compared with every candidate PTR row using
+    ``compare_row_expansion`` on that single row, and must equal one row in
+    full: each labelled value equals that row's cell, and every non-empty
+    cell of the row is present.  The blocks must then be exactly the rows the
+    Report has to copy:
+
+    * no model column: all rows of the parameter;
+    * a model column: the rows whose model cell names a model registered on
+      the Report's page 3 (``models``) or says 全部型号.  Unknown models
+      (``见“样品描述”栏``) leave the result manual unless all rows are copied.
+
+    Returns ``None`` when the clause has fewer than two such rows or the
+    Report has no block that names one of them.
+    """
+
+    records = _clause_row_records(ptr_node)
+    if len(records) < 2:
+        return None
+    lines = [line for line in str(report_node.get("text") or "").splitlines() if line.strip()]
+    keys = {key for record in records for key in record["keys"]}
+    starts = [index for index, line in enumerate(lines) if _key(line) in keys]
+    if not starts:
+        return None
+    models = [str(model) for model in (models or []) if str(model).strip()]
+
+    # Values the Report prints in the narrow label column of its result
+    # table instead of the requirement text (``允许误⏎差：±⏎20%``).
+    side_cells = [
+        re.sub(r"\s+", "", str(cell or ""))
+        for table in report_node.get("table_rows") or []
+        for cell in (table.get("matrix_row") or [])
+        if str(cell or "").strip()
+    ]
+
+    def attempt(record: Mapping[str, Any], block: Sequence[str]) -> dict[str, Any] | None:
+        head = list(record["header"])
+        rows = [list(row) for row in record["rows"]]
+        label = next(name for name in record["names"] if _key(name) == _key(block[0]))
+        rows[0][0] = label
+        result = compare_row_expansion(
+            {"title": label, "text": str(ptr_node.get("text") or ""),
+             "table_rows": [{"rows": [head, *rows], "pdf_page": record["pdf_page"], "bbox": record["bbox"]}]},
+            {"text": "\n".join(block)},
+        )
+        if result is None:
+            return None
+        unit = _UNIT_IN_LABEL_RE.findall(unicodedata.normalize("NFKC", label))
+        unit = unit[-1].replace("−", "-") if unit else ""
+        required: dict[str, set[str]] = {}
+        for row in rows:
+            for index, value in enumerate(row):
+                if index and index != record["model_index"] and index < len(head) and value.strip():
+                    required.setdefault(_key(head[index]), set()).update({_norm(value), _norm(value) + unit})
+        copied: set[str] = set()
+        for cell in result["cells"]:
+            if cell["status"] == "matched":
+                copied.add(_key(cell["column"]))
+                copied.update(_key(name) for name in cell.get("ptr_columns") or [])
+        result["side_cells"] = {}
+        for column in sorted(set(required) - copied):
+            for position, text in enumerate(side_cells):
+                labelled = _LABELLED_RE.match(text)
+                if labelled and _key(labelled.group("label")) == column and _norm(labelled.group("value")) in required[column]:
+                    result["side_cells"][column] = position
+                    break
+        result["missing_columns"] = sorted(set(required) - copied - set(result["side_cells"]))
+        result["complete"] = result["status"] == "matched" and not result["missing_columns"]
+        return result
+
+    blocks: list[dict[str, Any]] = []
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        key = _key(lines[start])
+        candidates = [index for index, record in enumerate(records) if key in record["keys"]]
+        attempts = {index: attempt(records[index], lines[start:end]) for index in candidates}
+        if all(result is None for result in attempts.values()):
+            if not blocks:
+                continue  # the clause title repeats the row name; not a block
+            blocks.append({"start": start, "end": end, "key": key, "attempts": {}, "complete": []})
+            continue
+        blocks.append({
+            "start": start, "end": end, "key": key,
+            "attempts": {index: result for index, result in attempts.items() if result is not None},
+            "complete": [index for index, result in attempts.items() if result is not None and result["complete"]],
+        })
+    if not blocks:
+        return None
+
+    has_models = any(record["model_index"] is not None for record in records)
+    if not has_models:
+        expected, coverage_reason = list(range(len(records))), "ALL_ROWS_REQUIRED"
+    elif models:
+        expected = [
+            index for index, record in enumerate(records)
+            if record["model"] is None or _model_applies(record["model"], models)
+        ]
+        coverage_reason = "ROWS_OF_SUBMITTED_MODELS"
+    else:
+        expected, coverage_reason = list(range(len(records))), "SUBMITTED_MODELS_UNKNOWN_ALL_ROWS_REQUIRED"
+
+    # Each block must be a different expected row (rows with equal values are
+    # interchangeable, so try the assignments).
+    # A value found in the result table's label column may support one block only.
+    def assign(position: int, used: frozenset[int], side: frozenset[int]) -> list[int] | None:
+        if position == len(blocks):
+            return []
+        for index in blocks[position]["complete"]:
+            needs = frozenset(blocks[position]["attempts"][index]["side_cells"].values())
+            if index in expected and index not in used and not (needs & side):
+                rest = assign(position + 1, used | {index}, side | needs)
+                if rest is not None:
+                    return [index, *rest]
+        return None
+
+    assignment = assign(0, frozenset(), frozenset()) if len(blocks) == len(expected) else None
+    cells: list[dict[str, Any]] = []
+    consumed: set[int] = set()
+    statuses: set[str] = set()
+    for position, block in enumerate(blocks):
+        if assignment is not None:
+            chosen = assignment[position]
+        elif block["complete"]:
+            chosen = block["complete"][0]
+        elif block["attempts"]:
+            chosen = max(block["attempts"], key=lambda index: sum(
+                cell["status"] == "matched" for cell in block["attempts"][index]["cells"]
+            ))
+        else:
+            statuses.add("manual")
+            continue
+        result = block["attempts"][chosen]
+        consumed.add(block["start"])
+        consumed.update(block["start"] + index for index in result["consumed_report_lines"])
+        only_candidate = len([i for i in block["attempts"] if i in expected]) == 1 and chosen in expected
+        status = result["status"]
+        if status == "mismatch" and not only_candidate:
+            status = "manual"  # another row might be the one that was copied
+        if status == "matched" and not result["complete"]:
+            status = "manual"
+        statuses.add(status)
+        row_name = _spaced(lines[block["start"]])
+        model_name = _spaced(records[chosen]["model"]) if records[chosen]["model"] else None
+        for cell in result["cells"]:
+            cells.append({
+                **cell, "row": row_name, "model": model_name,
+                "report_lines": [block["start"] + index for index in cell.get("report_lines") or []],
+            })
+        for column, position in result["side_cells"].items():
+            labelled = _LABELLED_RE.match(side_cells[position])
+            cells.append({
+                "column": column, "row": row_name, "model": model_name,
+                "report": labelled.group("value"), "ptr": _norm(labelled.group("value")),
+                "status": "matched", "reason_code": "CELL_EQUAL_IN_RESULT_TABLE", "report_lines": [],
+            })
+        if result["missing_columns"]:
+            cells.append({
+                "column": "、".join(result["missing_columns"]), "row": row_name, "model": model_name,
+                "report": "", "ptr": None, "status": "manual", "reason_code": "CELL_NOT_COPIED", "report_lines": [],
+            })
+    if assignment is None:
+        statuses.add("manual")
+    status = "mismatch" if "mismatch" in statuses else "manual" if "manual" in statuses else "matched"
+    first = records[0]
+    return {
+        "rule": RULE_ID,
+        "status": status,
+        "row_label": "、".join(dict.fromkeys(name for record in records for name in record["names"])),
+        "row_key": _clause_parameter(ptr_node),
+        "ptr_location": {"pdf_page": first["pdf_page"], "bbox": first["bbox"]},
+        "cells": cells,
+        "consumed_report_lines": sorted(consumed),
+        "row_coverage": {
+            "status": "matched" if assignment is not None else "manual",
+            "reason_code": coverage_reason if assignment is not None else "REPORT_BLOCKS_NOT_THE_REQUIRED_ROWS",
+            "requirement": coverage_reason,
+            "ptr_rows": len(records),
+            "required_rows": len(expected),
+            "report_blocks": len(blocks),
+            "submitted_models": models,
+        },
+    }
+
+
+def compare_parameter_column(
+    ptr_node: Mapping[str, Any],
+    report_node: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """A PTR table with a column named after the clause's parameter.
+
+    ``腔室 | 模式 | 感知不应期`` with one row per chamber; the Report copies
+    the parameter column as ``心室：95 ms ±10 ms``.  Every PTR row must have
+    exactly one Report line labelled with its row name whose value equals the
+    row's cell in the parameter column.
+
+    The other columns (``模式``) are context of the PTR table and are not
+    required in the Report (confirmed by the user for 0596 2.1.6.1); they are
+    listed in ``unchecked_ptr_columns``.  Tables with a model column are not
+    handled here.
+    """
+
+    parameter = _clause_parameter(ptr_node)
+    labels = {compact_label(label) for label in (ptr_node.get("references") or {}).get("tables", [])}
+    tables = [
+        table for table in ptr_node.get("table_rows") or []
+        if not labels or compact_label(table.get("label") or "") in labels
+    ]
+    if not parameter or not tables:
+        return None
+    header: list[str] | None = None
+    rows: list[tuple[str, str, Mapping[str, Any]]] = []
+    for table in tables:
+        for row_index, row in enumerate(_rows_with_merged_cells(table)):
+            if _is_header(row, first_row=row_index == 0 and not table.get("continuation_of")):
+                if header is not None and [_key(c) for c in row] != [_key(c) for c in header]:
+                    return None
+                header = row
+                continue
+            if header is None:
+                return None
+            column = next((i for i, name in enumerate(header) if i and _key(name) == parameter), None)
+            if column is None or any(_key(name) in _MODEL_HEADERS for name in header):
+                return None
+            if not row or not _key(row[0]) or column >= len(row) or not row[column].strip():
+                return None
+            rows.append((_key(row[0]), row[column], table))
+    if not rows or header is None or len({name for name, _, _ in rows}) != len(rows):
+        return None
+    names = {name for name, _, _ in rows}
+    lines = [line for line in str(report_node.get("text") or "").splitlines() if line.strip()]
+    by_name: dict[str, list[tuple[int, str]]] = {}
+    for index, line in enumerate(lines):
+        labelled = _LABELLED_RE.match(line)
+        if labelled and _key(labelled.group("label")) in names and labelled.group("value").strip():
+            by_name.setdefault(_key(labelled.group("label")), []).append((index, labelled.group("value")))
+    if not by_name:
+        return None
+    cells: list[dict[str, Any]] = []
+    consumed: set[int] = set()
+    for name, value, _ in rows:
+        found = by_name.get(name) or []
+        cell = {"column": header[0].strip() + "：" + name, "ptr": _norm(value), "report": "", "report_lines": []}
+        if len(found) != 1:
+            cell.update(status="manual", reason_code="CELL_NOT_COPIED" if not found else "ROW_COPIED_TWICE")
+        else:
+            index, text = found[0]
+            cell.update(report=re.sub(r"\s+", " ", text).strip(), report_lines=[index])
+            consumed.add(index)
+            if _norm(text) == _norm(value):
+                cell.update(status="matched", reason_code="CELL_EQUAL")
+            elif _numbers(text) != _numbers(value):
+                cell.update(status="mismatch", reason_code="CELL_VALUE_MISMATCH")
+            else:
+                cell.update(status="manual", reason_code="CELL_TEXT_DIFFERENT")
+        cells.append(cell)
+    first = min(consumed) if consumed else len(lines)
+    for index, line in enumerate(lines):
+        labelled = _LABELLED_RE.match(line)
+        if index > first and _UNIT_LINE_RE.match(line):
+            consumed.add(index)
+        elif labelled and _key(labelled.group("label")) == parameter and not labelled.group("value").strip():
+            consumed.add(index)  # ``感知不应期：`` heading of the copied column
+    statuses = {cell["status"] for cell in cells}
+    return {
+        "rule": RULE_ID,
+        "status": "mismatch" if "mismatch" in statuses else "manual" if "manual" in statuses else "matched",
+        "row_label": next(name.strip() for i, name in enumerate(header) if i and _key(name) == parameter),
+        "row_key": parameter,
+        "ptr_location": {"pdf_page": rows[0][2].get("pdf_page"), "bbox": rows[0][2].get("bbox")},
+        "cells": cells,
+        "consumed_report_lines": sorted(consumed),
+        "unchecked_ptr_columns": [name.strip() for i, name in enumerate(header) if i and _key(name) != parameter],
+    }
+
+
+def _require_submitted_model(
+    ptr_node: Mapping[str, Any],
+    ptr_row: Mapping[str, Any],
+    cells: list[dict[str, Any]],
+    models: Sequence[str],
+) -> None:
+    """Downgrade a matched cell that equals another model's value.
+
+    A parameter row may hold one value per product model, either as one
+    table column per model (header ``型号 | 6131 | 6232``) or as one row per
+    model (a ``型号`` column).  When those values differ, a Report value that
+    equals *some* model's value proves nothing: it must be the value of a
+    model registered on the Report's page 3.  Otherwise the cell is left for
+    review (``CELL_OF_ANOTHER_MODEL``, or ``SUBMITTED_MODEL_UNKNOWN`` when
+    page 3 names no model).  Rows whose values are the same for every model
+    are not affected.
+    """
+
+    records = _clause_row_records(ptr_node)
+    if not records:
+        return
+    head = records[0]["header"]
+    unit = ptr_row["row_unit"]
+    by_model: dict[str, set[str]] = {}
+    if _key(head[0]) in _MODEL_HEADERS:
+        # One column per model: the header cell is the model name.
+        for cell in ptr_row["cells"]:
+            by_model.setdefault(cell["header"], set()).update({cell["value"], cell["value"] + unit})
+    elif len(records) > 1 and any(record["model"] for record in records):
+        for record in records:
+            values = by_model.setdefault(_spaced(record["model"] or "全部型号"), set())
+            for row in record["rows"]:
+                for index, value in enumerate(row):
+                    if index and index != record["model_index"] and value.strip():
+                        values.update({_norm(value), _norm(value) + unit})
+    if len({frozenset(values) for values in by_model.values()}) < 2:
+        return
+    for cell in cells:
+        if cell["status"] != "matched" or cell.get("reason_code") != "CELL_EQUAL":
+            continue
+        value = _norm(cell["report"])
+        owners = [model for model, values in by_model.items() if value in values]
+        if len(owners) == len(by_model):
+            continue  # every model has this value
+        if models and any(_model_applies(owner, models) for owner in owners):
+            continue
+        cell.update(
+            status="manual",
+            reason_code="CELL_OF_ANOTHER_MODEL" if models else "SUBMITTED_MODEL_UNKNOWN",
+            ptr_models=owners,
+            submitted_models=list(models),
+        )
 
 
 def report_text_without_expansion(report_node: Mapping[str, Any], result: Mapping[str, Any]) -> str:
@@ -439,6 +951,8 @@ def report_text_without_expansion(report_node: Mapping[str, Any], result: Mappin
             continue
         if index > sentence_end and _is_heading(line, str(result.get("row_key") or "")):
             continue
+        if index > sentence_end and result.get("row_key") and _key(line) == result["row_key"]:
+            continue  # the row's own name without Chinese characters: ``PVARP(ms)``
         kept.append(line)
     return "\n".join(kept)
 
@@ -489,7 +1003,9 @@ def _ptr_table_rows(
             for row in table.get("rows") or [] for c in row
         ):
             continue  # running header/footer mis-detected as a table
-        for index, row in enumerate(table.get("rows") or []):
+        # A vertically merged value cell (``≥15`` for four rows) belongs to
+        # every row it spans.
+        for index, row in enumerate(_rows_with_merged_cells(table)):
             cells = [str(c or "").strip() for c in row if str(c or "").strip()]
             if not cells:
                 continue
@@ -549,7 +1065,7 @@ def compare_table_cells(
     printed_keys: dict[str, set[str]] = {}
     printed_values: dict[str, set[tuple[str, ...]]] = {}
     for key, _, ptr_table in ptr_rows:
-        for raw_row in ptr_table.get("rows") or []:
+        for raw_row in _rows_with_merged_cells(ptr_table):
             printed_cells = [str(c) for c in raw_row if str(c or "").strip()]
             if len(printed_cells) >= 3 and re.fullmatch(r"\d{1,3}", printed_cells[0]):
                 printed_cells = printed_cells[1:]

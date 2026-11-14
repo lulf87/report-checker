@@ -30,6 +30,15 @@ class NumericUnitTests(unittest.TestCase):
     def test_prefix_split_from_ohm(self) -> None:
         self.assertEqual(_numeric_signature("绝缘电阻应大于5M Ω。"), _numeric_signature("绝缘电阻应大于5MΩ。"))
 
+    def test_exponent_in_report_unit_line_is_not_a_value(self) -> None:
+        ptr = _numeric_signature("允许误差：±2 min-1*。", role="ptr")
+        self.assertEqual(_numeric_signature("允许误差：±2min−1*。\n单位：min−1", role="report"), ptr)
+        self.assertEqual(_numeric_signature("截面积应不小于 5mm2。\n单位：mm2", role="report"),
+                         _numeric_signature("截面积应不小于 5mm2。", role="report"))
+        # A unit line with a real number, or an ordinary line, still counts.
+        self.assertNotEqual(_numeric_signature("允许误差：±2min−1。\n单位：10 min", role="report"), ptr)
+        self.assertNotEqual(_numeric_signature("允许误差：±2min−1。\n频率 3 min-1", role="report"), ptr)
+
     def test_micro_prefix_split_by_line_break(self) -> None:
         self.assertEqual(_numeric_signature("应不超过10μ\ng/g。"), _numeric_signature("应不超过10μg/g。"))
 

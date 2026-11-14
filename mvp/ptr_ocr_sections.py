@@ -10,8 +10,11 @@ from __future__ import annotations
 import re
 from typing import Any, Sequence
 
+# Some PTRs end the clause number with a dot (``2.1.1. 输出电压范围``, OCR may
+# read it as ``．``).  It is a separator, as in ``ptr_compare.CLAUSE_LINE_RE``;
+# a dot followed by a digit is still part of the number.
 _CLAUSE = re.compile(
-    r"^\s*(?P<clause>[23](?:\s*\.\s*\d+){1,8})"
+    r"^\s*(?P<clause>[23](?:\s*\.\s*\d+){1,8})(?:\s*[.．](?!\s*\d))?"
     r"(?=\s|[、，,:：)）\u3400-\u9fffA-Za-z])(?P<body>.*\S)?\s*$"
 )
 _TOP = re.compile(r"^\s*(?P<chapter>[23])\s*[.．、:：]?\s*(?P<body>[A-Za-z\u3400-\u9fff].*)$")
@@ -40,7 +43,7 @@ def _title_key(text: str) -> str:
 
 def select_ocr_requirement_section(lines: Sequence[Sequence[Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {
-        "version": "ocr-section-1.1", "status": "body_not_detected",
+        "version": "ocr-section-1.2", "status": "body_not_detected",
         "reason_code": "PTR_OCR_BODY_NOT_DETECTED", "body_indices": [],
         "toc_indices": [], "candidates": [], "automatic_pass_authorized": False,
         "observation_count": len(lines),
