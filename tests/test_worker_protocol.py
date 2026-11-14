@@ -181,5 +181,21 @@ class WorkerProtocolTests(unittest.TestCase):
             store.close()
 
 
+class WorkerStdoutTests(unittest.TestCase):
+    def test_importing_the_worker_prints_nothing_on_stdout(self) -> None:
+        # The coordinator parses the Worker's stdout as one JSON document.  A
+        # bare ``import fitz`` anywhere in the Worker's imports makes PyMuPDF
+        # print a deprecation warning there and every Run fails with
+        # WORKER_PROTOCOL_INVALID.
+        import subprocess
+        import sys
+
+        completed = subprocess.run(
+            [sys.executable, "-c", "import mvp.run_worker"],
+            cwd=str(Path(__file__).resolve().parents[1]), capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(completed.stdout, "")
+
+
 if __name__ == "__main__":
     unittest.main()

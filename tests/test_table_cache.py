@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import fitz
+import pymupdf as fitz
 
 from mvp import table_cache
 from mvp.checker import report_page_tables, sha256_file

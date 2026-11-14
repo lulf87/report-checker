@@ -20,6 +20,7 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。
   - `mvp.static_server --mode upload` → 8765（页面：`docs/prototypes/workbench-upload.html`）
 - 核对任务在子进程（worker）里跑：改 `mvp/` 里的规则代码不需要重启；**改 `run_state_server.py`、`static_server.py` 需要重启**；改页面后浏览器按 ⌘+Shift+R。
 - 日志：`output/logs/run-state-server.log`、`output/logs/static-upload.log`。
+- **`mvp/` 里不要写裸的 `import fitz`**，一律 `try: import pymupdf as fitz / except ImportError: import fitz`。裸导入会让 PyMuPDF 把弃用警告打印到标准输出，而调度器把 Worker 的标准输出当成一行 JSON 解析，结果是所有核对都报 `WORKER_PROTOCOL_INVALID`（11-13 `table_cache.py` 出过这个问题；`tests/test_worker_protocol.py` 有防回归测试）。改完 Worker 会导入的模块后，至少跑一次这条测试。
 - Python 用 `.venv/bin/python`（uv 管理，Python ≥3.12）。**PyMuPDF 必须 `<2`**：2.x 读表格单元格的文字顺序不同，会让 PTR 检验范围解析全部失败。
 
 ## 测试

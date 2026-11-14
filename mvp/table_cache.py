@@ -33,7 +33,12 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, TypeVar
 
-import fitz  # PyMuPDF
+# ``import fitz`` makes PyMuPDF print a deprecation warning on *stdout*, which
+# corrupts the Worker's one-line JSON reply (WORKER_PROTOCOL_INVALID).
+try:
+    import pymupdf as fitz
+except ImportError:  # pragma: no cover - compatibility with older environments
+    import fitz
 
 FORMAT_VERSION = 1
 ENVIRONMENT_VARIABLE = "REPORT_CHECKER_TABLE_CACHE"
