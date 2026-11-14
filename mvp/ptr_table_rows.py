@@ -263,6 +263,9 @@ def compare_row_expansion(
     ptr_row = ptr_row_cells(ptr_node)
     if ptr_row is None:
         return None
+    ptr_is_ocr = any(
+        str(item.get("extraction_method", "")).startswith("ocr:") for item in ptr_node.get("evidence", [])
+    ) or any(str(t.get("extraction_method", "")).startswith("ocr") for t in ptr_node.get("table_rows") or [])
     lines = _report_lines(report_node)
     # The Report expansion must name the PTR row it copies; otherwise the
     # clause numbers line up but the content does not (e.g. PVARP vs AV delay).
@@ -442,6 +445,15 @@ def compare_row_expansion(
             for op, a, b, c, d in SequenceMatcher(None, closest, report_value, autojunk=False).get_opcodes()
             if op != "equal"
         ]
+        if (
+            cell.get("reason_code") == "CELL_TEXT_DIFFERENT"
+            and not ptr_is_ocr
+            and _few_characters_different(closest, report_value, cell["diff"])
+        ):
+            # The Report copies this PTR cell except for a character or two
+            # (PTR ``0Dplus/DDIR``, Report ``Dplus/DDIR``): it is that cell,
+            # and it is not copied word for word.
+            cell.update(status="mismatch", reason_code="CELL_FEW_CHARACTERS_DIFFERENT")
     if models is not None:
         _require_submitted_model(ptr_node, ptr_row, cells, models)
     statuses = {cell["status"] for cell in cells}
@@ -455,6 +467,23 @@ def compare_row_expansion(
         "cells": cells,
         "consumed_report_lines": sorted(consumed),
     }
+
+
+FEW_CHARACTERS_MIN_LENGTH = 12
+FEW_CHARACTERS_MAX_DIFFERENT = 2
+
+
+def _few_characters_different(ptr_value: str, report_value: str, diff: Sequence[Mapping[str, Any]]) -> bool:
+    """A long cell copied with at most two characters added, dropped or
+    replaced.  Short cells (a value, a unit) are left out: there a character
+    or two may be the whole content, and which PTR cell is meant is unknown."""
+
+    if min(len(ptr_value), len(report_value)) < FEW_CHARACTERS_MIN_LENGTH or not diff:
+        return False
+    return (
+        sum(len(str(item.get("ptr") or "")) for item in diff) <= FEW_CHARACTERS_MAX_DIFFERENT
+        and sum(len(str(item.get("report") or "")) for item in diff) <= FEW_CHARACTERS_MAX_DIFFERENT
+    )
 
 
 # ---------------------------------------------------------------------------

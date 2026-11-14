@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from mvp.document_store import DocumentStore
 from mvp.run_coordinator import CoordinatorError, execute_persisted_run
 from mvp.checker import REPORT_SELF_RULE_ORDER
 from mvp.run_store import RunStore
@@ -181,20 +185,117 @@ class WorkerProtocolTests(unittest.TestCase):
             store.close()
 
 
-class WorkerStdoutTests(unittest.TestCase):
-    def test_importing_the_worker_prints_nothing_on_stdout(self) -> None:
-        # The coordinator parses the Worker's stdout as one JSON document.  A
-        # bare ``import fitz`` anywhere in the Worker's imports makes PyMuPDF
-        # print a deprecation warning there and every Run fails with
-        # WORKER_PROTOCOL_INVALID.
-        import subprocess
-        import sys
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SAMPLE_REPORT_DIR = PROJECT_ROOT / "素材" / "report" / "0596"
+SAMPLE_PTR_DIR = PROJECT_ROOT / "素材" / "ptr" / "0596"
 
+
+def _only_pdf(directory: Path) -> Path | None:
+    files = sorted(directory.glob("*.pdf")) if directory.is_dir() else []
+    return files[0] if files else None
+
+
+class RealWorkerProcessTests(unittest.TestCase):
+    """The tests above replace the child process.  These start the real one:
+    the coordinator parses its standard output as one JSON document, and a
+    single stray line there fails every Run with WORKER_PROTOCOL_INVALID."""
+
+    def test_importing_the_runners_prints_nothing_on_stdout(self) -> None:
+        # A bare ``import fitz`` anywhere in the runners' imports makes
+        # PyMuPDF print a deprecation warning on standard output.
         completed = subprocess.run(
-            [sys.executable, "-c", "import mvp.run_worker"],
-            cwd=str(Path(__file__).resolve().parents[1]), capture_output=True, text=True, check=True,
+            [sys.executable, "-c", "import mvp.run_modes"],
+            cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=True,
         )
         self.assertEqual(completed.stdout, "")
+
+    def test_worker_keeps_stdout_clean_when_an_import_prints(self) -> None:
+        # Even if a module prints while it is imported, the reply stays clean:
+        # the Worker imports the runners with standard output redirected.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sitecustomize.py").write_text(
+                "import builtins, sys\n"
+                "_import = builtins.__import__\n"
+                "def noisy(name, *args, **kwargs):\n"
+                "    if name == 'mvp.run_modes' and name not in sys.modules:\n"
+                "        print('warning: printed while importing')\n"
+                "    return _import(name, *args, **kwargs)\n"
+                "builtins.__import__ = noisy\n",
+                encoding="utf-8",
+            )
+            job = root / "job.json"
+            job.write_text("{}", encoding="utf-8")  # rejected before any runner is used
+            environment = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root), str(PROJECT_ROOT)]))
+            completed = subprocess.run(
+                [sys.executable, "-m", "mvp.run_worker", "--job", str(job)],
+                cwd=str(PROJECT_ROOT), capture_output=True, text=True, env=environment,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertEqual(json.loads(completed.stderr)["schema_version"], "worker-error-1.0")
+
+    def test_worker_reports_an_unreadable_report_as_json_on_stderr(self) -> None:
+        # A PDF that is not an inspection report: the real child process
+        # starts, imports every runner and fails in the documented way.
+        try:
+            import pymupdf
+        except ImportError:  # pragma: no cover - compatibility with older environments
+            self.skipTest("PyMuPDF is not installed")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            document = pymupdf.open()
+            for number in range(3):
+                document.new_page().insert_text((72, 72), f"not an inspection report, page {number + 1}")
+            document.save(root / "report.pdf")
+            document.close()
+            store = RunStore(root / "state.sqlite3")
+            case = store.create_case("real worker")
+            run = store.create_run(
+                case_id=case["id"], mode="report_self", inputs={"report_document_id": "report-doc"}
+            )
+            with self.assertRaises(CoordinatorError):
+                execute_persisted_run(
+                    store, run["id"], report_path=root / "report.pdf", output_dir=root / "published-run"
+                )
+            failure = store.get_run(run["id"])["failure"]
+            store.close()
+        self.assertEqual(failure["code"], "WORKER_FAILED")
+        self.assertEqual(json.loads(failure["message"])["schema_version"], "worker-error-1.0")
+
+    @unittest.skipUnless(
+        _only_pdf(SAMPLE_REPORT_DIR) and _only_pdf(SAMPLE_PTR_DIR), "needs the private sample 素材/…/0596"
+    )
+    def test_ptr_run_goes_through_the_real_worker_and_is_published(self) -> None:
+        # Coordinator → child process → JSON reply → published findings.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report, ptr = _only_pdf(SAMPLE_REPORT_DIR), _only_pdf(SAMPLE_PTR_DIR)
+            store = RunStore(root / "state.sqlite3")
+            try:
+                case = store.create_case("real worker")
+                documents = DocumentStore(store, root / "blobs")
+                inputs = {
+                    f"{role}_document_id": documents.upload_pdf(
+                        case_id=case["id"], role=role, original_filename=f"{role}.pdf", content=path.read_bytes()
+                    )["id"]
+                    for role, path in (("report", report), ("ptr", ptr))
+                }
+                run = store.create_run(
+                    case_id=case["id"],
+                    mode="report_ptr",
+                    inputs=inputs,
+                    input_snapshot=documents.validate_inputs(case_id=case["id"], mode="report_ptr", inputs=inputs),
+                )
+                published = execute_persisted_run(
+                    store, run["id"], report_path=report, ptr_path=ptr, output_dir=root / "published-run"
+                )
+                findings = store.list_findings(run["id"])
+            finally:
+                store.close()
+        self.assertEqual(published["lifecycle_status"], "succeeded")
+        self.assertGreater(len(findings), 0)
+        self.assertEqual(len(findings), sum(published["finding_counts"].values()))
 
 
 if __name__ == "__main__":

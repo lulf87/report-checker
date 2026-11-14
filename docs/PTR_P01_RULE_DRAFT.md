@@ -52,6 +52,12 @@
 
 **个别字不同直接判不一致（`TEXT_WORDING_MISMATCH`）**：安全等价规则都不适用时，若两侧（均非 OCR）规整后文字的每处差异去掉标点和括号后都只是汉字、且每处每侧不超过 4 个字，并且数字、单位、引用都一致，则判“不一致”，差异记在 `text_comparison.wording_differences`。例：删“等”/“应”、“动作时候”/“动作时”、“机械臂(USM)”→“USM”、“材质为”→“材质力”、“转向自如”→“转向白如”。差异含数字、字母或符号（如结果标签“±X方向”）、或超过 4 个字（挪动、补充说明、图题大段缺失）仍为待确认（`TEXT_REVIEW_REQUIRED`）。
 
+**该报不一致却停在待确认的三种情况（2026-11-14）**：以下三条只把“待确认”改判“不一致”或去掉干扰行，不会把任何结果改成“一致”以外的更宽松判定，也都不用于 OCR 文本。
+
+- **图题不同（`FIGURE_CAPTION_MISMATCH`）**：两侧都写了同一编号的图题（PTR `图1 XX MODE 3 预设输出波形图`，Report `图1 XX输出波形图` 或 `图1 是XX输出波形图。`），去标点后不相同，且任一侧都不是另一侧的开头（开头相同可能只是图题换行，仍待确认）。差异记在 `text_comparison.figure_caption_differences`。只在文字本来要判 `TEXT_REVIEW_REQUIRED` 时生效（1539 2.2.2）。
+- **表格单元格只差一两个字符（`CELL_FEW_CHARACTERS_DIFFERENT`）**：Report 按“列名：值”抄 PTR 表格行，值与最接近的 PTR 单元格相比，增、删、改的字符两侧各不超过 2 个，且两侧都不少于 12 个字符。这说明抄的就是这一格，但没有照抄（0596 2.1.1：PTR `0Dplus/DDIR`，Report `Dplus/DDIR`）。短单元格（一个数值、一个单位）不适用，仍按原规则。
+- **照抄的表格注释（`REPORT_TABLE_NOTE_COPIED`）**：PTR 在表格后以 `[行名]说明…` 的形式写注释；Report 在该行的展开内容里照抄了同名注释，且逐字相同（可跨行）时，这几行不参加正文比较，并记入 `text_comparison.equivalence_rules` 和 `report_table_note_lines`。注释有任何不同、或标签不是本行行名，都不去掉。去掉后其余文字照常比较（4788 2.1.11 因此由“差异太多”变为只差一个“应”，判 `TEXT_WORDING_MISMATCH`）。
+
 ### 解析误报修正（2026-11-08，对照标准答案的 18 条误报）
 
 - **条款号与字母分格**：Report 标准条款格写成“2.3.4.3⏎c)”或长号折行“2.3.13.1⏎2 a)”时识别为 `2.3.4.3c`/`2.3.13.12a`（`ptr_layout.report_clause_cell`）。此前这些条款被误报为 `REPORT_CLAUSE_MISSING`。

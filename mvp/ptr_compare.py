@@ -734,6 +734,7 @@ SAFE_EQUIVALENCE_RULES = {
     "REPORT_EXPANDED_REFERENCE": "Report 展开写出了所引用的 PTR 条款原文（已与 PTR 原条款核对一致）",
     "REPORT_TABLE_AS_TEXT": "Report 把 PTR 表格逐格写成了文字（内容与 PTR 表格完全相同）",
     "REPORT_PARENT_TITLE": "Report 在字母分项前写了上级条款的标题（与 PTR 上级条款标题相同）",
+    "REPORT_TABLE_NOTE_COPIED": "Report 在表格行下照抄了 PTR 表格的同名注释（与 PTR 注释完全相同）",
 }
 
 _FIGURE_CAPTION_RE = re.compile(r"^\s*图\s*\d+(?:[.\-－]\d+)*(?:\s|[㐀-鿿A-Za-z(（]|$)")
@@ -1920,6 +1921,122 @@ def wording_differences(ptr_text: str, report_text: str) -> list[dict[str, str]]
     return found or None
 
 
+_CAPTION_LINE_RE = re.compile(r"^\s*图\s*(?P<number>\d+(?:[.\-－]\d+)*)\s*(?P<title>\S.*)$")
+_CAPTION_SENTENCE_RE = re.compile(r"^(?:是|为)")
+
+
+def figure_caption_differences(ptr_text: Any, report_text: Any) -> list[dict[str, str]]:
+    """Captions of the same figure that are worded differently on both sides.
+
+    The PTR prints ``图1 X PULSE 3 预设输出波形图`` under the drawing; the Report
+    names the same figure as ``图1 X输出波形图`` or ``图1 是X输出波形图。``.  A
+    caption wrapped over several lines cannot be told from a shortened one,
+    so a pair is reported only when neither caption is the beginning of the
+    other; everything else stays for the ordinary text rules.
+    """
+
+    def captions(value: Any, *, sentence: bool) -> dict[str, str]:
+        lines = [line for line in str(value or "").splitlines() if line.strip()]
+        found: dict[str, str] = {}
+        for index, line in enumerate(lines):
+            match = _CAPTION_LINE_RE.match(line)
+            if not match:
+                continue
+            title = match.group("title").strip()
+            if sentence:
+                title = _CAPTION_SENTENCE_RE.sub("", title)
+            elif _CAPTION_SENTENCE_RE.match(title) or re.search(r"[应须]|所示|见", title):
+                continue  # a PTR sentence about the figure, not its caption
+            number = normalize_comparison_text(match.group("number"))
+            if number in found:
+                found[number] = ""  # named twice: which line is the caption is unknown
+                continue
+            found[number] = title
+        return {number: title for number, title in found.items() if title}
+
+    ptr_captions = captions(ptr_text, sentence=False)
+    report_captions = captions(report_text, sentence=True)
+    differences: list[dict[str, str]] = []
+    for number, ptr_title in ptr_captions.items():
+        report_title = report_captions.get(number)
+        if not report_title:
+            continue
+        left = _strip_punctuation(normalize_comparison_text(ptr_title))
+        right = _strip_punctuation(normalize_comparison_text(report_title))
+        if not left or not right or left.startswith(right) or right.startswith(left):
+            continue
+        differences.append({"figure": f"图{number}", "ptr": ptr_title, "report": report_title.rstrip("。 ")})
+    return differences
+
+
+_NOTE_START_RE = re.compile(r"^\s*[\[【［](?P<tag>[^\]】］]{1,30})[\]】］]")
+
+
+def ptr_tagged_notes(path: str | Path) -> dict[str, list[str]]:
+    """Notes printed in the PTR as ``[参数名]说明…`` (the footnotes of a table).
+
+    Returns the normalized note texts by normalized tag.  A note runs from
+    its ``[tag]`` line to the next note, clause number or table/figure
+    caption.  Scanned PTRs have no text layer and yield nothing.
+    """
+
+    notes: defaultdict[str, list[str]] = defaultdict(list)
+    current: list[str] | None = None
+    tag = ""
+
+    def close() -> None:
+        nonlocal current
+        if current:
+            notes[tag].append(_strip_punctuation(normalize_comparison_text("".join(current))))
+        current = None
+
+    try:
+        lines = list(_iter_text_lines(Path(path)))
+    except Exception:  # pragma: no cover - unreadable PDFs are handled upstream
+        return {}
+    for _, _, line, _ in lines:
+        start = _NOTE_START_RE.match(line)
+        if start:
+            close()
+            tag = _strip_punctuation(normalize_comparison_text(start.group("tag")))
+            current = [line]
+        elif current is not None:
+            if CLAUSE_LINE_RE.match(line) or re.match(r"\s*[表图]\s*[A-Za-z]?\d", line):
+                close()
+            else:
+                current.append(line)
+    close()
+    return dict(notes)
+
+
+def _drop_copied_table_note(
+    text: str, row_key: str, notes: Mapping[str, Sequence[str]]
+) -> tuple[str, list[str]]:
+    """Remove a PTR table note the Report copied under the row it belongs to.
+
+    Only a note tagged with the row's own name (``[逸搏间期]…`` under the row
+    ``逸搏间期``) and only when the Report lines, joined, are that note
+    character for character.
+    """
+
+    key = _strip_punctuation(normalize_comparison_text(row_key))
+    candidates = set(notes.get(key) or [])
+    if not key or not candidates:
+        return text, []
+    lines = text.splitlines()
+    for start, line in enumerate(lines):
+        match = _NOTE_START_RE.match(line)
+        if not match or _strip_punctuation(normalize_comparison_text(match.group("tag"))) != key:
+            continue
+        for end in range(start + 1, len(lines) + 1):
+            joined = _strip_punctuation(normalize_comparison_text("".join(lines[start:end])))
+            if joined in candidates:
+                return "\n".join(lines[:start] + lines[end:]), lines[start:end]
+            if not any(candidate.startswith(joined) for candidate in candidates):
+                break
+    return text, []
+
+
 def _report_parent_title_equivalence(
     ptr: Mapping[str, Any],
     ptr_text: str,
@@ -2077,6 +2194,7 @@ def _compare_text(
         reason = "TEXT_MISMATCH"
     equivalence_rules: list[str] = []
     wording: list[dict[str, str]] | None = None
+    caption_differences: list[dict[str, str]] = []
     # Every physical PTR table was found, row by row, as Report text.
     tables_verified_as_text = False
     if text_status == MISMATCH:
@@ -2109,6 +2227,8 @@ def _compare_text(
             equivalence_rules = rules
         elif not (_ocr_derived(ptr) or _ocr_derived(report)):
             wording = wording_differences(ptr_text, report_text)
+            if not wording:
+                caption_differences = figure_caption_differences(ptr.get("text"), report.get("text"))
     ptr_numbers = list(
         ptr.get("numeric_signature")
         or _numeric_signature(ptr.get("text"), role=str(ptr.get("role") or ""))
@@ -2376,6 +2496,10 @@ def _compare_text(
                 # must copy the PTR requirement word for word.
                 decision = MISMATCH
                 decision_reason = "TEXT_WORDING_MISMATCH"
+            elif caption_differences:
+                # Both sides caption the same figure with different words.
+                decision = MISMATCH
+                decision_reason = "FIGURE_CAPTION_MISMATCH"
             else:
                 decision = MANUAL
                 decision_reason = "TEXT_REVIEW_REQUIRED"
@@ -2448,6 +2572,7 @@ def _compare_text(
                 {"rule": rule, "label": SAFE_EQUIVALENCE_RULES[rule]} for rule in equivalence_rules
             ],
             "wording_differences": list(wording or []),
+            "figure_caption_differences": caption_differences,
             "report_auxiliary_lines": list(
                 report.get("auxiliary_lines")
                 or _split_report_auxiliary_lines(report.get("text"))[1]
@@ -2512,6 +2637,11 @@ def _compare_with_table_expansion(
         }
     }
     reduced["text"] = report_text_without_expansion(report, expansion)
+    copied_note: list[str] = []
+    if expansion.get("rule") != "TABLE_ROW_KEYS" and expansion.get("row_key"):
+        reduced["text"], copied_note = _drop_copied_table_note(
+            str(reduced["text"]), str(expansion.get("row_key")), (context or {}).get("ptr_tagged_notes") or {}
+        )
     ptr_for_text = ptr
     if expansion.get("rule") == "TABLE_ROW_KEYS" and expansion.get("status") != MISMATCH:
         # Table content the PTR prints as running text (merged cells)
@@ -2556,6 +2686,13 @@ def _compare_with_table_expansion(
         ptr_for_text, reduced, has_children=has_children, context=context, row_expansion=expansion
     )
     result["text_comparison"]["ptr_source"] = str(ptr.get("text") or "")
+    if copied_note:
+        # Recorded whatever the decision: these Report lines were left out of
+        # the text comparison because they equal the PTR note.
+        result["text_comparison"]["equivalence_rules"].append(
+            {"rule": "REPORT_TABLE_NOTE_COPIED", "label": SAFE_EQUIVALENCE_RULES["REPORT_TABLE_NOTE_COPIED"]}
+        )
+        result["text_comparison"]["report_table_note_lines"] = copied_note
     # The diff view shows the Report text *without* the verified
     # expansion; the expansion itself is listed cell by cell.
     result["text_comparison"]["report_source"] = str(report.get("text") or "")
@@ -2933,6 +3070,7 @@ def compare_ptr_report(
     equivalence_context = {
         "report_models": report_submitted_models(report_path),
         "ptr_headers": ptr_running_header_lines(ptr_path),
+        "ptr_tagged_notes": ptr_tagged_notes(ptr_path),
         "ptr_text_by_clause": {
             clause: _text_for_comparison(node.get("text"), role="ptr") for clause, node in ptr_by_clause.items()
         },

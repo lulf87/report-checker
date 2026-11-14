@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from mvp.run_modes import run_mode
 from mvp.worker_protocol import JobSpec, WorkerProtocolError, worker_result_payload
 
 
@@ -25,7 +24,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         payload = json.loads(args.job.read_text(encoding="utf-8"))
         job = JobSpec.from_dict(payload)
+        # Standard output carries exactly one JSON document for the
+        # coordinator.  The runners are imported inside the redirect as well,
+        # so that a library printing while it is imported (PyMuPDF's
+        # deprecation warning for ``import fitz``) cannot corrupt the reply.
         with contextlib.redirect_stdout(io.StringIO()):
+            from mvp.run_modes import run_mode
+
             result = run_mode(
                 mode=job.mode,
                 report_path=job.report_path,

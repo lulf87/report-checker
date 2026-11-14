@@ -1821,6 +1821,7 @@
       TABLE_CONTENT_NOT_EXTRACTED: "表格没有被可靠地逐格提取，暂不能确认每一格内容一致",
       TEXT_REVIEW_REQUIRED: "条款文字存在差异，需要确认是排版、重复还是接受标准被改写",
       TEXT_WORDING_MISMATCH: "条款文字与 PTR 有个别字不同（多字、少字或错字）",
+      FIGURE_CAPTION_MISMATCH: "图的标题与 PTR 不同",
       UNIT_LABEL_WITHOUT_PRINTED_VALUE: "“单位：X”对应的数值不在正文中（多在表格或展开的条款里），需要人工确认",
       REFERENCE_BINDING_UNRESOLVED: "表格或附录引用无法唯一对应，需要人工确认引用内容",
       AMBIGUOUS_REPORT_MAPPING: "PTR 条款无法唯一对应到 Report 条款",
@@ -2113,6 +2114,15 @@
         return {
           reason: diffs.length ? `${diffs.map(wordingSentence).join("；")}。数字、单位和引用都一致。` : "报告与 PTR 有个别字不同（多字、少字或错字）。",
           action: "报告应与 PTR 逐字相同，请按 PTR 原文修改报告。"
+        };
+      }
+      if (code === "FIGURE_CAPTION_MISMATCH") {
+        const captions = (comparison.text_comparison || details.text_comparison || {}).figure_caption_differences || [];
+        return {
+          reason: captions.length
+            ? `${captions.map((item) => `${item.figure} 的标题，PTR 写“${item.ptr}”，报告写“${item.report}”`).join("；")}。`
+            : "报告里图的标题与 PTR 不同。",
+          action: "报告应与 PTR 逐字相同，请按 PTR 原文修改图的标题；PTR 印了图而报告没有印的，也请一并确认。"
         };
       }
       if (code === "TEXT_REVIEW_REQUIRED") {
@@ -2464,6 +2474,7 @@
       CELL_PIECES_INCOMPLETE: "Report 分段写出，但拼不回完整的 PTR 单元格",
       CELL_VALUE_MISMATCH: "数值与 PTR 单元格不同",
       CELL_TEXT_DIFFERENT: "文字与 PTR 单元格不同（见高亮）",
+      CELL_FEW_CHARACTERS_DIFFERENT: "与 PTR 单元格只差一两个字符（见高亮），没有照抄",
       CELL_PTR_CONTINUES: "PTR 单元格在页尾断开，续行没有提取到，请对照 PTR 下一页",
       TEST_POINT_IN_PTR: "测试点数值在 PTR 条款或表格中有依据",
       TEST_POINT_NOT_IN_PTR: "测试点中的数值在 PTR 中找不到",
