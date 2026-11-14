@@ -67,6 +67,27 @@ def _clean_requirement_text(value: str) -> str:
     return "\n".join(lines)
 
 
+_BARE_MODEL_NUMBER = re.compile(r"\d{5,8}")
+
+
+def _model_number_cells(cells: Sequence[Mapping[str, Any]]) -> dict[int, str]:
+    """Bare 5–8 digit numbers that were removed from a Report table row.
+
+    ``_clean_requirement_text`` removes such a number from the requirement
+    text, where it labels the result of one sample.  In a table that has one
+    row per model the same number is the row's key (its ``型号`` column).  It
+    is kept beside the row, by column, so that the comparison can try the
+    row with its key; see ``ptr_compare._with_model_numbers``.
+    """
+
+    found: dict[int, str] = {}
+    for cell in cells:
+        raw = str(cell.get("raw_text") or "").strip()
+        if not str(cell.get("text") or "") and _BARE_MODEL_NUMBER.fullmatch(raw):
+            found[int(cell.get("column_index") or 0)] = raw
+    return found
+
+
 def _box(rect: Any) -> list[float]:
     return [round(float(value), 3) for value in rect]
 
@@ -960,6 +981,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             "cells": cells,
                             "matrix_row": matrix_row,
                             "rows": [matrix_row],
+                            "model_number_cells": _model_number_cells(cells),
                             "source_sha256": digest,
                             "extraction_method": "report_requirement_columns",
                             "binding": "physical",
@@ -992,6 +1014,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                                 index = 0
                             matrix_row[index] = str(cell.get("text") or "")
                         group["current"]["table_rows"].append({"pdf_page": page.number+1,
+                            "model_number_cells": _model_number_cells(cells),
                             "table_id": f"report:table:item:{active_sequence}:clause:{current_node.get('clause_id', active_clause)}",
                             "cells": cells, "matrix_row": matrix_row,
                             "rows": [matrix_row], "source_sha256": digest,

@@ -574,8 +574,10 @@ def _clause_row_records(ptr_node: Mapping[str, Any]) -> list[dict[str, Any]]:
     aliases = _clause_aliases(ptr_node)
 
     def related(key: str) -> bool:
+        # ``感知后房室间期`` in the clause, ``感知后的房室间期`` in the table:
+        # 的 does not change which row is meant (the cells are compared as usual).
         return bool(key) and (key == parameter or key.startswith(parameter) or key.endswith(parameter)
-                              or key in aliases)
+                              or key in aliases or key.replace("的", "") == parameter.replace("的", ""))
 
     header: list[str] | None = None
     group: dict[str, Any] | None = None

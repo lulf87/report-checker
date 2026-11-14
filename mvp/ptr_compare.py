@@ -859,7 +859,38 @@ def _is_label_line(line: str) -> bool:
     )
 
 
-def _drop_report_result_labels(lines: list[str]) -> tuple[list[str], bool]:
+def _label_from_requirement(label: str, ptr_plain: str) -> bool:
+    """``±X方向`` under a requirement that reads ``在±X、±Y和±Z方向…``: the
+    label is the requirement's own words – found there as a whole, or as two
+    parts that are both found there."""
+
+    label = _strip_punctuation(label)
+    if len(label) < 2 or not ptr_plain:
+        return False
+    return label in ptr_plain or any(
+        label[:cut] in ptr_plain and label[cut:] in ptr_plain and len(label[cut:]) >= 2
+        for cut in range(1, len(label) - 1)
+    )
+
+
+def _single_result_label(lines: Sequence[str], index: int, ptr_lines: Sequence[str]) -> bool:
+    """A lone result label at the end of the Report cell (``±X 方向：``, at
+    most followed by the ``单位：N`` line) that is not a line of the PTR
+    itself and consists of the requirement's own words."""
+
+    line = lines[index]
+    if index == 0 or not re.search(r"[:：]\s*$", line) or not _is_label_line(line.replace("±", "")):
+        return False
+    rest = lines[index + 1:]
+    if rest and not (len(rest) == 1 and _UNIT_LINE_RE.match(unicodedata.normalize("NFKC", rest[0]))):
+        return False
+    label = normalize_comparison_text(line)
+    if any(normalize_comparison_text(ptr_line) == label for ptr_line in ptr_lines):
+        return False  # ``b）工作长度：`` is requirement text on both sides
+    return _label_from_requirement(label, _strip_punctuation(normalize_comparison_text("\n".join(ptr_lines))))
+
+
+def _drop_report_result_labels(lines: list[str], ptr_lines: Sequence[str] = ()) -> tuple[list[str], bool]:
     """Drop blocks of parallel result sub-row labels from a Report cell.
 
     A block qualifies when it consists of at least two short, parallel labels
@@ -873,6 +904,10 @@ def _drop_report_result_labels(lines: list[str]) -> tuple[list[str], bool]:
     changed = False
     index = 0
     while index < len(lines):
+        if _single_result_label(lines, index, ptr_lines):
+            changed = True
+            index += 1
+            continue
         end = index
         while end < len(lines) and _is_label_line(lines[end]):
             end += 1
@@ -992,7 +1027,7 @@ def _safe_text_equivalence(
     ptr_text = _text_for_comparison("\n".join(ptr_lines), role="ptr")
     # Labels are recognised by the ``单位：`` line above them, so detect them
     # before the unit lines are removed.
-    report_lines, labels_changed = _drop_report_result_labels(report_lines)
+    report_lines, labels_changed = _drop_report_result_labels(report_lines, ptr_lines)
     report_lines, changed = _drop_report_unit_lines(report_lines, normalize_comparison_text("\n".join(ptr_lines)))
     if changed:
         applied.append("REPORT_UNIT_LINE")
@@ -1969,15 +2004,23 @@ def figure_caption_differences(ptr_text: Any, report_text: Any) -> list[dict[str
     return differences
 
 
-_NOTE_START_RE = re.compile(r"^\s*[\[【［](?P<tag>[^\]】］]{1,30})[\]】］]")
+_NOTE_START_RE = re.compile(r"^\s*(?:[\[【［](?P<tag>[^\]】］]{1,30})[\]】］]|(?P<mark>[①-⑳]))")
+_NOTE_MARK_SPLIT_RE = re.compile(r"(?=[①-⑳])")
+
+
+def _note_tag(match: re.Match[str]) -> str:
+    # A circled number is kept as it is (NFKC would turn ① into 1).
+    return match.group("mark") or _strip_punctuation(normalize_comparison_text(match.group("tag")))
 
 
 def ptr_tagged_notes(path: str | Path) -> dict[str, list[str]]:
-    """Notes printed in the PTR as ``[参数名]说明…`` (the footnotes of a table).
+    """Notes printed in the PTR as ``[参数名]说明…`` or ``①说明…`` (the
+    footnotes of a table).
 
-    Returns the normalized note texts by normalized tag.  A note runs from
-    its ``[tag]`` line to the next note, clause number or table/figure
-    caption.  Scanned PTRs have no text layer and yield nothing.
+    Returns the normalized note texts by tag (the normalized name, or the
+    circled number itself).  A note runs from its tag to the next note,
+    clause number or table/figure caption; several ``①…②…`` notes may share
+    a line.  Scanned PTRs have no text layer and yield nothing.
     """
 
     notes: defaultdict[str, list[str]] = defaultdict(list)
@@ -1994,11 +2037,12 @@ def ptr_tagged_notes(path: str | Path) -> dict[str, list[str]]:
         lines = list(_iter_text_lines(Path(path)))
     except Exception:  # pragma: no cover - unreadable PDFs are handled upstream
         return {}
-    for _, _, line, _ in lines:
+    pieces = [piece for _, _, line, _ in lines for piece in _NOTE_MARK_SPLIT_RE.split(line) if piece.strip()]
+    for line in pieces:
         start = _NOTE_START_RE.match(line)
         if start:
             close()
-            tag = _strip_punctuation(normalize_comparison_text(start.group("tag")))
+            tag = _note_tag(start)
             current = [line]
         elif current is not None:
             if CLAUSE_LINE_RE.match(line) or re.match(r"\s*[表图]\s*[A-Za-z]?\d", line):
@@ -2010,24 +2054,26 @@ def ptr_tagged_notes(path: str | Path) -> dict[str, list[str]]:
 
 
 def _drop_copied_table_note(
-    text: str, row_key: str, notes: Mapping[str, Sequence[str]]
+    text: str, row_key: str, notes: Mapping[str, Sequence[str]], row_label: str = ""
 ) -> tuple[str, list[str]]:
     """Remove a PTR table note the Report copied under the row it belongs to.
 
-    Only a note tagged with the row's own name (``[逸搏间期]…`` under the row
-    ``逸搏间期``) and only when the Report lines, joined, are that note
-    character for character.
+    Only a note that belongs to the row – tagged with the row's own name
+    (``[逸搏间期]…`` under the row ``逸搏间期``) or with the circled number the
+    PTR row name carries (``逸搏间期(ms)①``) – and only when the Report lines,
+    joined, are that note character for character.
     """
 
-    key = _strip_punctuation(normalize_comparison_text(row_key))
-    candidates = set(notes.get(key) or [])
-    if not key or not candidates:
+    tags = {_strip_punctuation(normalize_comparison_text(row_key))} | set(re.findall(r"[①-⑳]", row_label))
+    tags = {tag for tag in tags if tag and notes.get(tag)}
+    if not tags:
         return text, []
     lines = text.splitlines()
     for start, line in enumerate(lines):
         match = _NOTE_START_RE.match(line)
-        if not match or _strip_punctuation(normalize_comparison_text(match.group("tag"))) != key:
+        if not match or _note_tag(match) not in tags:
             continue
+        candidates = set(notes[_note_tag(match)])
         for end in range(start + 1, len(lines) + 1):
             joined = _strip_punctuation(normalize_comparison_text("".join(lines[start:end])))
             if joined in candidates:
@@ -2277,6 +2323,18 @@ def _compare_text(
         # that is the binding of the Report's “表N”.
         report_binding_status, report_binding_reason = MATCHED, None
         binding_status = MATCHED
+    if (
+        tables_verified_as_text
+        and ptr_binding_status == MATCHED
+        and report_binding_status != MATCHED
+        and ptr_refs.get("tables")
+        and ptr_refs.get("tables") == report_refs.get("tables")
+    ):
+        # The Report names the same table and writes every row of it out as
+        # text, character for character (REPORT_TABLE_AS_TEXT): that content
+        # is the binding of the Report's “表N”.
+        report_binding_status, report_binding_reason = MATCHED, None
+        binding_status = MATCHED
     binding_reason = ptr_binding_reason or report_binding_reason
     ptr_units = list(ptr.get("unit_labels") or _unit_labels(ptr.get("text")))
     report_units = list(report.get("unit_labels") or _unit_labels(report.get("text")))
@@ -2357,6 +2415,13 @@ def _compare_text(
         unit_status = MATCHED
         unit_reason = ptr_label_reason or report_label_reason or "NO_CONTRADICTORY_UNIT_LABEL"
     table_comparison = _table_comparison(ptr, report)
+    if (
+        tables_verified_as_text
+        and table_comparison["status"] == MANUAL
+        and table_comparison.get("reason_code") == "TABLE_CONTENT_NOT_EXTRACTED"
+        and not report.get("table_rows")
+    ):
+        table_comparison = {**table_comparison, "status": MATCHED, "reason_code": "TABLE_VERIFIED_AS_TEXT"}
     if (row_expansion is None and table_comparison["status"] == MANUAL
             and table_comparison.get("reason_code") != "UNLABELLED_TABLE_BINDING_UNVERIFIED"):
         # The Report may expand the referenced PTR table row as labelled
@@ -2640,7 +2705,8 @@ def _compare_with_table_expansion(
     copied_note: list[str] = []
     if expansion.get("rule") != "TABLE_ROW_KEYS" and expansion.get("row_key"):
         reduced["text"], copied_note = _drop_copied_table_note(
-            str(reduced["text"]), str(expansion.get("row_key")), (context or {}).get("ptr_tagged_notes") or {}
+            str(reduced["text"]), str(expansion.get("row_key")), (context or {}).get("ptr_tagged_notes") or {},
+            str(expansion.get("row_label") or ""),
         )
     ptr_for_text = ptr
     if expansion.get("rule") == "TABLE_ROW_KEYS" and expansion.get("status") != MISMATCH:
@@ -2703,6 +2769,46 @@ def _compare_with_table_expansion(
         if index in set(expansion.get("consumed_report_lines") or [])
     )
     return result
+
+
+def _with_model_numbers(report: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The Report node with the model numbers put back into its table rows,
+    or ``None`` when no row has one (see ``ptr_layout._model_number_cells``)."""
+
+    rows = list(report.get("table_rows") or [])
+    if not any(row.get("model_number_cells") for row in rows):
+        return None
+    restored = []
+    for row in rows:
+        numbers = row.get("model_number_cells") or {}
+        matrix = list(row.get("matrix_row") or [])
+        for index, value in numbers.items():
+            if int(index) < len(matrix) and not matrix[int(index)]:
+                matrix[int(index)] = value
+        restored.append({**row, "matrix_row": matrix, "rows": [matrix]})
+    return {**report, "table_rows": restored}
+
+
+def _compare_text_keyed_by_model(
+    ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_children: bool, context: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """``_compare_text``; a Report table whose rows are keyed by a model
+    number is first compared with those keys.
+
+    The Report prints such tables in many shapes (columns left out, only the
+    submitted models, one PTR table split in three).  The keyed comparison is
+    therefore used only when it verifies the clause completely; otherwise the
+    clause is compared as before, without the keys.  It can pass a clause,
+    never fail one.
+    """
+
+    keyed = _with_model_numbers(report)
+    if keyed is not None:
+        result = _compare_text(ptr, keyed, has_children=has_children, context=context)
+        if result["decision"] == MATCHED and result["table_comparison"]["status"] == MATCHED:
+            result["table_comparison"]["rows_keyed_by_model_number"] = True
+            return result
+    return _compare_text(ptr, report, has_children=has_children, context=context)
 
 
 OCR_DUAL_ENGINE_MATCH = "OCR_DUAL_ENGINE_MATCH"
@@ -3091,9 +3197,15 @@ def compare_ptr_report(
         scope_decision, scope_reason = _scope_decision(scope, clause_id)
         candidates = list(report_by_clause.get(clause_id, []))
         if len(ptr_candidates) != 1:
+            # The PTR prints this clause number twice.  When the clause is
+            # outside the inspected scope and the Report has no such clause
+            # either, nothing is to be compared: excluded like any other
+            # clause that was not inspected.
+            out_of_scope = scope_decision == EXCLUDED and not candidates
             entry = _ledger_entry(ptr=None, reports=candidates, clause_id=clause_id,
                 scope_decision=scope_decision, scope_reason=scope_reason, comparison=None,
-                decision=MANUAL, reason_code="AMBIGUOUS_PTR_MAPPING")
+                decision=EXCLUDED if out_of_scope else MANUAL,
+                reason_code=scope_reason if out_of_scope else "AMBIGUOUS_PTR_MAPPING")
             entry["id"] = f"comparison:{clause_id}:ambiguous-ptr"
             entry["ptr_node_ids"] = [str(node["node_id"]) for node in ptr_candidates]
             entry["ptr_candidates"] = [dict(node) for node in ptr_candidates]
@@ -3178,7 +3290,7 @@ def compare_ptr_report(
             continue
         report_node = candidates[0]
         accounted_report_ids.add(str(report_node["node_id"]))
-        comparison = _compare_text(
+        comparison = _compare_text_keyed_by_model(
             ptr_node,
             report_node,
             has_children=bool(children.get(clause_id)),
