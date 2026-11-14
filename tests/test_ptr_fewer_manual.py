@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from mvp.ptr_compare import (
+    _safe_text_equivalence,
     _drop_copied_table_note,
     _drop_report_result_labels,
     _strip_punctuation,
@@ -63,6 +64,42 @@ class CircledNoteTests(unittest.TestCase):
     def test_changed_note_is_kept(self) -> None:
         text = self.TEXT.replace("300-2000", "300-1000")
         self.assertEqual(_drop_copied_table_note(text, "逸搏间期", self.NOTES, "逸搏间期(ms)①"), (text, []))
+
+
+class LinesMovedTests(unittest.TestCase):
+    """2026-11-14 ruling: whole lines printed at another place, nothing
+    added, dropped or changed, are 一致."""
+
+    PTR = (
+        "扳手尺寸\n杆头截面尺寸应符合以下要求：\n0.88 毫米≤A ≤0.89 毫米\n0.96 毫米≤B ≤1 毫米\n"
+        "图2-1 扳手示意图\nB\nA\n注：A. 平口尺寸\nB. 尖端到尖端距离\n图2-2 尺寸测量示意图"
+    )
+    REPORT = (
+        "扳手\n尺寸\n杆头截面尺寸应符合以下要求：\n图2-1 扳手示意图\n注：A. 平口尺寸\nB. 尖端到尖端距离\n"
+        "图2-2 尺寸测量示意图\n单位：mm\n0.88 毫米≤A≤0.89 毫米\n0.96 毫米≤B≤1 毫米"
+    )
+
+    def test_two_lines_moved_behind_the_figure(self) -> None:
+        rules, _ = _safe_text_equivalence(self.PTR, self.REPORT)
+        self.assertEqual(rules, ["REPORT_UNIT_LINE", "PTR_FIGURE_LABELS", "REPORT_LINES_MOVED"])
+
+    def test_moved_and_changed_is_not_equivalent(self) -> None:
+        self.assertEqual(_safe_text_equivalence(self.PTR, self.REPORT.replace("0.89", "0.98")), (None, False))
+        self.assertEqual(_safe_text_equivalence(self.PTR, self.REPORT.replace("尖端到尖端", "尖端")), (None, False))
+
+    def test_moved_with_a_line_left_out_is_not_equivalent(self) -> None:
+        report = self.REPORT.replace("\n0.96 毫米≤B≤1 毫米", "")
+        self.assertEqual(_safe_text_equivalence(self.PTR, report), (None, False))
+
+    def test_part_of_a_line_moved_is_not_equivalent(self) -> None:
+        ptr = "要求\n甲部件应牢固，乙部件应灵活。\n丙部件应清洁。"
+        report = "要求\n乙部件应灵活，甲部件应牢固。\n丙部件应清洁。"
+        self.assertEqual(_safe_text_equivalence(ptr, report), (None, False))
+
+    def test_whole_lines_moved_without_a_figure(self) -> None:
+        ptr = "要求\n甲部件应牢固。\n乙部件应灵活。\n丙部件应清洁。"
+        report = "要求\n乙部件应灵活。\n丙部件应清洁。\n甲部件应牢固。"
+        self.assertEqual(_safe_text_equivalence(ptr, report)[0], ["REPORT_LINES_MOVED"])
 
 
 class ModelNumberKeyTests(unittest.TestCase):

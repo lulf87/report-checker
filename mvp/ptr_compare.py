@@ -734,6 +734,7 @@ SAFE_EQUIVALENCE_RULES = {
     "REPORT_EXPANDED_REFERENCE": "Report 展开写出了所引用的 PTR 条款原文（已与 PTR 原条款核对一致）",
     "REPORT_TABLE_AS_TEXT": "Report 把 PTR 表格逐格写成了文字（内容与 PTR 表格完全相同）",
     "REPORT_PARENT_TITLE": "Report 在字母分项前写了上级条款的标题（与 PTR 上级条款标题相同）",
+    "REPORT_LINES_MOVED": "Report 把 PTR 的整行原样挪了位置（文字、数值逐字相同，只是顺序不同）",
     "REPORT_TABLE_NOTE_COPIED": "Report 在表格行下照抄了 PTR 表格的同名注释（与 PTR 注释完全相同）",
 }
 
@@ -824,6 +825,54 @@ def _drop_figure_label_lines(lines: list[str]) -> tuple[list[str], bool]:
     return result, changed
 
 
+# ``单位：mm`` under a requirement that spells the unit out (``0.88 毫米``).
+_UNIT_WRITTEN_OUT = {"mm": "毫米", "cm": "厘米", "ms": "毫秒"}
+
+
+def _drop_figure_inner_labels(lines: list[str]) -> tuple[list[str], bool]:
+    """Drop the label lines drawn inside a figure – at most four characters,
+    such as ``A`` and ``B`` – from a clause that has a ``图N`` caption.
+
+    The captions, the notes, the clause's first line and every line that
+    carries a value, a requirement word or the end of a sentence stay.
+    """
+
+    if not any(_FIGURE_CAPTION_RE.match(line) for line in lines):
+        return list(lines), False
+    result: list[str] = []
+    for index, line in enumerate(lines):
+        normalized = normalize_comparison_text(line)
+        if (
+            index
+            and normalized
+            and len(normalized) <= 4
+            and not _SENTENCE_END_RE.search(line)
+            and not CLAUSE_LINE_RE.match(line)
+            and not _REQUIREMENT_WORD_RE.search(normalized)
+            and not _FIGURE_CAPTION_RE.match(line)
+        ):
+            continue
+        result.append(line)
+    return result, len(result) != len(lines)
+
+
+def _lines_moved(ptr_lines: Sequence[str], report_plain: str) -> bool:
+    """The Report is the PTR text with one run of whole PTR lines moved to
+    another place, character for character (2026-11-14 ruling: 一致)."""
+
+    parts = [part for part in (_strip_punctuation(normalize_comparison_text(line)) for line in ptr_lines) if part]
+    if "".join(parts) == report_plain:
+        return False  # not moved; the caller's other rules decide
+    for start in range(len(parts)):
+        for end in range(start + 1, len(parts) + 1):
+            moved = "".join(parts[start:end])
+            if len(moved) < 4 or end - start == len(parts) or report_plain.count(moved) != 1:
+                continue
+            if report_plain.replace(moved, "", 1) == "".join(parts[:start] + parts[end:]):
+                return True
+    return False
+
+
 def _drop_report_unit_lines(lines: list[str], ptr_normalized: str) -> tuple[list[str], bool]:
     ptr_plain = _strip_punctuation(ptr_normalized)
     kept: list[str] = []
@@ -832,7 +881,7 @@ def _drop_report_unit_lines(lines: list[str], ptr_normalized: str) -> tuple[list
         match = _UNIT_LINE_RE.match(unicodedata.normalize("NFKC", line))
         if match:
             unit = _strip_punctuation(normalize_comparison_text(match.group("unit")))
-            if unit and unit in ptr_plain:
+            if unit and (unit in ptr_plain or _UNIT_WRITTEN_OUT.get(unit, "\0") in ptr_plain):
                 changed = True
                 continue
         kept.append(line)
@@ -1021,6 +1070,7 @@ def _safe_text_equivalence(
     ptr_lines, changed = _drop_running_header_lines(ptr_lines, ptr_headers or set())
     if changed:
         applied.append("PTR_RUNNING_HEADER")
+    ptr_lines_with_captions = list(ptr_lines)
     ptr_lines, changed = _drop_figure_label_lines(ptr_lines)
     if changed:
         applied.append("PTR_FIGURE_LABELS")
@@ -1063,6 +1113,13 @@ def _safe_text_equivalence(
             return [*applied, *rules, "REPORT_TABLE_AS_TEXT"], _rows_follow(
                 candidate[len(ptr_plain):], tables, require_all=True
             )
+    # Whole PTR lines printed at another place (the two size limits after the
+    # figure instead of before it).  The figure captions take part here: the
+    # Report that moves lines around a figure prints the captions too.
+    moved_from, labels_dropped = _drop_figure_inner_labels(ptr_lines_with_captions)
+    if _lines_moved(moved_from, report_plain):
+        rules = [rule for rule in applied if rule != "PTR_FIGURE_LABELS"]
+        return [*rules, *(["PTR_FIGURE_LABELS"] if labels_dropped else []), "REPORT_LINES_MOVED"], False
     return None, False
 
 
