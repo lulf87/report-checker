@@ -363,7 +363,8 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         ), patch("mvp.ptr_compare.ptr_running_header_lines", return_value=[]):
             result = compare_ptr_report("report.pdf", "ptr.pdf", comparison_mode="rules")
         entry = next(item for item in result["coverage_ledger"] if item["clause_id"] == "2.1")
-        return entry, entry["text_comparison"]["ocr_confirmation"]
+        # No confirmation is recorded when the Report contradicts itself.
+        return entry, entry["text_comparison"].get("ocr_confirmation")
 
     def test_scanned_ptr_passes_only_when_every_ocr_engine_matches_the_report(self) -> None:
         same = "输入阻抗应不小于 5MΩ。"
@@ -392,6 +393,19 @@ class PtrCompareNormalizationTests(unittest.TestCase):
         # A segmentation marker alone does not block it.
         entry, _ = self._ocr_case(same, {"rapidocr": [same]}, issues=["LETTERED_CLAUSE_PARENT"])
         self.assertEqual(entry["decision"], MATCHED)
+
+    def test_scanned_ptr_reports_a_unit_contradiction_inside_the_report(self) -> None:
+        # 2026-11-14 ruling: the Report prints 5MΩ and, on its unit line, GΩ.
+        same = "输入阻抗应不小于 5MΩ。"
+        entry, _ = self._ocr_case(same, {"rapidocr": [same]}, report_text=same + "\n单位：GΩ")
+        self.assertEqual((entry["decision"], entry["reason_code"]), (MISMATCH, "REPORT_UNIT_CONTRADICTS_OWN_VALUE"))
+        # However the engines read the PTR.
+        entry, _ = self._ocr_case("输入阻抗应不小于 5M2。", {"rapidocr": ["输入阻抗应不小于 5MQ。"]},
+                                  report_text=same + "\n单位：GΩ")
+        self.assertEqual((entry["decision"], entry["reason_code"]), (MISMATCH, "REPORT_UNIT_CONTRADICTS_OWN_VALUE"))
+        # A unit line that agrees is not a contradiction; an OCR difference alone is never 不一致.
+        entry, _ = self._ocr_case("输入阻抗应不小于 6MΩ。", {"rapidocr": [same]}, report_text=same + "\n单位：MΩ")
+        self.assertEqual(entry["decision"], MANUAL)
 
     def test_appendix_named_word_for_word_on_both_sides_needs_no_table(self) -> None:
         def node(role: str, text: str, tables: list[str]) -> dict:

@@ -2726,6 +2726,10 @@ def _compare_text(
             "ptr": ptr_units,
             "report": report_units,
             "reason_code": unit_reason,
+            # The Report's own ``单位：X`` line names another scale than the
+            # value printed in the same cell (5MΩ / 单位：GΩ).  Known from the
+            # Report alone, whatever the PTR says.
+            "report_label_contradicts_own_value": (not report_label_ok) and report_label_reason == "UNIT_SCALE_MISMATCH",
             "risk": "safe_equivalent"
             if unit_status == MATCHED and unit_reason in {
                 "UNIT_SI_EQUIVALENT",
@@ -2876,6 +2880,7 @@ def _compare_text_keyed_by_model(
 
 OCR_DUAL_ENGINE_MATCH = "OCR_DUAL_ENGINE_MATCH"
 OCR_ENGINE_MATCH_OTHER_MISREAD = "OCR_ENGINE_MATCH_OTHER_MISREAD"
+REPORT_UNIT_CONTRADICTS_OWN_VALUE = "REPORT_UNIT_CONTRADICTS_OWN_VALUE"
 OCR_SLIP_MAX_CHARS = 3
 OCR_SLIP_MAX_COUNT = 8
 
@@ -3423,6 +3428,16 @@ def compare_ptr_report(
         if comparison["table_comparison"]["status"] == MANUAL and decision == MATCHED:
             decision = MANUAL
             reason_code = str(comparison["table_comparison"].get("reason_code") or "TABLE_CONTENT_NOT_EXTRACTED")
+        elif (
+            (_ocr_derived(ptr_node) or ptr.get("diagnostics", {}).get("ocr_used"))
+            and comparison["unit_comparison"].get("report_label_contradicts_own_value")
+            and not _ocr_derived(report_node)
+        ):
+            # 2026-11-14 ruling: the one case in which a scanned PTR yields
+            # 不一致.  The contradiction is inside the Report's text layer and
+            # does not depend on how the PTR was read.
+            decision = MISMATCH
+            reason_code = REPORT_UNIT_CONTRADICTS_OWN_VALUE
         elif _ocr_derived(ptr_node) or ptr.get("diagnostics", {}).get("ocr_used"):
             confirmation = _ocr_dual_engine_confirmation(
                 ptr_node,

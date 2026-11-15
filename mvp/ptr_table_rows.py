@@ -575,7 +575,8 @@ def _clause_row_records(ptr_node: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     def related(key: str) -> bool:
         # ``感知后房室间期`` in the clause, ``感知后的房室间期`` in the table:
-        # 的 does not change which row is meant (the cells are compared as usual).
+        # 的 does not change which row is meant; the cells are compared as
+        # usual and the differing name is reported (ROW_NAME_DIFFERS_FROM_CLAUSE).
         return bool(key) and (key == parameter or key.startswith(parameter) or key.endswith(parameter)
                               or key in aliases or key.replace("的", "") == parameter.replace("的", ""))
 
@@ -791,6 +792,21 @@ def compare_multi_row_expansion(
         statuses.add("manual")
     status = "mismatch" if "mismatch" in statuses else "manual" if "manual" in statuses else "matched"
     first = records[0]
+    # 2026-11-14 ruling: the PTR names the parameter one way in the clause
+    # (``感知后房室间期``) and another way in its own table (``感知后的房室间期``).
+    # The row is the right one and its cells are compared, but the two names
+    # do not agree and that is reported.
+    parameter = _clause_parameter(ptr_node)
+    aliases = _clause_aliases(ptr_node)
+    for name in dict.fromkeys(name for record in records for name in record["names"]):
+        key = _key(name)
+        if key == parameter or key.startswith(parameter) or key.endswith(parameter) or key in aliases:
+            continue
+        cells.append({
+            "column": "行名", "report": "", "ptr": name, "clause_name": parameter,
+            "status": "mismatch", "reason_code": "ROW_NAME_DIFFERS_FROM_CLAUSE", "report_lines": [],
+        })
+        status = "mismatch"
     return {
         "rule": RULE_ID,
         "status": status,
