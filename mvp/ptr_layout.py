@@ -851,6 +851,20 @@ def _requirement_cells(
     return sorted(result, key=lambda c: c["bbox"][0])
 
 
+def report_item_title(value: Any, clause: str) -> str:
+    """The 检验项目 cell as the clause title.
+
+    Some Reports repeat the clause number in front of the title
+    (``2.7. 电磁兼容``, clause cell ``2.7``).  That number is the row's own
+    clause id, not part of the requirement text.
+    """
+
+    title = str(value or "").strip()
+    if clause:
+        title = re.sub(rf"^{re.escape(clause)}\s*[.．]?\s*(?=[^\d.．\s])", "", title)
+    return title
+
+
 def report_clause_cell(value: Any) -> str:
     """Clause id printed in a Report row's clause cell.
 
@@ -897,7 +911,7 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                     key = active_sequence, active_clause
                     if key not in groups:
                         product_count += 1
-                        title = str(row[mapping["检验项目"]] or "").strip()
+                        title = report_item_title(row[mapping["检验项目"]], active_clause)
                         node = _new_node("report", active_clause, title, digest, f"item:{active_sequence}:")
                         node["sequence"] = active_sequence
                         groups[key] = {

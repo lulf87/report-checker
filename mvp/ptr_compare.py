@@ -2199,12 +2199,18 @@ def _unit_peak_context(*values: Any) -> bool:
     return bool(re.search(r"(?:峰值|peak(?:\s*[- ]?to[- ]?peak)?|peak\s*value)", text, re.IGNORECASE))
 
 
+_LITRE_RE = re.compile(r"(?<![A-Za-z])([mμdc]?)l(?![A-Za-z])")
+
+
 def _unit_equivalent(left: str, right: str, *, peak_context: bool = False) -> tuple[bool, str]:
     """Compare two printed units while retaining scale and peak semantics."""
 
     left_label = _canonical_unit_label(left)
     right_label = _canonical_unit_label(right)
     if left_label == right_label:
+        return True, "EXACT_UNIT_MATCH"
+    if _LITRE_RE.sub(r"\1L", left_label) == _LITRE_RE.sub(r"\1L", right_label):
+        # ``ml`` and ``mL`` are two spellings of the same unit.
         return True, "EXACT_UNIT_MATCH"
     left_peak = left_label.endswith("p") and len(left_label) > 1
     right_peak = right_label.endswith("p") and len(right_label) > 1
@@ -2869,6 +2875,41 @@ def _compare_text_keyed_by_model(
 
 
 OCR_DUAL_ENGINE_MATCH = "OCR_DUAL_ENGINE_MATCH"
+OCR_ENGINE_MATCH_OTHER_MISREAD = "OCR_ENGINE_MATCH_OTHER_MISREAD"
+OCR_SLIP_MAX_CHARS = 3
+OCR_SLIP_MAX_COUNT = 8
+
+
+def ocr_character_slips(reading: Any, reference: Any) -> list[dict[str, str]] | None:
+    """Differences between two OCR readings of the same clause when they are
+    single-character misreadings only; ``None`` otherwise.
+
+    Punctuation and spacing are ignored.  Every differing span may be at most
+    ``OCR_SLIP_MAX_CHARS`` characters on either side – a symbol read as
+    something else (``士``/``±``, ``1002``/``10Ω``, ``5MS2``/``5MΩ``) – and
+    there may be at most ``OCR_SLIP_MAX_COUNT`` of them.  A line, sentence or
+    table that only one engine read is longer than that and is refused.  So
+    are two readings that are both plausible values: a digit against another
+    digit, or letters against other letters (a unit prefix).
+    """
+
+    left = _strip_punctuation(normalize_comparison_text(reading))
+    right = _strip_punctuation(normalize_comparison_text(reference))
+    if not left or not right:
+        return None
+    slips: list[dict[str, str]] = []
+    for op, a, b, c, d in SequenceMatcher(None, left, right, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        if b - a > OCR_SLIP_MAX_CHARS or d - c > OCR_SLIP_MAX_CHARS:
+            return None
+        read, other = left[a:b], right[c:d]
+        if re.search(r"\d", read) and re.search(r"\d", other):
+            return None  # two different numbers (5MΩ / 6MΩ): one of them is wrong
+        if re.fullmatch(r"[A-Za-z]+", read) and re.fullmatch(r"[A-Za-z]+", other):
+            return None  # two different letters may be two units (MΩ / GΩ, ps / us)
+        slips.append({"read": read, "other": other})
+    return slips if len(slips) <= OCR_SLIP_MAX_COUNT else None
 # Markers that only describe how a clause was segmented; text-layer PTRs carry
 # them too and are compared normally.  Any other issue (duplicate clause
 # number, table of contents ≠ body, …) blocks an OCR pass.
@@ -2926,24 +2967,49 @@ def _ocr_dual_engine_confirmation(
         return refused("PRIMARY_ENGINE_NOT_UNIQUE")
     if set(ptr.get("extraction_issues") or []) - _OCR_HARMLESS_ISSUES:
         return refused("PTR_EXTRACTION_ISSUE")
-    if not clean_match(comparison):
-        return refused("PRIMARY_READING_NOT_MATCHED")
     others = {backend: nodes for backend, nodes in alternates_by_clause.items() if backend != primary[0]}
     if not others:
         return refused("NO_SECOND_ENGINE")
     clause_id = str(ptr.get("clause_id"))
+    # One reading per engine: (engine, PTR node as that engine read it, its comparison).
+    readings: list[tuple[str, Mapping[str, Any], Mapping[str, Any]]] = [(primary[0], ptr, comparison)]
     for backend in sorted(others):
         candidates = list(others[backend].get(clause_id) or [])
         if len(candidates) != 1:
             return refused("SECOND_ENGINE_CLAUSE_NOT_UNIQUE", engine=backend, candidate_count=len(candidates))
         if set(candidates[0].get("extraction_issues") or []) - _OCR_HARMLESS_ISSUES:
             return refused("SECOND_ENGINE_EXTRACTION_ISSUE", engine=backend)
-        second = _compare_text(candidates[0], report, has_children=has_children, context=context)
-        if not clean_match(second):
-            return refused("SECOND_ENGINE_READING_NOT_MATCHED", engine=backend,
-                           second_reason_code=second.get("reason_code"))
-    return {"rule": OCR_DUAL_ENGINE_MATCH, "status": "confirmed", "reason": None,
-            "engines": [primary[0], *sorted(others)]}
+        readings.append(
+            (backend, candidates[0], _compare_text(candidates[0], report, has_children=has_children, context=context))
+        )
+    engines = [engine for engine, _, _ in readings]
+    exact = [reading for reading in readings if clean_match(reading[2])]
+    if len(exact) == len(readings):
+        return {"rule": OCR_DUAL_ENGINE_MATCH, "status": "confirmed", "reason": None, "engines": engines}
+    if not exact:
+        if not clean_match(comparison):
+            return refused("PRIMARY_READING_NOT_MATCHED")
+        return refused("SECOND_ENGINE_READING_NOT_MATCHED")  # pragma: no cover - exact would hold the primary
+    # 2026-11-14 ruling: one engine's reading is 一致 with the Report and every
+    # other engine read the same clause except for single characters
+    # (± as 士, Ω as 2, ≥ as 2): misread symbols, not different content.
+    matched_engine, matched_node, matched_comparison = exact[0]
+    misreadings: list[dict[str, Any]] = []
+    for engine, node, result in readings:
+        if clean_match(result):
+            continue
+        slips = ocr_character_slips(node.get("text"), matched_node.get("text"))
+        if slips is None:
+            return refused(
+                "PRIMARY_READING_NOT_MATCHED" if engine == primary[0] else "SECOND_ENGINE_READING_NOT_MATCHED",
+                engine=engine, second_reason_code=result.get("reason_code"), matched_engine=matched_engine,
+            )
+        misreadings.append({"engine": engine, "differences": slips})
+    return {
+        "rule": OCR_ENGINE_MATCH_OTHER_MISREAD, "status": "confirmed", "reason": None, "engines": engines,
+        "matched_engine": matched_engine, "misreadings": misreadings,
+        "matched_comparison": matched_comparison if matched_engine != primary[0] else None,
+    }
 
 
 def _ledger_entry(
@@ -3366,16 +3432,28 @@ def compare_ptr_report(
                 has_children=bool(children.get(clause_id)),
                 context=equivalence_context,
             )
+            matched_comparison = confirmation.pop("matched_comparison", None)
+            if matched_comparison is not None:
+                # The engine whose reading is 一致 is not the primary one:
+                # show its comparison, not the misread one.
+                comparison = dict(matched_comparison)
+                comparison["text_comparison"] = dict(comparison["text_comparison"])
             comparison["text_comparison"]["ocr_confirmation"] = confirmation
             if confirmation["status"] == "confirmed":
                 decision = MATCHED
-                reason_code = OCR_DUAL_ENGINE_MATCH
-                comparison["text_comparison"].setdefault("equivalence_rules", []).append(
+                reason_code = str(confirmation["rule"])
+                comparison["text_comparison"]["equivalence_rules"] = [
+                    *(comparison["text_comparison"].get("equivalence_rules") or []),
                     {
-                        "rule": OCR_DUAL_ENGINE_MATCH,
-                        "label": "扫描件：" + "、".join(confirmation["engines"]) + " 各自识别的文字都与报告一致",
-                    }
-                )
+                        "rule": reason_code,
+                        "label": (
+                            "扫描件：" + "、".join(confirmation["engines"]) + " 各自识别的文字都与报告一致"
+                            if reason_code == OCR_DUAL_ENGINE_MATCH
+                            else "扫描件：" + str(confirmation["matched_engine"])
+                            + " 识别的文字与报告一致，其余引擎只有个别字符读得不同"
+                        ),
+                    },
+                ]
             else:
                 decision = MANUAL
                 reason_code = "PTR_OCR_CANDIDATES_MANUAL"

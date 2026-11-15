@@ -906,16 +906,18 @@ class PtrCompareSampleTests(unittest.TestCase):
         eligible = [entry for entry in result["coverage_ledger"] if entry["decision"] != EXCLUDED]
         self.assertTrue(eligible)
         # OCR text never yields 不一致; it yields 一致 only when every OCR
-        # engine's own reading matches the Report.
+        # engine's own reading matches the Report, or (2026-11-14) one does
+        # and the others misread single characters only.
+        passing = {OCR_DUAL_ENGINE_MATCH, "OCR_ENGINE_MATCH_OTHER_MISREAD"}
         for entry in eligible:
             if entry["decision"] == MANUAL:
                 continue
             self.assertEqual(entry["decision"], MATCHED, entry["clause_id"])
-            self.assertEqual(entry["reason_code"], OCR_DUAL_ENGINE_MATCH, entry["clause_id"])
+            self.assertIn(entry["reason_code"], passing, entry["clause_id"])
             confirmation = entry["text_comparison"]["ocr_confirmation"]
             self.assertEqual(confirmation["status"], "confirmed")
             self.assertGreaterEqual(len(confirmation["engines"]), 2)
-            self.assertIn(OCR_DUAL_ENGINE_MATCH, [rule["rule"] for rule in entry["text_comparison"]["equivalence_rules"]])
+            self.assertIn(entry["reason_code"], [rule["rule"] for rule in entry["text_comparison"]["equivalence_rules"]])
         self.assertTrue(any(entry["decision"] == MANUAL for entry in eligible))
         self.assertEqual(result["summary"]["counts"][MISMATCH], 0)
         self.assertEqual(result["summary"]["decision"], MANUAL)
