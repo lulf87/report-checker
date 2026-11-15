@@ -77,17 +77,16 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。直接在 `main` 上工
 
 ## 当前结果（2026-11-14，13 组共 996 条）
 
-一致 547 / 不一致 33 / 待确认 23（文字版 10、扫描件 13），其余为排除。`ptr_gold check` 无漏判。
+一致 549 / 不一致 33 / 待确认 21（文字版 10、扫描件 11），其余为排除。`ptr_gold check` 无漏判。
 
 **文字版待确认 10 条**（都没有安全的自动判法）：
 - 0778 2.1.3b（报告省略名称列）、2.1.14（一张表拆成三张）、2.1.7 / 2.1.11（“单位：X”对应的数值在表格里）
 - 0780 2.3.1.3 / 2.3.6.6b（报告只列送检型号并省略列；登记型号写“见样品描述栏”，样品描述表在第 4～5 页，可读出 38 个型号）、2.3.9.5（报告侧型号列没读成表格）
 - 0596 2.1.5（公式换算出的范围）、0775 2.5.2.9（PTR 竖排合并单元格）、3940 2.1.8（条款写“心室不应期”，表格行名是“右室不应期”）
 
-**扫描件待确认 15 条**：
+**扫描件待确认 11 条**：
 - 真问题 1 条，受“不能报不一致”限制：2170 2.1.2.1（表2 长度允差）
 - 表格 3 条：2170 2.1.1.2、5782 2.1.2、2.1.3
-- 报告格里混进了 2.3.1.1 的展开文字：2170 2.1.1.6.2、2.4.1
 - 两个引擎都没读对：2170 2.3.1.5、5782 2.3.3、2.5.2.2；一个引擎多读出几个字符：5780 2.1.13
 - 按答案应排除 3 条：2170 2.3.2、5782 2.1.5a、2.1.5b
 
@@ -96,6 +95,8 @@ GitHub：`lulf87/report-checker`（**公开仓库**）。直接在 `main` 上工
 - `ptr_layout._clean_requirement_text` 会删掉“标准要求”栏里单独一行的 5～8 位数字（当作样品结果标签）。按型号分行的报告表格的行名因此另存在 `model_number_cells`，`ptr_compare._compare_text_keyed_by_model` 先带型号比一次，**只在完全一致时采用**。直接保留型号会让 0780 2.3.1.3、2.3.6.6b 变成误报的不一致。
 - 表格展开的顺序：`compare_row_expansion` → `compare_multi_row_expansion` → `compare_parameter_column` → `compare_table_cells`（`mvp/ptr_table_rows.py`）。
 - 扫描件：`extract_ptr_layout` 把其余 OCR 引擎各自分段的结果放在 `ocr_alternate_nodes`，`ptr_compare._ocr_dual_engine_confirmation` 决定能否放行。
+- 报告在一条里展开印出所引用的条款时：重复的条款号行由 `ptr_layout._expanding_referrer` 归到引用它的条款，`ptr_compare._compare_with_expanded_references` 逐条与对应 PTR 条款核对（全部一致才放行）。
+- 结果页的证据框坐标是 PyMuPDF 的“显示方向、左上角起”的坐标，画框时只按比例缩放（扫描件页面常带 /Rotate，不能再按未旋转页面换算）。
 - 已知较松：参数列表格（`compare_parameter_column`）不要求报告抄其余列，只有 0596 2.1.6.1 一个样本支持。
 - 已知问题：不是检验报告的 PDF 做报告自检会以 `ValueError: at least one rectangle is required` 失败，提示不直白。
 

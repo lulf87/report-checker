@@ -851,6 +851,33 @@ def _requirement_cells(
     return sorted(result, key=lambda c: c["bbox"][0])
 
 
+_CLAUSE_NUMBER = re.compile(r"(?<![\d.])2(?:\.\d+)+(?![\d])")
+
+
+def _expanding_referrer(nodes: Mapping[str, dict[str, Any]], clause: str) -> dict[str, Any] | None:
+    """The clause whose expansion a *repeated* clause heading belongs to.
+
+    ``clause`` already has a node in this Report item, and a clause printed
+    after it says that ``clause`` (or its parent) applies – ``并符合2.1.1.6 及
+    2.3.1.1 的要求``.  The Report then prints those rows again under the
+    referring clause.  Returns that clause's node, or ``None`` when no later
+    clause refers to ``clause`` (an ordinary repeated heading).
+    """
+
+    order = list(nodes)
+    if clause not in order:
+        return None
+    for other in reversed(order[order.index(clause) + 1:]):
+        if other == clause or other.startswith(clause + ".") or clause.startswith(other + "."):
+            continue
+        node = nodes[other]
+        text = "\n".join(str(part) for part in node["parts"][1 if node.get("title") else 0:])
+        referenced = {number.rstrip(".") for number in _CLAUSE_NUMBER.findall(text)}
+        if any(clause == number or clause.startswith(number + ".") for number in referenced):
+            return node
+    return None
+
+
 def report_item_title(value: Any, clause: str) -> str:
     """The 检验项目 cell as the clause title.
 
@@ -1048,6 +1075,18 @@ def extract_report_layout(path: Path) -> dict[str, Any]:
                             match = CLAUSE.match(line)
                             if match and (compact(match.group(1)) == active_clause or compact(match.group(1)).startswith(active_clause + ".")):
                                 clause, title = compact(match.group(1)), match.group(2).strip()
+                                referrer = _expanding_referrer(group["nodes"], clause)
+                                if referrer is not None:
+                                    # ``2.1.1.7 …并符合2.1.1.6 及2.3.1.1 的要求``: the
+                                    # Report prints the rows of 2.1.1.6 again, as the
+                                    # content of 2.1.1.7.  They are that clause's
+                                    # expansion, not more text of 2.1.1.6.
+                                    referrer["parts"].append(line)
+                                    group["current"] = referrer
+                                    referrer["evidence"].append(evidence(
+                                        "report", page.number+1, cell["bbox"], cell.get("raw_text", line), digest,
+                                        "report_requirement_cell"))
+                                    continue
                                 if clause not in group["nodes"]:
                                     node = _new_node("report", clause, title, digest, f"item:{active_sequence}:")
                                     node["sequence"] = active_sequence

@@ -2273,6 +2273,117 @@ def _unit_labels_match_numeric(
     return True, "EXACT_UNIT_MATCH"
 
 
+_REFERENCED_CLAUSE_RE = re.compile(r"(?<![\d.])2(?:\s*\.\s*\d+)+(?!\d)")
+_EXPANSION_LINE_RE = re.compile(r"^\s*(?P<clause>2(?:\.\d+)+)\.?\s*(?P<rest>[^\d.\s].*)$")
+_EXPANSION_LETTER_RE = re.compile(r"^(?P<letter>[A-Za-z])\s*[)）]\s*(?P<rest>.*)$")
+# The referring sentence wrapped right before the number (``…应满足⏎2.5.7.b)的要求。``).
+_REFERENCE_SENTENCE_TAIL_RE = re.compile(r"^(?:[A-Za-z]\s*[)）]\s*)?(?:的|及|和|与|或|、|，|,|中|规定|要求|条)")
+EXPANDED_REFERENCE_NOT_VERIFIED = "EXPANDED_REFERENCE_NOT_VERIFIED"
+
+
+def _split_expanded_references(
+    ptr: Mapping[str, Any], report: Mapping[str, Any], context: Mapping[str, Any]
+) -> tuple[str, list[tuple[str, str]]] | None:
+    """Separate the clauses a Report clause writes out by reference.
+
+    The PTR clause says ``并符合2.1.4 及2.6.1 的要求``; the Report copies that
+    sentence and then prints 2.1.4 and 2.6.1 (and their sub-clauses) in full,
+    each starting on its own line with its clause number.  Returns the
+    Report's own text and the ``(clause, text)`` blocks, or ``None`` when the
+    Report has no such block.
+    """
+
+    known = context.get("ptr_nodes_by_clause") or {}
+    own_clause = str(ptr.get("clause_id") or "")
+    referenced = {
+        re.sub(r"\s+", "", number) for number in _REFERENCED_CLAUSE_RE.findall(str(ptr.get("text") or ""))
+    } - {own_clause}
+    if not referenced or not known:
+        return None
+
+    def expands(clause: str) -> bool:
+        base = clause.rstrip("abcdefghijklmnopqrstuvwxyz")
+        return clause in known and clause != own_clause and any(
+            base == number or base.startswith(number + ".") for number in referenced
+        )
+
+    own: list[str] = []
+    blocks: list[tuple[str, list[str]]] = []
+    for line in str(report.get("text") or "").splitlines():
+        start = _EXPANSION_LINE_RE.match(line)
+        clause, rest = (start.group("clause"), start.group("rest")) if start else ("", "")
+        lettered = _EXPANSION_LETTER_RE.match(rest) if start else None
+        if lettered and clause + lettered.group("letter").lower() in known:
+            # ``2.5.7 a)平均显示延迟时间…`` is the lettered item 2.5.7a.
+            clause, rest = clause + lettered.group("letter").lower(), lettered.group("rest")
+        if start and own and expands(clause) and not _REFERENCE_SENTENCE_TAIL_RE.match(rest):
+            blocks.append((clause, [rest]))
+        elif blocks:
+            blocks[-1][1].append(line)
+        else:
+            own.append(line)
+    if not blocks:
+        return None
+    return "\n".join(own), [(clause, "\n".join(lines)) for clause, lines in blocks]
+
+
+def _compare_with_expanded_references(
+    ptr: Mapping[str, Any], report: Mapping[str, Any], *, has_children: bool, context: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Compare a Report clause that prints other clauses by reference.
+
+    The clause's own text is compared with the ordinary rules.  Every printed
+    clause is compared with *its* PTR clause, with the same rules; only when
+    each of them is 一致 does the clause as a whole stay 一致
+    (``REPORT_EXPANDED_REFERENCE``).  Otherwise it is left for review
+    (``EXPANDED_REFERENCE_NOT_VERIFIED``); a difference found in the clause's
+    own text is reported as usual.
+    """
+
+    split = _split_expanded_references(ptr, report, context)
+    if split is None:
+        return None
+    own_text, blocks = split
+    inner = {**context, "_inside_expanded_reference": True}
+    derived = {"normalized_text", "numeric_signature", "raw_numeric_signature", "unit_labels",
+               "auxiliary_lines", "references", "reference_bindings", "is_heading_only"}
+
+    def as_report(clause: str, text: str) -> dict[str, Any]:
+        node = {key: value for key, value in report.items() if key not in derived and key != "table_rows"}
+        node.update(clause_id=clause, text=text, table_rows=[])
+        return node
+
+    own_node = as_report(str(report.get("clause_id") or ""), own_text)
+    own_node["table_rows"] = list(report.get("table_rows") or [])
+    if report.get("is_heading_only") is not None:
+        own_node["is_heading_only"] = False
+    result = _compare_text(ptr, own_node, has_children=has_children, context=inner)
+    known = context.get("ptr_nodes_by_clause") or {}
+    with_children = context.get("ptr_clauses_with_children") or set()
+    checked: list[dict[str, Any]] = []
+    for clause, text in blocks:
+        target = known[clause]
+        outcome = _compare_text(target, as_report(clause, text), has_children=clause in with_children, context=inner)
+        verified = outcome["decision"] == MATCHED and outcome["table_comparison"]["status"] != MANUAL
+        checked.append({
+            "clause_id": clause, "status": MATCHED if verified else MANUAL,
+            "reason_code": outcome["reason_code"], "report_text": text,
+        })
+    all_verified = all(item["status"] == MATCHED for item in checked)
+    text_comparison = result["text_comparison"]
+    text_comparison["report_source"] = str(report.get("text") or "")
+    text_comparison["expanded_references"] = checked
+    if all_verified:
+        text_comparison["equivalence_rules"] = [
+            *text_comparison.get("equivalence_rules", []),
+            {"rule": "REPORT_EXPANDED_REFERENCE", "label": SAFE_EQUIVALENCE_RULES["REPORT_EXPANDED_REFERENCE"]},
+        ]
+    elif result["decision"] == MATCHED:
+        result["decision"] = MANUAL
+        result["reason_code"] = EXPANDED_REFERENCE_NOT_VERIFIED
+    return result
+
+
 def _compare_text(
     ptr: Mapping[str, Any],
     report: Mapping[str, Any],
@@ -2281,6 +2392,10 @@ def _compare_text(
     context: Mapping[str, Any] | None = None,
     row_expansion: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if row_expansion is None and context and not context.get("_inside_expanded_reference"):
+        expanded = _compare_with_expanded_references(ptr, report, has_children=has_children, context=context)
+        if expanded is not None:
+            return expanded
     ptr_text = str(
         ptr.get("normalized_text")
         or _text_for_comparison(ptr.get("text"), role=str(ptr.get("role") or ""))
@@ -2984,8 +3099,18 @@ def _ocr_dual_engine_confirmation(
             return refused("SECOND_ENGINE_CLAUSE_NOT_UNIQUE", engine=backend, candidate_count=len(candidates))
         if set(candidates[0].get("extraction_issues") or []) - _OCR_HARMLESS_ISSUES:
             return refused("SECOND_ENGINE_EXTRACTION_ISSUE", engine=backend)
+        # Clauses the Report expands by reference are checked against this
+        # engine's own reading of them, not the primary engine's.
+        engine_context = {
+            **(context or {}),
+            "ptr_text_by_clause": ((context or {}).get("ocr_ptr_text_by_clause") or {}).get(backend)
+            or (context or {}).get("ptr_text_by_clause"),
+            "ptr_nodes_by_clause": ((context or {}).get("ocr_ptr_nodes_by_clause") or {}).get(backend)
+            or (context or {}).get("ptr_nodes_by_clause"),
+        }
         readings.append(
-            (backend, candidates[0], _compare_text(candidates[0], report, has_children=has_children, context=context))
+            (backend, candidates[0],
+             _compare_text(candidates[0], report, has_children=has_children, context=engine_context))
         )
     engines = [engine for engine, _, _ in readings]
     exact = [reading for reading in readings if clean_match(reading[2])]
@@ -3305,6 +3430,8 @@ def compare_ptr_report(
         "report_models": report_submitted_models(report_path),
         "ptr_headers": ptr_running_header_lines(ptr_path),
         "ptr_tagged_notes": ptr_tagged_notes(ptr_path),
+        "ptr_nodes_by_clause": ptr_by_clause,
+        "ptr_clauses_with_children": {clause for clause, items in children.items() if items},
         "ptr_text_by_clause": {
             clause: _text_for_comparison(node.get("text"), role="ptr") for clause, node in ptr_by_clause.items()
         },
@@ -3319,6 +3446,17 @@ def compare_ptr_report(
         for node in alternate_nodes:
             grouped[str(node["clause_id"])].append(node)
         ocr_alternates_by_clause[str(backend)] = dict(grouped)
+    equivalence_context["ocr_ptr_nodes_by_clause"] = {
+        backend: {clause: nodes[0] for clause, nodes in by_clause.items() if len(nodes) == 1}
+        for backend, by_clause in ocr_alternates_by_clause.items()
+    }
+    equivalence_context["ocr_ptr_text_by_clause"] = {
+        backend: {
+            clause: _text_for_comparison(nodes[0].get("text"), role="ptr")
+            for clause, nodes in by_clause.items() if len(nodes) == 1
+        }
+        for backend, by_clause in ocr_alternates_by_clause.items()
+    }
     ledger: list[dict[str, Any]] = []
     accounted_report_ids: set[str] = set()
     for clause_id, ptr_candidates in sorted(ptr_candidates_by_clause.items(), key=lambda item: _clause_sort_key(item[0])):
